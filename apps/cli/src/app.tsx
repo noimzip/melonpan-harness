@@ -18,6 +18,7 @@ export interface AppProps {
   initialMode?: 'auto' | 'plan' | 'act';
   model?: string;
   initialEffort?: string;
+  outDir?: string;
   simulate?: boolean;
   maxTurns?: number;
 }
@@ -73,6 +74,7 @@ export const App: React.FC<AppProps> = ({
   initialMode = 'auto',
   model: defaultModel = 'gemini-3.8-flash',
   initialEffort = 'high',
+  outDir = process.cwd(),
   simulate,
   maxTurns = 12,
 }) => {
@@ -180,16 +182,23 @@ export const App: React.FC<AppProps> = ({
             setVirtualFiles(event.payload.files);
             savedVfsRef.current = core.getVFS();
 
+            // 実ディスク（カレントディレクトリ）へ成果物を自動書き出し
+            try {
+              await core.getVFS().flushToDisk(outDir);
+            } catch (diskErr: any) {
+              console.error('Failed to flush deliverables to disk:', diskErr);
+            }
+
             if (currentRunMode === 'plan') {
               // Plan mode finished -> await user confirmation
               setStatus('confirming');
-              setCurrentActivity('Plan created. Waiting for confirmation...');
+              setCurrentActivity('Plan created and saved to disk. Waiting for confirmation...');
               isRunningRef.current = false;
               return;
             } else {
               setStatus('completed');
               setCurrentActivity(
-                `Completed in ${event.payload.turns} turns (${event.payload.durationMs}ms)`
+                `Completed in ${event.payload.turns} turns (${event.payload.durationMs}ms) - saved to disk`
               );
             }
             break;
@@ -407,7 +416,7 @@ export const App: React.FC<AppProps> = ({
         onReset={handleReset}
       />
 
-      {/* 6. Virtual Files Summary (When completed) */}
+      {/* 6. Deliverables Saved to Disk (When completed) */}
       {status === 'completed' && Object.keys(virtualFiles).length > 0 && (
         <Box
           marginTop={1}
@@ -417,11 +426,11 @@ export const App: React.FC<AppProps> = ({
           flexDirection="column"
         >
           <Text bold color="green">
-            📦 Generated Deliverables ({Object.keys(virtualFiles).length} files):
+            💾 Deliverables Saved to Current Directory ({Object.keys(virtualFiles).length} files):
           </Text>
           {Object.entries(virtualFiles).map(([filePath, content]) => (
             <Box key={filePath} justifyContent="space-between">
-              <Text color="cyan">{filePath}</Text>
+              <Text color="cyan">./{filePath}</Text>
               <Text color="gray">{content.length.toLocaleString()} bytes</Text>
             </Box>
           ))}

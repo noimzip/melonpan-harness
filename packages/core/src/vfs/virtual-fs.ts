@@ -90,4 +90,23 @@ export class VirtualFS {
   clear(): void {
     this.files.clear();
   }
+
+  /**
+   * 仮想ファイルシステム内の全ファイルを指定のローカルディレクトリに実ファイルとして書き出す
+   */
+  async flushToDisk(targetDir: string = process.cwd()): Promise<string[]> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const written: string[] = [];
+
+    for (const [filePath, content] of this.files.entries()) {
+      const fullPath = path.resolve(targetDir, filePath);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, content, 'utf-8');
+      written.push(fullPath);
+    }
+
+    return written;
+  }
 }
+
