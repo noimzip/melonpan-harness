@@ -1,50 +1,48 @@
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { SkillManager } from '../src/skills/skill-manager.js';
-import { SkillDefinition } from '../src/types.js';
 
 describe('SkillManager', () => {
-  it('registers presets by default', () => {
+  const currentFile = fileURLToPath(import.meta.url);
+  const skillsDir = path.resolve(path.dirname(currentFile), '../skills');
+
+  it('indexes metadata from skills directory', async () => {
+    const manager = new SkillManager({ skillsDir });
+    const indexed = await manager.loadAllMetadata();
+
+    expect(indexed.length).toBeGreaterThan(0);
+    const gameGen = indexed.find((s) => s.name === 'game-generator');
+    expect(gameGen).toBeDefined();
+    expect(gameGen?.description).toContain('HTML5 Canvas');
+  });
+
+  it('resolves skill and performs progressive disclosure (loads body on demand)', async () => {
+    const manager = new SkillManager({ skillsDir });
+    const loaded = await manager.resolveAndLoad('ブロック崩しゲームを作って');
+
+    expect(loaded).toBeDefined();
+    expect(loaded?.name).toBe('game-generator');
+    expect(loaded?.instruction).toContain('Instructions for Game Generation');
+    expect(loaded?.instruction).toContain('Orbitron');
+  });
+
+  it('supports in-memory skill registration for browser/test environments', async () => {
     const manager = new SkillManager();
-    const skills = manager.list();
-    expect(skills.length).toBeGreaterThan(0);
-    expect(manager.get('game-generator')).toBeDefined();
-  });
+    const inMemContent = `---
+name: custom-assistant
+description: Assisting users with tasks
+---
+# Custom Instructions
+Do great work.
+`;
+    manager.registerInMemorySkill('custom-assistant', inMemContent);
 
-  it('can disable presets', () => {
-    const manager = new SkillManager({ disablePresets: true });
-    expect(manager.list().length).toBe(0);
-    expect(manager.get('game-generator')).toBeUndefined();
-  });
+    const indexed = manager.getIndexedSkills();
+    expect(indexed.some((s) => s.name === 'custom-assistant')).toBe(true);
 
-  it('registers and unregisters custom skills', () => {
-    const manager = new SkillManager({ disablePresets: true });
-    const customSkill: SkillDefinition = {
-      id: 'custom-skill',
-      name: 'Custom Skill',
-      description: 'A test skill',
-      matches: (input) => input.includes('custom'),
-      getInstruction: async () => 'Custom instruction',
-    };
-
-    manager.register(customSkill);
-    expect(manager.get('custom-skill')).toBe(customSkill);
-
-    const unregistered = manager.unregister('custom-skill');
-    expect(unregistered).toBe(true);
-    expect(manager.get('custom-skill')).toBeUndefined();
-  });
-
-  it('resolves matching skill based on input', async () => {
-    const manager = new SkillManager();
-    const resolved = await manager.resolve('宇宙を舞台にしたジャンプゲームを作って');
-    expect(resolved).toBeDefined();
-    expect(resolved?.id).toBe('game-generator');
-  });
-
-  it('falls back to default skill when input does not match other skills', async () => {
-    const manager = new SkillManager();
-    const resolved = await manager.resolve('こんにちは世界');
-    // デフォルトプリセットにフォールバック
-    expect(resolved?.id).toBe('game-generator');
+    const loaded = await manager.resolveAndLoad('custom-assistant help');
+    expect(loaded?.name).toBe('custom-assistant');
+    expect(loaded?.instruction).toBe('# Custom Instructions\nDo great work.');
   });
 });

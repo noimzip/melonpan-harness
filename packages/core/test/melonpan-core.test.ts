@@ -1,47 +1,34 @@
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { MelonpanCore } from '../src/index.js';
-import { MockLLMProvider } from '../src/providers/mock.js';
 
-describe('MelonpanCore', () => {
-  it('instantiates properly with options', () => {
+describe('MelonpanCore Facade', () => {
+  const currentFile = fileURLToPath(import.meta.url);
+  const skillsDir = path.resolve(path.dirname(currentFile), '../skills');
+
+  it('runs complete lifecycle yielding SKILL_INDEXED, SKILL_LOADED, and ReAct events', async () => {
     const core = new MelonpanCore({
-      apiKey: 'test-key',
-      model: 'gemini-3.8-flash',
+      skillsDir,
+      simulate: true,
     });
 
-    expect(core.getSkillManager()).toBeDefined();
-    expect(core.getProvider()).toBeDefined();
-    expect(core.getValidator()).toBeDefined();
-  });
-
-  it('runs event stream as specified in design doc', async () => {
-    const mockProvider = new MockLLMProvider();
-    const core = new MelonpanCore({
-      provider: mockProvider,
-    });
-
-    const eventStream = core.run('宇宙を舞台にしたジャンプアクションゲーム');
-    const receivedEvents: string[] = [];
-    let streamedCode = '';
-
-    for await (const event of eventStream) {
-      receivedEvents.push(event.type);
-      switch (event.type) {
-        case 'SKILL_LOADED':
-          expect(event.payload.name).toBeDefined();
-          break;
-        case 'CODE_CHUNK':
-          streamedCode += event.payload;
-          break;
-        case 'COMPLETE':
-          expect(event.payload.html).toContain('<!DOCTYPE html>');
-          break;
-      }
+    const events: any[] = [];
+    for await (const event of core.run('ネオンサイバーなブロック崩しゲーム')) {
+      events.push(event);
     }
 
-    expect(receivedEvents).toContain('SKILL_LOADED');
-    expect(receivedEvents).toContain('CODE_CHUNK');
-    expect(receivedEvents).toContain('COMPLETE');
-    expect(streamedCode.length).toBeGreaterThan(100);
+    const types = events.map((e) => e.type);
+    expect(types).toContain('SKILL_INDEXED');
+    expect(types).toContain('SKILL_LOADED');
+    expect(types).toContain('THOUGHT');
+    expect(types).toContain('TOOL_CALL');
+    expect(types).toContain('FILE_CHANGED');
+    expect(types).toContain('TOOL_RESULT');
+    expect(types).toContain('COMPLETE');
+
+    const vfsFiles = core.getVirtualFiles();
+    expect(vfsFiles['index.html']).toBeDefined();
+    expect(vfsFiles['index.html']).toContain('<!DOCTYPE html>');
   });
 });

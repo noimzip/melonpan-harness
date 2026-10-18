@@ -1,47 +1,100 @@
 /**
  * @melonpan/core 共通型定義
- * クライアントとコア間のやり取りはすべてこのイベントストリームを通じて行われます。
+ * Agent Skills標準仕様 (agentskills.io) & ReAct自律エージェント対応
  */
 
-export type AgentEventType =
-  | 'SKILL_LOADED' // スキルが動的ロードされた
-  | 'THINKING'     // 思考・設計中
-  | 'CODE_CHUNK'   // コードのストリーミング断片
-  | 'VALIDATING'   // 構文チェック・検証中
-  | 'REPAIRING'    // エラー検知による自己修復中
-  | 'COMPLETE'     // 完了（成果物確定）
-  | 'ERROR';       // 致命的エラー
+// ----------------------------------------------------
+// Agent Skills Standard Specification (agentskills.io)
+// ----------------------------------------------------
 
-export interface SkillPayload {
-  id: string;
+export interface SkillFrontmatter {
+  /** 一意なスキル識別子 (英小文字、数字、ハイフンのみ、最大64文字、親ディレクトリ名と一致) */
+  name: string;
+  /** スキルの機能概要およびエージェントが利用すべき条件 (必須、最大1024文字) */
+  description: string;
+  /** ライセンス名 (任意) */
+  license?: string;
+  /** 動作要件・互換性情報 (任意) */
+  compatibility?: string;
+  /** 任意のキーバリューメタデータ (任意) */
+  metadata?: Record<string, string>;
+  /** 許可されたツール一覧 (任意) */
+  'allowed-tools'?: string;
+}
+
+export interface SkillMetadata {
   name: string;
   description: string;
+  skillDir: string;
+  filePath: string;
+  frontmatter: SkillFrontmatter;
 }
 
-export interface ThinkingPayload {
-  message: string;
+export interface LoadedSkill extends SkillMetadata {
+  /** SKILL.md の Markdown本文（エージェントへの詳細指示・規約） */
+  instruction: string;
 }
 
-export interface ValidatingPayload {
-  attempt: number;
-  message: string;
+// ----------------------------------------------------
+// Agent Events (ストリーミング駆動型ライフサイクル)
+// ----------------------------------------------------
+
+export type AgentEventType =
+  | 'SKILL_INDEXED' // 起動時の全スキルメタデータ軽量インデックス完了
+  | 'SKILL_LOADED'  // 該当スキルの本文遅延ロード完了 (Progressive Disclosure)
+  | 'THOUGHT'       // エージェントの思考・推論ステップ (Thought)
+  | 'TOOL_CALL'     // ツール実行要求 (Action)
+  | 'TOOL_RESULT'   // ツール実行結果 (Observation)
+  | 'FILE_CHANGED'  // VFS上のファイル変更 (write, edit)
+  | 'COMPLETE'      // タスク完了宣言と全成果物VFS
+  | 'ERROR';        // エラー
+
+export interface SkillIndexedPayload {
+  skills: Array<{ name: string; description: string; path: string }>;
+  count: number;
 }
 
-export interface RepairingPayload {
-  attempt: number;
-  errors: string[];
-  instruction?: string;
+export interface SkillLoadedPayload {
+  name: string;
+  description: string;
+  filePath: string;
+  instructionPreview: string;
+}
+
+export interface ThoughtPayload {
+  thought: string;
+}
+
+export interface ToolCallPayload {
+  name: string;
+  args: Record<string, any>;
+  callId?: string;
+}
+
+export interface ToolResultPayload {
+  name: string;
+  result: string;
+  isError?: boolean;
+  callId?: string;
+}
+
+export interface FileChangedPayload {
+  path: string;
+  action: 'write' | 'edit';
+  size: number;
+  diffSummary?: string;
 }
 
 export interface CompletePayload {
-  html: string;
-  attempts: number;
+  summary: string;
+  files: Record<string, string>;
+  turns: number;
   durationMs: number;
 }
 
 export interface ErrorPayload {
   error: Error | string;
-  phase?: 'resolution' | 'generation' | 'validation' | 'repair' | 'execution';
+  phase: 'indexing' | 'resolution' | 'react_loop' | 'execution';
 }
 
 export interface AgentEvent<T = any> {
@@ -50,65 +103,52 @@ export interface AgentEvent<T = any> {
   timestamp: number;
 }
 
-export type SkillLoadedEvent = AgentEvent<SkillPayload> & { type: 'SKILL_LOADED' };
-export type ThinkingEvent = AgentEvent<ThinkingPayload> & { type: 'THINKING' };
-export type CodeChunkEvent = AgentEvent<string> & { type: 'CODE_CHUNK' };
-export type ValidatingEvent = AgentEvent<ValidatingPayload> & { type: 'VALIDATING' };
-export type RepairingEvent = AgentEvent<RepairingPayload> & { type: 'REPAIRING' };
+export type SkillIndexedEvent = AgentEvent<SkillIndexedPayload> & { type: 'SKILL_INDEXED' };
+export type SkillLoadedEvent = AgentEvent<SkillLoadedPayload> & { type: 'SKILL_LOADED' };
+export type ThoughtEvent = AgentEvent<ThoughtPayload> & { type: 'THOUGHT' };
+export type ToolCallEvent = AgentEvent<ToolCallPayload> & { type: 'TOOL_CALL' };
+export type ToolResultEvent = AgentEvent<ToolResultPayload> & { type: 'TOOL_RESULT' };
+export type FileChangedEvent = AgentEvent<FileChangedPayload> & { type: 'FILE_CHANGED' };
 export type CompleteEvent = AgentEvent<CompletePayload> & { type: 'COMPLETE' };
 export type ErrorEvent = AgentEvent<ErrorPayload> & { type: 'ERROR' };
 
 export type MelonpanEvent =
+  | SkillIndexedEvent
   | SkillLoadedEvent
-  | ThinkingEvent
-  | CodeChunkEvent
-  | ValidatingEvent
-  | RepairingEvent
+  | ThoughtEvent
+  | ToolCallEvent
+  | ToolResultEvent
+  | FileChangedEvent
   | CompleteEvent
   | ErrorEvent;
 
-export interface SkillDefinition {
-  id: string;
-  name: string;
-  description: string;
-  /** プロンプトまたはコンテキストに合致するか判定するルール */
-  matches: (input: string) => boolean;
-  /** 必要な瞬間にのみ取得する指示プロンプト（遅延ロード） */
-  getInstruction: () => Promise<string>;
+// ----------------------------------------------------
+// ReAct Tools Arguments
+// ----------------------------------------------------
+
+export interface WriteFileArgs {
+  path: string;
+  content: string;
 }
 
-export interface GenerateStreamParams {
-  systemInstruction: string;
-  prompt: string;
-  temperature?: number;
+export interface EditFileArgs {
+  path: string;
+  search: string;
+  replace: string;
 }
 
-export interface LLMProvider {
-  generateStream(params: GenerateStreamParams): AsyncIterable<string>;
+export interface CompleteTaskArgs {
+  summary: string;
 }
 
-export interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-  sanitizedHtml: string;
-}
+// ----------------------------------------------------
+// MelonpanCore Configuration Options
+// ----------------------------------------------------
 
-export interface HtmlValidatorInterface {
-  extractHtml(raw: string): string;
-  validate(rawOrHtml: string): ValidationResult;
-}
-
-export interface AgentLoopOptions {
-  maxRepairs?: number;
-  temperature?: number;
-}
-
-export interface MelonpanCoreOptions extends AgentLoopOptions {
+export interface MelonpanCoreOptions {
   apiKey?: string;
-  model?: string;
-  baseUrl?: string;
-  provider?: LLMProvider;
-  validator?: HtmlValidatorInterface;
-  skillManager?: any; // SkillManager instance
-  disablePresets?: boolean;
+  model?: string; // デフォルト: 'gemini-3.8-flash'
+  skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ
+  maxTurns?: number; // デフォルト: 10
+  simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
 }

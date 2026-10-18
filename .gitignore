@@ -3,5 +3,7 @@ dist/
 *.log
 .DS_Store
 generated-game.html
+index.html
+**/index.html
 .env
 .env.*

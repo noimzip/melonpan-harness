@@ -1,71 +1,88 @@
-# 🍈 Melonpan Harness
+# 🍈 Melonpan Core
 
-高専祭（学校祭・技術展）出展向け自律ゲーム生成エージェントハーネス。
-来場者の自然言語プロンプト（「宇宙を舞台にしたジャンプゲーム」「ブロック崩し」など）から、即座に遊べる単一ファイル完結のHTML5 Canvas 2Dゲームをストリーミング生成・構文検証・自動修復します。
+**Agent Skills 標準仕様 (agentskills.io) 準拠・本格ReAct自律エージェントハーネス**
+
+高専祭（学校祭・技術展）などの体験型展示向けに設計された自律型コーディングエージェントハーネス。
+来場者の自然言語プロンプト（「ネオンサイバーなブロック崩し」「宇宙のジャンプアクション」等）から、ReAct自律ループ（思考 ⇄ ツール実行 ⇄ 観測 ⇄ 修正）とメモリ内仮想ファイルシステム（VFS）を用いて、即座に遊べる高品質な単一ファイルHTML5 Canvas 2Dアーケードゲームを生成します。
 
 ---
 
-## 🌟 特徴
-- **Headless & UI非依存**: Pure TypeScript + Web標準API (`fetch`, `ReadableStream`, `AsyncIterable`) のみで設計。ブラウザ、Node CLI、スマートフォンWeb、エッジ環境でそのまま動作。
-- **Event-Driven（ストリーミング駆動）**: 思考中、スキル動的ロード、コードストリーミング、構文検証、自己修復、完了までの全ライフサイクルイベントをリアルタイムに配信。
-- **Progressive Disclosure（動的スキルローダー）**: 入力内容に応じて必要な指示プロンプトをオンデマンドで注入し、トークン消費とAttentionの希釈を防止。
-- **自己修復（Auto-Repair）**: `new Function` による非実行JS構文コンパイル、Canvas要素、ゲームループ（`requestAnimationFrame`）の検査を自動実行し、エラー時は自己修復ループで自動再生成。
-- **最新LLMサポート**: デフォルトで最新の **Gemini 3.8 Flash** (`gemini-3.8-flash`) を使用。
+## 🌟 コアアーキテクチャの柱
+
+1. **Agent Skills 標準仕様準拠 (`agentskills.io`)**:
+   - スキルは `skills/<skill-name>/SKILL.md` の標準ディレクトリ配置で管理。
+   - YAML Frontmatter (`name`, `description`, `metadata` 等) と Markdown Body (詳細規約) を厳格に分離。
+   - **Progressive Disclosure (段階的開示)**: 起動時は全スキルのメタデータ（`name`, `description`）のみを軽量インデックス化し、ユーザー入力に応じて最適なスキルの本文（Instructions）のみをオンデマンドでシステムプロンプトに注入。
+2. **ReAct自律ループ (Reasoning + Acting)**:
+   - 最新の Gemini API (`@google/genai`) による Function Calling を活用。
+   - `Thought`（思考）⇄ `Action`（ツール実行）⇄ `Observation`（結果観測）を自律的に繰り返す。
+3. **本番用ツールセット (Tools) & メモリ内VFS**:
+   - `write_file(path, content)`: 新規作成・完全上書き
+   - `edit_file(path, search, replace)`: 差分更新（部分置換による自己修正）
+   - `complete_task(summary)`: タスク完了宣言
+   - `Map<string, string>` による安全なメモリ内VFSでNode/ブラウザ両対応。
+4. **リアルタイム Event-Driven ストリーミング**:
+   - `SKILL_INDEXED` ➔ `SKILL_LOADED` ➔ `THOUGHT` ➔ `TOOL_CALL` ➔ `FILE_CHANGED` ➔ `TOOL_RESULT` ➔ `COMPLETE` の全プロセスを `AsyncGenerator` で配信。
 
 ---
 
 ## 📂 ディレクトリ構成
 
-```plaintext
+```text
 packages/core/
-├── src/
-│   ├── index.ts              # 公開API（MelonpanCore, 型定義のエクスポート）
-│   ├── types.ts              # 共通型定義（Event, Skill, Resultなど）
-│   ├── agent-loop.ts         # エージェントの制御ループ・状態遷移
-│   ├── skills/
-│   │   ├── skill-manager.ts  # 動的ロード・スキルの登録・解決エンジン
-│   │   └── presets/          # 高専祭用の組み込みスキル（game-generator等）
-│   ├── providers/
-│   │   ├── provider.interface.ts # LLMの共通インターフェース
-│   │   ├── gemini.ts         # Gemini 3.8 Flash 実装 (Pure Fetch + SSE)
-│   │   └── mock.ts           # テスト・オフライン用 MockProvider
-│   └── validator/
-│       └── html-validator.ts # 生成されたHTML/JSの構文検証・抽出・サニタイズ
 ├── package.json
-└── tsconfig.json
+├── tsconfig.json
+├── skills/
+│   └── game-generator/
+│       └── SKILL.md            # ★Agent Skills標準仕様のゲーム生成スキル
+└── src/
+    ├── types.ts                # イベント、スキル、ツールの型定義
+    ├── skills/
+    │   ├── skill-parser.ts     # SKILL.md の YAML/Markdown パーサー
+    │   └── skill-manager.ts    # メタデータ常駐 & 本文オンデマンド読み込みエンジン
+    ├── vfs/
+    │   └── virtual-fs.ts       # メモリ内 Map<string, string> ベースの安全なVFS
+    ├── tools/
+    │   └── tool-definitions.ts # write_file, edit_file, complete_task ツール定義
+    ├── react-agent.ts          # Gemini Function Calling によるReAct自律ループ
+    └── index.ts                # MelonpanCore ファサード
 ```
 
 ---
 
 ## 🚀 クイックスタート
 
-### 依存関係のインストール & ビルド
+### 1. 依存関係のインストール & ビルド
 
 ```bash
 pnpm install
 pnpm build
 ```
 
-### テストの実行 (全19テスト)
+### 2. ユニットテストの実行 (全16テスト)
 
 ```bash
 pnpm test
 ```
 
-### デモの実行
+### 3. CLI テストの実行
 
-#### オフライン/モック実演 (APIキー不要・自動修復シミュレーション)
+#### オフライン / シミュレーション実演 (APIキー不要)
 ```bash
-pnpm demo:mock
+# packages/core から実行する場合
+cd packages/core && npx tsx examples/cli-test.ts
+
+# リポジトリルートから実行する場合
+pnpm demo
 ```
 
-#### 実APIを使用した生成 (Gemini 3.8 Flash)
+#### 実Gemini 3.8 Flashによる生成
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key"
-pnpm demo "宇宙を舞台にしたジャンプアクションゲーム"
+pnpm demo "ネオンサイバーなブロック崩しゲームを作って"
 ```
 
-生成されたゲームは `generated-game.html` に保存され、ブラウザで開いてすぐに遊べます。
+生成された成果物 `index.html` はディスクに保存され、ブラウザで開いてすぐに遊べます。
 
 ---
 
@@ -80,27 +97,31 @@ const core = new MelonpanCore({
 });
 
 // 入力を流し込み、イベントストリームをリッスン
-const eventStream = core.run("ブロック崩し");
+const eventStream = core.run("宇宙を舞台にしたジャンプアクションゲーム");
 
 for await (const event of eventStream) {
   switch (event.type) {
+    case 'SKILL_INDEXED':
+      console.log(`[Indexed]: ${event.payload.count} skills indexed`);
+      break;
     case 'SKILL_LOADED':
       console.log(`[Skill Loaded]: ${event.payload.name}`);
       break;
-    case 'CODE_CHUNK':
-      process.stdout.write(event.payload); // CLIならコンソール、Webならエディタに追記
+    case 'THOUGHT':
+      console.log(`[Thought]: ${event.payload.thought}`);
       break;
-    case 'VALIDATING':
-      console.log(`[Validating]: ${event.payload.message}`);
+    case 'TOOL_CALL':
+      console.log(`[Action]: ${event.payload.name}(${JSON.stringify(event.payload.args)})`);
       break;
-    case 'REPAIRING':
-      console.log(`[Repairing]: 構文エラーを検知、自己修復中...`);
+    case 'FILE_CHANGED':
+      console.log(`[VFS]: ${event.payload.path} (${event.payload.action})`);
+      break;
+    case 'TOOL_RESULT':
+      console.log(`[Observation]: ${event.payload.result}`);
       break;
     case 'COMPLETE':
-      console.log("🎉 ゲーム生成完了！", event.payload.html);
-      break;
-    case 'ERROR':
-      console.error("エラー:", event.payload.error);
+      console.log("🎉 [Complete]:", event.payload.summary);
+      console.log("Files:", Object.keys(event.payload.files));
       break;
   }
 }
