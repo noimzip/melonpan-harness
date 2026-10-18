@@ -51,6 +51,28 @@ export const MELONPAN_TOOLS: Tool[] = [
         },
       },
       {
+        name: 'dispatch_subagent',
+        description:
+          '専門のサブエージェント（researcher または code-reviewer）に特定の調査またはコードレビューを委譲します。Clean-Room Isolation環境で実行されます。',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            agent_type: {
+              type: Type.STRING,
+              enum: ['researcher', 'code-reviewer'],
+              description:
+                'Type of specialized sub-agent: "researcher" for technical discovery or "code-reviewer" for multi-perspective code audit.',
+            },
+            task_prompt: {
+              type: Type.STRING,
+              description:
+                'The specific technical questions, game mechanics requirements, or code to audit.',
+            },
+          },
+          required: ['agent_type', 'task_prompt'],
+        },
+      },
+      {
         name: 'complete_task',
         description:
           'Declare that the goal/task has been fully completed and all files are tested and finalized in the virtual filesystem.',

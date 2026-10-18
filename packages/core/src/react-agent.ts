@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { SubagentRunner } from './subagents/subagent-runner.js';
 import { MELONPAN_TOOLS } from './tools/tool-definitions.js';
 import { AgentEvent, LoadedSkill } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
@@ -8,17 +9,22 @@ export interface ReactAgentOptions {
   model?: string;
   maxTurns?: number;
   simulate?: boolean;
+  mode?: 'plan' | 'act' | 'auto';
+  agentsDir?: string;
 }
 
 /**
  * ReAct (Reasoning + Acting) 自律エージェントループ
  * Gemini Function Calling を活用し、思考 ⇄ ツール実行 ⇄ 観測 ⇄ ファイル修正を自律的に繰り返します。
+ * Clean-Room Sub-agent (researcher / code-reviewer) への委譲および Plan Mode に対応。
  */
 export class ReactAgent {
   private apiKey: string;
   private model: string;
   private maxTurns: number;
   private simulate: boolean;
+  private mode: 'plan' | 'act' | 'auto';
+  private subagentRunner: SubagentRunner;
 
   constructor(options: ReactAgentOptions = {}) {
     const envApiKey =
@@ -27,8 +33,16 @@ export class ReactAgent {
         : '';
     this.apiKey = options.apiKey || envApiKey || '';
     this.model = options.model || 'gemini-3.8-flash';
-    this.maxTurns = options.maxTurns ?? 10;
-    this.simulate = options.simulate ?? (!this.apiKey);
+    this.maxTurns = options.maxTurns ?? 12;
+    this.simulate = options.simulate ?? !this.apiKey;
+    this.mode = options.mode || 'act';
+
+    this.subagentRunner = new SubagentRunner({
+      apiKey: this.apiKey,
+      model: this.model,
+      agentsDir: options.agentsDir,
+      simulate: this.simulate,
+    });
   }
 
   /**
@@ -41,6 +55,18 @@ export class ReactAgent {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const startTime = Date.now();
 
+    // Plan Mode 開始イベントの送出
+    if (this.mode === 'plan' || this.mode === 'auto') {
+      yield {
+        type: 'PLAN_STARTED',
+        payload: {
+          mode: this.mode,
+          prompt,
+        },
+        timestamp: Date.now(),
+      };
+    }
+
     // 1. オフライン / テスト用確定型シミュレーションモード
     if (this.simulate) {
       yield* this.executeSimulation(prompt, skill, vfs, startTime);
@@ -51,6 +77,32 @@ export class ReactAgent {
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
+      let modeSpecificInstruction = '';
+      if (this.mode === 'plan') {
+        modeSpecificInstruction = `
+OPERATIONAL MODE: [PLAN MODE]
+- Your goal is strictly to analyze requirements and produce a thorough implementation plan.
+- Use \`dispatch_subagent('researcher', ...)\` to research algorithms, Canvas physics, and visual aesthetics.
+- Use \`write_file('plan.md', content)\` to draft the structured technical plan.
+- Once plan.md is saved, call \`complete_task(summary)\` with the plan summary. Do NOT generate index.html in plan mode.
+        `.trim();
+      } else if (this.mode === 'auto') {
+        modeSpecificInstruction = `
+OPERATIONAL MODE: [AUTO MODE: Plan -> Implement -> Multi-Perspective Audit]
+- Phase 1 (Plan): Dispatch \`researcher\` if needed, then write a concise technical design to \`plan.md\`.
+- Phase 2 (Act): Implement the complete HTML5 Canvas game in \`index.html\`.
+- Phase 3 (Audit): Call \`dispatch_subagent('code-reviewer', gameCode)\` to thoroughly audit the code.
+- Phase 4 (Refine): If any warnings or issues were found, use \`edit_file\` to fix them, then call \`complete_task\`.
+        `.trim();
+      } else {
+        modeSpecificInstruction = `
+OPERATIONAL MODE: [ACT MODE]
+- Implement the complete HTML5 Canvas game in \`index.html\` using \`write_file\`.
+- You can dispatch \`researcher\` for technical questions, or \`code-reviewer\` to audit code before finalizing.
+- When verified and fully playable, call \`complete_task\`.
+        `.trim();
+      }
+
       const systemInstruction = `
 You are an autonomous elite creative technologist and game engineer powered by Melonpan Core.
 You operate in a strict ReAct (Reasoning + Acting) loop.
@@ -58,13 +110,10 @@ You operate in a strict ReAct (Reasoning + Acting) loop.
 YOUR WORKSPACE TOOLS:
 1. write_file(path, content): Create or overwrite a file in the virtual filesystem.
 2. edit_file(path, search, replace): Modify an existing file with exact search/replace.
-3. complete_task(summary): Declare that the implementation is verified, fully playable, and complete.
+3. dispatch_subagent(agent_type, task_prompt): Delegate research or code review to a clean-room subagent ('researcher' or 'code-reviewer').
+4. complete_task(summary): Declare that the implementation is verified, fully playable, and complete.
 
-REACT OPERATIONAL WORKFLOW:
-1. [Thought]: First, reason about the game architecture, components, HUD overlay, and controls.
-2. [Action]: Call \`write_file\` to create \`index.html\` containing the complete, standalone HTML5 Canvas game.
-3. [Action]: If any styling or visual tweaks are needed, call \`edit_file\`.
-4. [Action]: When satisfied, call \`complete_task\` with a clear summary.
+${modeSpecificInstruction}
 
 ==================================================
 ACTIVE SKILL SPECIFICATION: [${skill.name}]
@@ -132,6 +181,18 @@ ${skill.instruction}
                 timestamp: Date.now(),
               };
 
+              // plan.md が書き出された場合は PLAN_CREATED を送出
+              if (pathArg === 'plan.md' || pathArg.endsWith('/plan.md')) {
+                yield {
+                  type: 'PLAN_CREATED',
+                  payload: {
+                    plan: contentArg,
+                    path: pathArg,
+                  },
+                  timestamp: Date.now(),
+                };
+              }
+
               const observation = `Successfully wrote ${contentArg.length} characters to "${pathArg}".`;
               yield {
                 type: 'TOOL_RESULT',
@@ -191,6 +252,54 @@ ${skill.instruction}
                   id: call.id,
                 },
               });
+            } else if (call.name === 'dispatch_subagent') {
+              const agentType = String(call.args?.agent_type || 'researcher');
+              const taskPrompt = String(call.args?.task_prompt || '');
+              const subStartTime = Date.now();
+
+              yield {
+                type: 'SUBAGENT_DISPATCHED',
+                payload: {
+                  agentType,
+                  taskPrompt,
+                  callId: call.id,
+                },
+                timestamp: Date.now(),
+              };
+
+              // Clean-room isolation 実行
+              const subResult = await this.subagentRunner.run(agentType, taskPrompt);
+              const durationMs = Date.now() - subStartTime;
+
+              yield {
+                type: 'SUBAGENT_COMPLETED',
+                payload: {
+                  agentType,
+                  result: subResult,
+                  durationMs,
+                  callId: call.id,
+                },
+                timestamp: Date.now(),
+              };
+
+              const observation = `[Clean-Room Sub-agent: ${agentType} Report]\n${subResult}`;
+              yield {
+                type: 'TOOL_RESULT',
+                payload: {
+                  name: 'dispatch_subagent',
+                  result: observation,
+                  callId: call.id,
+                },
+                timestamp: Date.now(),
+              };
+
+              functionResponses.push({
+                functionResponse: {
+                  name: 'dispatch_subagent',
+                  response: { output: observation },
+                  id: call.id,
+                },
+              });
             } else if (call.name === 'complete_task') {
               isComplete = true;
               completionSummary = String(
@@ -216,7 +325,7 @@ ${skill.instruction}
                 },
               });
             } else {
-              const observation = `Unknown tool "${call.name}". Please use write_file, edit_file, or complete_task.`;
+              const observation = `Unknown tool "${call.name}". Please use write_file, edit_file, dispatch_subagent, or complete_task.`;
               yield {
                 type: 'TOOL_RESULT',
                 payload: {
@@ -257,7 +366,7 @@ ${skill.instruction}
         } else {
           // ツール呼び出しがなかった場合はツール実行を促す
           currentMessage =
-            'Please proceed by calling write_file to create index.html, or complete_task if the game is already in the virtual filesystem.';
+            'Please proceed by calling write_file to create index.html, dispatch_subagent to review, or complete_task if finished.';
         }
       }
 
@@ -285,7 +394,7 @@ ${skill.instruction}
   }
 
   /**
-   * オフライン / テスト用決定論的 ReAct シミュレーション
+   * オフライン / テスト用決定論的 ReAct シミュレーション (Plan Mode & Sub-agents 対応)
    */
   private async *executeSimulation(
     prompt: string,
@@ -293,16 +402,232 @@ ${skill.instruction}
     vfs: VirtualFS,
     startTime: number
   ): AsyncGenerator<AgentEvent, void, unknown> {
-    // Turn 1: Thought
+    // ------------------------------------------------------------------
+    // Case A: Plan Mode (計画書作成のみを行い停止)
+    // ------------------------------------------------------------------
+    if (this.mode === 'plan') {
+      yield {
+        type: 'THOUGHT',
+        payload: {
+          thought: `[Plan Mode] Entering planning phase for "${prompt}". Dispatching "researcher" sub-agent for physics and visual architecture recommendations.`,
+        },
+        timestamp: Date.now(),
+      };
+
+      // 1. Dispatch researcher
+      yield {
+        type: 'TOOL_CALL',
+        payload: {
+          name: 'dispatch_subagent',
+          args: {
+            agent_type: 'researcher',
+            task_prompt: `Investigate physics and HUD layout for "${prompt}".`,
+          },
+          callId: 'sim-sub-1',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'SUBAGENT_DISPATCHED',
+        payload: {
+          agentType: 'researcher',
+          taskPrompt: `Investigate physics and HUD layout for "${prompt}".`,
+          callId: 'sim-sub-1',
+        },
+        timestamp: Date.now(),
+      };
+
+      const researchReport = await this.subagentRunner.run('researcher', prompt);
+
+      yield {
+        type: 'SUBAGENT_COMPLETED',
+        payload: {
+          agentType: 'researcher',
+          result: researchReport,
+          durationMs: 5,
+          callId: 'sim-sub-1',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'TOOL_RESULT',
+        payload: {
+          name: 'dispatch_subagent',
+          result: `[Clean-Room Sub-agent: researcher Report]\n${researchReport}`,
+          callId: 'sim-sub-1',
+        },
+        timestamp: Date.now(),
+      };
+
+      // 2. Write plan.md
+      const planContent = [
+        `# Implementation Plan: ${prompt}`,
+        '',
+        '## 1. Architecture & Components',
+        '- Canvas: 440x680 responsive cyber-neon layout.',
+        '- HUD: Glassmorphism overlay bar with Orbitron typography.',
+        '- Audio: Synthesized Web Audio API bleeps.',
+        '',
+        '## 2. Research Findings',
+        researchReport,
+        '',
+        '## 3. Milestones',
+        '- [ ] Setup canvas container and glassmorphic HUD bar.',
+        '- [ ] Implement player movement and dual keyboard/touch controls.',
+        '- [ ] Implement game loop and particle explosion engine.',
+      ].join('\n');
+
+      yield {
+        type: 'THOUGHT',
+        payload: {
+          thought: 'Drafting structured technical plan in "plan.md" based on research findings.',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'TOOL_CALL',
+        payload: {
+          name: 'write_file',
+          args: { path: 'plan.md', content: planContent },
+          callId: 'sim-plan-write',
+        },
+        timestamp: Date.now(),
+      };
+
+      vfs.writeFile('plan.md', planContent);
+
+      yield {
+        type: 'FILE_CHANGED',
+        payload: { path: 'plan.md', action: 'write', size: planContent.length },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'PLAN_CREATED',
+        payload: { plan: planContent, path: 'plan.md' },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'TOOL_RESULT',
+        payload: {
+          name: 'write_file',
+          result: `Successfully wrote plan.md.`,
+          callId: 'sim-plan-write',
+        },
+        timestamp: Date.now(),
+      };
+
+      // 3. Complete Task
+      const planSummary = 'Plan Mode finalized. Technical design generated in plan.md.';
+      yield {
+        type: 'TOOL_CALL',
+        payload: {
+          name: 'complete_task',
+          args: { summary: planSummary },
+          callId: 'sim-plan-complete',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'COMPLETE',
+        payload: {
+          summary: planSummary,
+          files: vfs.getFiles(),
+          turns: 2,
+          durationMs: Date.now() - startTime,
+        },
+        timestamp: Date.now(),
+      };
+      return;
+    }
+
+    // ------------------------------------------------------------------
+    // Case B & C: Auto Mode or Act Mode with Sub-agents
+    // ------------------------------------------------------------------
+    let turnsCount = 0;
+
+    // Auto Mode: Phase 1 Researcher & Plan
+    if (this.mode === 'auto') {
+      turnsCount++;
+      yield {
+        type: 'THOUGHT',
+        payload: {
+          thought: `[Auto Mode: Phase 1] Dispatching "researcher" sub-agent to investigate optimal mechanics and visual constraints.`,
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'TOOL_CALL',
+        payload: {
+          name: 'dispatch_subagent',
+          args: {
+            agent_type: 'researcher',
+            task_prompt: `Research mechanics and visual HUD for "${prompt}".`,
+          },
+          callId: 'sim-sub-res',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'SUBAGENT_DISPATCHED',
+        payload: {
+          agentType: 'researcher',
+          taskPrompt: `Research mechanics and visual HUD for "${prompt}".`,
+          callId: 'sim-sub-res',
+        },
+        timestamp: Date.now(),
+      };
+
+      const resReport = await this.subagentRunner.run('researcher', prompt);
+
+      yield {
+        type: 'SUBAGENT_COMPLETED',
+        payload: {
+          agentType: 'researcher',
+          result: resReport,
+          durationMs: 4,
+          callId: 'sim-sub-res',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'TOOL_RESULT',
+        payload: {
+          name: 'dispatch_subagent',
+          result: `[Clean-Room Sub-agent: researcher Report]\n${resReport}`,
+          callId: 'sim-sub-res',
+        },
+        timestamp: Date.now(),
+      };
+
+      // Write plan.md
+      const autoPlan = `# Plan: ${prompt}\n\n${resReport}\n\n- Implementation file: index.html`;
+      vfs.writeFile('plan.md', autoPlan);
+      yield {
+        type: 'PLAN_CREATED',
+        payload: { plan: autoPlan, path: 'plan.md' },
+        timestamp: Date.now(),
+      };
+    }
+
+    // Phase 2: Act (Write index.html)
+    turnsCount++;
     yield {
       type: 'THOUGHT',
       payload: {
-        thought: `[ReAct] Analyzing prompt "${prompt}" with skill [${skill.name}]. Planning a cyber-neon HTML5 Canvas arcade game with Orbitron typography, glassmorphism HUD overlay, particles, and responsive touch controls.`,
+        thought: `[ReAct: Implementation] Writing complete cyber-neon HTML5 Canvas arcade game to "index.html" with Orbitron typography, glassmorphism HUD, particle engine, and touch/keyboard controls.`,
       },
       timestamp: Date.now(),
     };
 
-    // Turn 1: Tool Call (write_file)
     const simulatedHtml = `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -507,7 +832,7 @@ ${skill.instruction}
       payload: {
         name: 'write_file',
         args: { path: 'index.html', content: simulatedHtml },
-        callId: 'sim-call-1',
+        callId: 'sim-call-write',
       },
       timestamp: Date.now(),
     };
@@ -529,30 +854,87 @@ ${skill.instruction}
       payload: {
         name: 'write_file',
         result: `Successfully wrote ${simulatedHtml.length} characters to "index.html".`,
-        callId: 'sim-call-1',
+        callId: 'sim-call-write',
       },
       timestamp: Date.now(),
     };
 
-    // Turn 2: Thought & Complete
+    // Phase 3: Code Review (Sub-agent)
+    turnsCount++;
+    yield {
+      type: 'THOUGHT',
+      payload: {
+        thought: `[ReAct: Multi-Perspective Audit] Dispatching "code-reviewer" sub-agent to audit performance, security, and UI/UX polish.`,
+      },
+      timestamp: Date.now(),
+    };
+
+    yield {
+      type: 'TOOL_CALL',
+      payload: {
+        name: 'dispatch_subagent',
+        args: {
+          agent_type: 'code-reviewer',
+          task_prompt: `Audit "index.html" (${simulatedHtml.length} chars) for performance, security, and neon visual polish.`,
+        },
+        callId: 'sim-sub-review',
+      },
+      timestamp: Date.now(),
+    };
+
+    yield {
+      type: 'SUBAGENT_DISPATCHED',
+      payload: {
+        agentType: 'code-reviewer',
+        taskPrompt: `Audit "index.html" (${simulatedHtml.length} chars) for performance, security, and neon visual polish.`,
+        callId: 'sim-sub-review',
+      },
+      timestamp: Date.now(),
+    };
+
+    const reviewReport = await this.subagentRunner.run('code-reviewer', simulatedHtml);
+
+    yield {
+      type: 'SUBAGENT_COMPLETED',
+      payload: {
+        agentType: 'code-reviewer',
+        result: reviewReport,
+        durationMs: 6,
+        callId: 'sim-sub-review',
+      },
+      timestamp: Date.now(),
+    };
+
+    yield {
+      type: 'TOOL_RESULT',
+      payload: {
+        name: 'dispatch_subagent',
+        result: `[Clean-Room Sub-agent: code-reviewer Report]\n${reviewReport}`,
+        callId: 'sim-sub-review',
+      },
+      timestamp: Date.now(),
+    };
+
+    // Phase 4: Complete
+    turnsCount++;
     yield {
       type: 'THOUGHT',
       payload: {
         thought:
-          '[ReAct] index.html created with glassmorphism HUD, neon palette, particle engine, and dual controls. Verifications passed. Finalizing task.',
+          'Code review passed with APPROVED verdict. Verification confirmed. Finalizing task.',
       },
       timestamp: Date.now(),
     };
 
     const summary =
-      'Implemented full standalone cyber-neon HTML5 Canvas arcade game with glassmorphic overlay HUD, Orbitron typography, particle explosion system, and responsive touch/keyboard controls.';
+      'Implemented full standalone cyber-neon HTML5 Canvas arcade game with glassmorphic overlay HUD, Orbitron typography, particle explosion system, and responsive touch/keyboard controls. Validated by clean-room code reviewer.';
 
     yield {
       type: 'TOOL_CALL',
       payload: {
         name: 'complete_task',
         args: { summary },
-        callId: 'sim-call-2',
+        callId: 'sim-call-complete',
       },
       timestamp: Date.now(),
     };
@@ -562,7 +944,7 @@ ${skill.instruction}
       payload: {
         name: 'complete_task',
         result: 'Task completion confirmed.',
-        callId: 'sim-call-2',
+        callId: 'sim-call-complete',
       },
       timestamp: Date.now(),
     };
@@ -572,7 +954,7 @@ ${skill.instruction}
       payload: {
         summary,
         files: vfs.getFiles(),
-        turns: 2,
+        turns: turnsCount,
         durationMs: Date.now() - startTime,
       },
       timestamp: Date.now(),

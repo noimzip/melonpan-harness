@@ -26,6 +26,8 @@ export class MelonpanCore {
       model: options.model ?? 'gemini-3.8-flash',
       maxTurns: options.maxTurns,
       simulate: options.simulate,
+      mode: options.mode,
+      agentsDir: options.agentsDir,
     });
   }
 
@@ -107,4 +109,5 @@ export * from './types.js';
 export * from './skills/index.js';
 export * from './vfs/index.js';
 export * from './tools/index.js';
+export * from './subagents/index.js';
 export * from './react-agent.js';

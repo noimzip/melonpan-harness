@@ -40,14 +40,18 @@ export interface LoadedSkill extends SkillMetadata {
 // ----------------------------------------------------
 
 export type AgentEventType =
-  | 'SKILL_INDEXED' // 起動時の全スキルメタデータ軽量インデックス完了
-  | 'SKILL_LOADED'  // 該当スキルの本文遅延ロード完了 (Progressive Disclosure)
-  | 'THOUGHT'       // エージェントの思考・推論ステップ (Thought)
-  | 'TOOL_CALL'     // ツール実行要求 (Action)
-  | 'TOOL_RESULT'   // ツール実行結果 (Observation)
-  | 'FILE_CHANGED'  // VFS上のファイル変更 (write, edit)
-  | 'COMPLETE'      // タスク完了宣言と全成果物VFS
-  | 'ERROR';        // エラー
+  | 'SKILL_INDEXED'       // 起動時の全スキルメタデータ軽量インデックス完了
+  | 'SKILL_LOADED'        // 該当スキルの本文遅延ロード完了 (Progressive Disclosure)
+  | 'PLAN_STARTED'        // 計画策定フェーズの開始 (Plan Mode)
+  | 'PLAN_CREATED'        // 計画書の生成完了 (VFS: plan.md)
+  | 'THOUGHT'             // エージェントの思考・推論ステップ (Thought)
+  | 'TOOL_CALL'           // ツール実行要求 (Action)
+  | 'SUBAGENT_DISPATCHED' // サブエージェントへの委譲開始 (Clean-Room Isolation)
+  | 'SUBAGENT_COMPLETED'  // サブエージェントの処理完了と報告受領
+  | 'TOOL_RESULT'         // ツール実行結果 (Observation)
+  | 'FILE_CHANGED'        // VFS上のファイル変更 (write, edit)
+  | 'COMPLETE'            // タスク完了宣言と全成果物VFS
+  | 'ERROR';              // エラー
 
 export interface SkillIndexedPayload {
   skills: Array<{ name: string; description: string; path: string }>;
@@ -61,6 +65,16 @@ export interface SkillLoadedPayload {
   instructionPreview: string;
 }
 
+export interface PlanStartedPayload {
+  mode: 'plan' | 'auto';
+  prompt: string;
+}
+
+export interface PlanCreatedPayload {
+  plan: string;
+  path: string;
+}
+
 export interface ThoughtPayload {
   thought: string;
 }
@@ -68,6 +82,19 @@ export interface ThoughtPayload {
 export interface ToolCallPayload {
   name: string;
   args: Record<string, any>;
+  callId?: string;
+}
+
+export interface SubagentDispatchedPayload {
+  agentType: 'researcher' | 'code-reviewer' | string;
+  taskPrompt: string;
+  callId?: string;
+}
+
+export interface SubagentCompletedPayload {
+  agentType: 'researcher' | 'code-reviewer' | string;
+  result: string;
+  durationMs: number;
   callId?: string;
 }
 
@@ -94,7 +121,7 @@ export interface CompletePayload {
 
 export interface ErrorPayload {
   error: Error | string;
-  phase: 'indexing' | 'resolution' | 'react_loop' | 'execution';
+  phase: 'indexing' | 'resolution' | 'react_loop' | 'subagent' | 'execution';
 }
 
 export interface AgentEvent<T = any> {
@@ -105,8 +132,16 @@ export interface AgentEvent<T = any> {
 
 export type SkillIndexedEvent = AgentEvent<SkillIndexedPayload> & { type: 'SKILL_INDEXED' };
 export type SkillLoadedEvent = AgentEvent<SkillLoadedPayload> & { type: 'SKILL_LOADED' };
+export type PlanStartedEvent = AgentEvent<PlanStartedPayload> & { type: 'PLAN_STARTED' };
+export type PlanCreatedEvent = AgentEvent<PlanCreatedPayload> & { type: 'PLAN_CREATED' };
 export type ThoughtEvent = AgentEvent<ThoughtPayload> & { type: 'THOUGHT' };
 export type ToolCallEvent = AgentEvent<ToolCallPayload> & { type: 'TOOL_CALL' };
+export type SubagentDispatchedEvent = AgentEvent<SubagentDispatchedPayload> & {
+  type: 'SUBAGENT_DISPATCHED';
+};
+export type SubagentCompletedEvent = AgentEvent<SubagentCompletedPayload> & {
+  type: 'SUBAGENT_COMPLETED';
+};
 export type ToolResultEvent = AgentEvent<ToolResultPayload> & { type: 'TOOL_RESULT' };
 export type FileChangedEvent = AgentEvent<FileChangedPayload> & { type: 'FILE_CHANGED' };
 export type CompleteEvent = AgentEvent<CompletePayload> & { type: 'COMPLETE' };
@@ -115,8 +150,12 @@ export type ErrorEvent = AgentEvent<ErrorPayload> & { type: 'ERROR' };
 export type MelonpanEvent =
   | SkillIndexedEvent
   | SkillLoadedEvent
+  | PlanStartedEvent
+  | PlanCreatedEvent
   | ThoughtEvent
   | ToolCallEvent
+  | SubagentDispatchedEvent
+  | SubagentCompletedEvent
   | ToolResultEvent
   | FileChangedEvent
   | CompleteEvent
@@ -141,6 +180,11 @@ export interface CompleteTaskArgs {
   summary: string;
 }
 
+export interface DispatchSubagentArgs {
+  agent_type: 'researcher' | 'code-reviewer' | string;
+  task_prompt: string;
+}
+
 // ----------------------------------------------------
 // MelonpanCore Configuration Options
 // ----------------------------------------------------
@@ -149,6 +193,8 @@ export interface MelonpanCoreOptions {
   apiKey?: string;
   model?: string; // デフォルト: 'gemini-3.8-flash'
   skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ
+  agentsDir?: string; // デフォルト: パッケージ内の agents/ ディレクトリ
   maxTurns?: number; // デフォルト: 10
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
+  mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
 }
