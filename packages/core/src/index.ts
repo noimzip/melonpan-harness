@@ -24,6 +24,7 @@ export class MelonpanCore {
     this.agent = new ReactAgent({
       apiKey: options.apiKey,
       model: options.model ?? 'gemini-3.8-flash',
+      thinkingLevel: options.thinkingLevel ?? 'high',
       maxTurns: options.maxTurns,
       simulate: options.simulate,
       mode: options.mode,

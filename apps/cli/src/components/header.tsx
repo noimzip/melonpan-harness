@@ -6,6 +6,7 @@ export interface HeaderProps {
   status: 'idle' | 'running' | 'confirming' | 'completed' | 'error';
   mode: 'plan' | 'act' | 'auto';
   model?: string;
+  thinkingLevel?: string;
   turns?: number;
   maxTurns?: number;
 }
@@ -14,6 +15,7 @@ export const Header: React.FC<HeaderProps> = ({
   status,
   mode,
   model = 'gemini-3.8-flash',
+  thinkingLevel = 'high',
   turns = 0,
   maxTurns = 12,
 }) => {
@@ -69,6 +71,10 @@ export const Header: React.FC<HeaderProps> = ({
           <Text color="gray">Model: </Text>
           <Text color="green" bold>
             {model}
+          </Text>
+          <Text color="gray">  |  Effort: </Text>
+          <Text color="magenta" bold>
+            {thinkingLevel}
           </Text>
         </Box>
         <Box>

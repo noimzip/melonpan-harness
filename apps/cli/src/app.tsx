@@ -1,23 +1,78 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
-import { MelonpanCore, AgentEvent, VirtualFS } from '@melonpan/core';
+import {
+  MelonpanCore,
+  AgentEvent,
+  VirtualFS,
+  AVAILABLE_MODELS,
+  THINKING_LEVELS,
+} from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
 import { PlanViewer } from './components/plan-viewer.js';
 import { InputBar } from './components/input-bar.js';
+import { ModalPicker, PickerItem } from './components/modal-picker.js';
 
 export interface AppProps {
   initialPrompt?: string;
   initialMode?: 'auto' | 'plan' | 'act';
   model?: string;
+  initialEffort?: string;
   simulate?: boolean;
   maxTurns?: number;
 }
 
+const MODEL_ITEMS: PickerItem[] = [
+  {
+    id: 'gemma-4-31b-it',
+    label: 'gemma-4-31b-it',
+    description: 'Open weights 31B instruction-tuned model',
+  },
+  {
+    id: 'gemini-4-argon',
+    label: 'gemini-4-argon',
+    description: 'Next-generation frontier reasoning model',
+  },
+  {
+    id: 'gemini-3.8-flash',
+    label: 'gemini-3.8-flash',
+    description: 'Flagship high-speed multimodality & reasoning (default)',
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    label: 'gemini-3.5-flash-lite',
+    description: 'Ultra-lightweight & fast response model',
+  },
+];
+
+const EFFORT_ITEMS: PickerItem[] = [
+  {
+    id: 'minimal',
+    label: 'minimal',
+    description: 'Minimal thinking tokens (fastest execution)',
+  },
+  {
+    id: 'low',
+    label: 'low',
+    description: 'Low reasoning effort (concise thoughts)',
+  },
+  {
+    id: 'medium',
+    label: 'medium',
+    description: 'Medium reasoning effort (balanced exploration)',
+  },
+  {
+    id: 'high',
+    label: 'high',
+    description: 'High reasoning effort (deep architectural reasoning, default)',
+  },
+];
+
 export const App: React.FC<AppProps> = ({
   initialPrompt,
   initialMode = 'auto',
-  model = 'gemini-3.8-flash',
+  model: defaultModel = 'gemini-3.8-flash',
+  initialEffort = 'high',
   simulate,
   maxTurns = 12,
 }) => {
@@ -25,6 +80,12 @@ export const App: React.FC<AppProps> = ({
     'idle' | 'running' | 'confirming' | 'completed' | 'error'
   >('idle');
   const [mode, setMode] = useState<'auto' | 'plan' | 'act'>(initialMode);
+  const [model, setModel] = useState<string>(defaultModel);
+  const [thinkingLevel, setThinkingLevel] = useState<string>(initialEffort);
+  const [activePicker, setActivePicker] = useState<'none' | 'model' | 'effort'>(
+    'none'
+  );
+
   const [inputPrompt, setInputPrompt] = useState<string>('');
   const [activePrompt, setActivePrompt] = useState<string>('');
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -55,6 +116,7 @@ export const App: React.FC<AppProps> = ({
     try {
       const core = new MelonpanCore({
         model,
+        thinkingLevel,
         mode: currentRunMode,
         simulate,
         maxTurns,
@@ -150,11 +212,72 @@ export const App: React.FC<AppProps> = ({
     }
   };
 
-  // Submit prompt from InputBar
+  // Submit prompt or handle slash commands (/model, /effort)
   const handleSubmit = (submittedText: string) => {
     const trimmed = submittedText.trim();
     if (!trimmed || isRunningRef.current) return;
 
+    // Handle /model command
+    if (trimmed === '/model' || trimmed.startsWith('/model ')) {
+      setInputPrompt('');
+      const arg = trimmed.slice('/model'.length).trim();
+      if (!arg) {
+        setActivePicker('model');
+        return;
+      }
+
+      const matched = AVAILABLE_MODELS.find(
+        (m) => m.toLowerCase() === arg.toLowerCase()
+      );
+      if (matched) {
+        setModel(matched);
+        setCurrentActivity(`Model switched to ${matched}`);
+        setEvents((prev) => [
+          ...prev,
+          {
+            type: 'THOUGHT',
+            payload: { thought: `Switched active model to: ${matched}` },
+            timestamp: Date.now(),
+          },
+        ]);
+      } else {
+        setActivePicker('model');
+      }
+      return;
+    }
+
+    // Handle /effort command
+    if (trimmed === '/effort' || trimmed.startsWith('/effort ')) {
+      setInputPrompt('');
+      const arg = trimmed.slice('/effort'.length).trim();
+      if (!arg) {
+        setActivePicker('effort');
+        return;
+      }
+
+      const matched = THINKING_LEVELS.find(
+        (l) => l.toLowerCase() === arg.toLowerCase()
+      );
+      if (matched) {
+        setThinkingLevel(matched);
+        setCurrentActivity(`Thinking level (effort) switched to ${matched}`);
+        setEvents((prev) => [
+          ...prev,
+          {
+            type: 'THOUGHT',
+            payload: {
+              thought: `Switched thinking level (effort) to: ${matched}`,
+            },
+            timestamp: Date.now(),
+          },
+        ]);
+      } else {
+        setActivePicker('effort');
+      }
+      return;
+    }
+
+    // Standard task prompt execution
     setInputPrompt('');
     setEvents([]);
     setPlanContent('');
@@ -170,7 +293,6 @@ export const App: React.FC<AppProps> = ({
     if (approved) {
       setIsPlanConfirmed(true);
       setMode('act');
-      // Continue execution with the existing VFS containing plan.md
       executeAgent(
         `Implement game according to plan.md: ${activePrompt}`,
         'act',
@@ -199,16 +321,66 @@ export const App: React.FC<AppProps> = ({
 
   return (
     <Box flexDirection="column" padding={1} width="100%">
-      {/* 1. Header with Mode, Model, Status */}
+      {/* 1. Header with Mode, Model, Thinking Level (Effort), Status */}
       <Header
         status={status}
         mode={mode}
         model={model}
+        thinkingLevel={thinkingLevel}
         turns={turns}
         maxTurns={maxTurns}
       />
 
-      {/* 2. Plan Viewer (Visible if plan.md exists or created) */}
+      {/* 2. Modal Picker (Active when /model or /effort is opened) */}
+      {activePicker === 'model' && (
+        <ModalPicker
+          title="Select Active Model (/model)"
+          items={MODEL_ITEMS}
+          selectedId={model}
+          onSelect={(selectedModel) => {
+            setModel(selectedModel);
+            setActivePicker('none');
+            setCurrentActivity(`Model switched to ${selectedModel}`);
+            setEvents((prev) => [
+              ...prev,
+              {
+                type: 'THOUGHT',
+                payload: { thought: `Switched active model to: ${selectedModel}` },
+                timestamp: Date.now(),
+              },
+            ]);
+          }}
+          onCancel={() => setActivePicker('none')}
+        />
+      )}
+
+      {activePicker === 'effort' && (
+        <ModalPicker
+          title="Select Thinking Level (/effort)"
+          items={EFFORT_ITEMS}
+          selectedId={thinkingLevel}
+          onSelect={(selectedEffort) => {
+            setThinkingLevel(selectedEffort);
+            setActivePicker('none');
+            setCurrentActivity(
+              `Thinking level (effort) switched to ${selectedEffort}`
+            );
+            setEvents((prev) => [
+              ...prev,
+              {
+                type: 'THOUGHT',
+                payload: {
+                  thought: `Switched thinking level (effort) to: ${selectedEffort}`,
+                },
+                timestamp: Date.now(),
+              },
+            ]);
+          }}
+          onCancel={() => setActivePicker('none')}
+        />
+      )}
+
+      {/* 3. Plan Viewer (Visible if plan.md exists or created) */}
       {planContent ? (
         <PlanViewer
           planContent={planContent}
@@ -216,7 +388,7 @@ export const App: React.FC<AppProps> = ({
         />
       ) : null}
 
-      {/* 3. Event List & Activity Stream */}
+      {/* 4. Event List & Activity Stream */}
       <EventList
         events={events}
         isRunning={status === 'running'}
@@ -224,17 +396,18 @@ export const App: React.FC<AppProps> = ({
         maxDisplay={8}
       />
 
-      {/* 4. Input & Control Bar */}
+      {/* 5. Input & Control Bar */}
       <InputBar
         status={status}
         value={inputPrompt}
+        isPickerActive={activePicker !== 'none'}
         onChange={setInputPrompt}
         onSubmit={handleSubmit}
         onConfirmPlan={handleConfirmPlan}
         onReset={handleReset}
       />
 
-      {/* 5. Virtual Files Summary (When completed) */}
+      {/* 6. Virtual Files Summary (When completed) */}
       {status === 'completed' && Object.keys(virtualFiles).length > 0 && (
         <Box
           marginTop={1}

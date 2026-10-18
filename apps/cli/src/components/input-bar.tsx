@@ -5,6 +5,7 @@ import TextInput from 'ink-text-input';
 export interface InputBarProps {
   status: 'idle' | 'running' | 'confirming' | 'completed' | 'error';
   value: string;
+  isPickerActive?: boolean;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onConfirmPlan: (approved: boolean) => void;
@@ -14,6 +15,7 @@ export interface InputBarProps {
 export const InputBar: React.FC<InputBarProps> = ({
   status,
   value,
+  isPickerActive = false,
   onChange,
   onSubmit,
   onConfirmPlan,
@@ -36,12 +38,23 @@ export const InputBar: React.FC<InputBarProps> = ({
         }
       }
     },
-    { isActive: Boolean(isRawModeSupported) && status !== 'idle' && status !== 'running' }
+    {
+      isActive:
+        Boolean(isRawModeSupported) &&
+        !isPickerActive &&
+        status !== 'idle' &&
+        status !== 'running',
+    }
   );
 
   // Non-TTY / Piped input fallback
   useEffect(() => {
-    if (isRawModeSupported || typeof process === 'undefined' || !process.stdin) {
+    if (
+      isRawModeSupported ||
+      isPickerActive ||
+      typeof process === 'undefined' ||
+      !process.stdin
+    ) {
       return;
     }
 
@@ -66,7 +79,21 @@ export const InputBar: React.FC<InputBarProps> = ({
     return () => {
       process.stdin.off('data', onData);
     };
-  }, [isRawModeSupported, status, onConfirmPlan, onSubmit, onReset]);
+  }, [isRawModeSupported, isPickerActive, status, onConfirmPlan, onSubmit, onReset]);
+
+  // Handle TextInput changes, immediately detecting pasted newlines
+  const handleTextChange = (newVal: string) => {
+    if (newVal.includes('\n') || newVal.includes('\r')) {
+      const lines = newVal.split(/[\r\n]+/);
+      const submitted = lines[0]?.trim();
+      if (submitted) {
+        onChange('');
+        onSubmit(submitted);
+        return;
+      }
+    }
+    onChange(newVal);
+  };
 
   return (
     <Box
@@ -91,11 +118,11 @@ export const InputBar: React.FC<InputBarProps> = ({
             </Text>
             {isRawModeSupported ? (
               <TextInput
-                focus={true}
+                focus={!isPickerActive}
                 value={value}
-                onChange={onChange}
+                onChange={handleTextChange}
                 onSubmit={onSubmit}
-                placeholder="Enter your prompt (e.g. 'Create a neon arcade game')..."
+                placeholder="Enter prompt or /model, /effort..."
               />
             ) : (
               <Text color="gray">
@@ -104,7 +131,9 @@ export const InputBar: React.FC<InputBarProps> = ({
             )}
           </Box>
           <Box marginTop={1}>
-            <Text color="gray">[Enter: Submit] [Ctrl+C: Quit]</Text>
+            <Text color="gray">
+              [Enter: Submit] [/model: Select Model] [/effort: Select Effort] [Ctrl+C: Quit]
+            </Text>
           </Box>
         </Box>
       )}

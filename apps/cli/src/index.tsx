@@ -7,6 +7,7 @@ import { App } from './app.js';
 const args = process.argv.slice(2);
 let initialMode: 'auto' | 'plan' | 'act' = 'auto';
 let model = 'gemini-3.8-flash';
+let initialEffort = 'high';
 let simulate: boolean | undefined = undefined;
 const promptWords: string[] = [];
 
@@ -25,6 +26,8 @@ for (let i = 0; i < args.length; i++) {
     }
   } else if (arg.startsWith('--model=')) {
     model = arg.split('=')[1];
+  } else if (arg.startsWith('--effort=') || arg.startsWith('--thinking=')) {
+    initialEffort = arg.split('=')[1].toLowerCase();
   } else if (arg === '--simulate') {
     simulate = true;
   } else if (arg === '--no-simulate') {
@@ -41,6 +44,7 @@ const { waitUntilExit } = render(
     initialPrompt={initialPrompt}
     initialMode={initialMode}
     model={model}
+    initialEffort={initialEffort}
     simulate={simulate}
   />
 );

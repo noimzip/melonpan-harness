@@ -186,12 +186,35 @@ export interface DispatchSubagentArgs {
 }
 
 // ----------------------------------------------------
+// Models & Thinking Levels
+// ----------------------------------------------------
+
+export const AVAILABLE_MODELS = [
+  'gemma-4-31b-it',
+  'gemini-4-argon',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+] as const;
+
+export type AvailableModel = (typeof AVAILABLE_MODELS)[number];
+
+export const THINKING_LEVELS = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+] as const;
+
+export type ThinkingLevelOption = (typeof THINKING_LEVELS)[number];
+
+// ----------------------------------------------------
 // MelonpanCore Configuration Options
 // ----------------------------------------------------
 
 export interface MelonpanCoreOptions {
   apiKey?: string;
-  model?: string; // デフォルト: 'gemini-3.8-flash'
+  model?: AvailableModel | string; // デフォルト: 'gemini-3.8-flash'
+  thinkingLevel?: ThinkingLevelOption | string; // デフォルト: 'high'
   skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ
   agentsDir?: string; // デフォルト: パッケージ内の agents/ ディレクトリ
   maxTurns?: number; // デフォルト: 10
@@ -199,3 +222,4 @@ export interface MelonpanCoreOptions {
   mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
   vfs?: any; // VirtualFS (再利用・事前ロード用)
 }
+

@@ -7,6 +7,7 @@ import { VirtualFS } from './vfs/virtual-fs.js';
 export interface ReactAgentOptions {
   apiKey?: string;
   model?: string;
+  thinkingLevel?: string;
   maxTurns?: number;
   simulate?: boolean;
   mode?: 'plan' | 'act' | 'auto';
@@ -21,6 +22,7 @@ export interface ReactAgentOptions {
 export class ReactAgent {
   private apiKey: string;
   private model: string;
+  private thinkingLevel: string;
   private maxTurns: number;
   private simulate: boolean;
   private mode: 'plan' | 'act' | 'auto';
@@ -33,6 +35,7 @@ export class ReactAgent {
         : '';
     this.apiKey = options.apiKey || envApiKey || '';
     this.model = options.model || 'gemini-3.8-flash';
+    this.thinkingLevel = options.thinkingLevel || 'high';
     this.maxTurns = options.maxTurns ?? 12;
     this.simulate = options.simulate ?? !this.apiKey;
     this.mode = options.mode || 'act';
@@ -121,12 +124,28 @@ ACTIVE SKILL SPECIFICATION: [${skill.name}]
 ${skill.instruction}
 `.trim();
 
+      const config: Record<string, any> = {
+        systemInstruction,
+        tools: MELONPAN_TOOLS,
+      };
+
+      // thinkingConfig による推論レベル（thinking level / effort）の設定
+      const thinkingLevelUpper = (this.thinkingLevel || 'high').toUpperCase();
+      const validLevels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
+      if (validLevels.includes(thinkingLevelUpper)) {
+        config.thinkingConfig = {
+          includeThoughts: true,
+          thinkingLevel: thinkingLevelUpper,
+        };
+      } else {
+        config.thinkingConfig = {
+          includeThoughts: true,
+        };
+      }
+
       const chat = ai.chats.create({
         model: this.model,
-        config: {
-          systemInstruction,
-          tools: MELONPAN_TOOLS,
-        },
+        config,
       });
 
       let turns = 0;
