@@ -197,4 +197,5 @@ export interface MelonpanCoreOptions {
   maxTurns?: number; // デフォルト: 10
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
   mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
+  vfs?: any; // VirtualFS (再利用・事前ロード用)
 }
