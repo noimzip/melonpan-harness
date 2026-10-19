@@ -112,11 +112,18 @@ export interface FileChangedPayload {
   diffSummary?: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface CompletePayload {
   summary: string;
   files: Record<string, string>;
   turns: number;
   durationMs: number;
+  usage?: TokenUsage;
 }
 
 export interface ErrorPayload {
@@ -221,5 +228,6 @@ export interface MelonpanCoreOptions {
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
   mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
   vfs?: any; // VirtualFS (再利用・事前ロード用)
+  skillManager?: any; // SkillManager (再利用・事前ロード用)
 }
 

@@ -4,6 +4,7 @@ import {
   MelonpanCore,
   AgentEvent,
   VirtualFS,
+  SkillManager,
   AVAILABLE_MODELS,
   THINKING_LEVELS,
 } from '@melonpan/core';
@@ -12,12 +13,15 @@ import { EventList } from './components/event-list.js';
 import { PlanViewer } from './components/plan-viewer.js';
 import { InputBar } from './components/input-bar.js';
 import { ModalPicker, PickerItem } from './components/modal-picker.js';
+import { CommandContext, SessionUsage } from './commands/types.js';
+import { commandRegistry } from './commands/registry.js';
 
 export interface AppProps {
   initialPrompt?: string;
   initialMode?: 'auto' | 'plan' | 'act';
   model?: string;
   initialEffort?: string;
+  initialApiKey?: string;
   outDir?: string;
   simulate?: boolean;
   maxTurns?: number;
@@ -74,6 +78,7 @@ export const App: React.FC<AppProps> = ({
   initialMode = 'auto',
   model: defaultModel = 'gemini-3.8-flash',
   initialEffort = 'high',
+  initialApiKey,
   outDir = process.cwd(),
   simulate,
   maxTurns = 12,
@@ -88,6 +93,14 @@ export const App: React.FC<AppProps> = ({
     'none'
   );
 
+  const initialKey =
+    initialApiKey ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY || '' : '');
+  const [apiKey, setApiKey] = useState<string>(initialKey);
+  const [isSimulate, setIsSimulate] = useState<boolean>(
+    simulate !== undefined ? simulate : !Boolean(initialKey)
+  );
+
   const [inputPrompt, setInputPrompt] = useState<string>('');
   const [activePrompt, setActivePrompt] = useState<string>('');
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -99,8 +112,21 @@ export const App: React.FC<AppProps> = ({
   const [turns, setTurns] = useState<number>(0);
   const [virtualFiles, setVirtualFiles] = useState<Record<string, string>>({});
 
-  const savedVfsRef = useRef<VirtualFS | null>(null);
+  // Cumulative token usage across the session
+  const [sessionUsage, setSessionUsage] = useState<SessionUsage>({
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+  });
+
+  const savedVfsRef = useRef<VirtualFS>(new VirtualFS());
+  const skillManagerRef = useRef<SkillManager>(new SkillManager());
   const isRunningRef = useRef<boolean>(false);
+
+  // Pre-load skills index on mount for early suggestions
+  useEffect(() => {
+    skillManagerRef.current.loadAllMetadata().catch(() => {});
+  }, []);
 
   // Run the core agent loop for a given prompt and mode
   const executeAgent = async (
@@ -117,12 +143,14 @@ export const App: React.FC<AppProps> = ({
 
     try {
       const core = new MelonpanCore({
+        apiKey: apiKey || undefined,
         model,
         thinkingLevel,
         mode: currentRunMode,
-        simulate,
+        simulate: isSimulate,
         maxTurns,
-        vfs: existingVfs ?? undefined,
+        vfs: existingVfs ?? savedVfsRef.current,
+        skillManager: skillManagerRef.current,
       });
 
       let turnCounter = 0;
@@ -182,6 +210,16 @@ export const App: React.FC<AppProps> = ({
             setVirtualFiles(event.payload.files);
             savedVfsRef.current = core.getVFS();
 
+            // Accumulate token usage if provided
+            if (event.payload.usage) {
+              setSessionUsage((prev) => ({
+                promptTokens: prev.promptTokens + event.payload.usage.promptTokens,
+                completionTokens:
+                  prev.completionTokens + event.payload.usage.completionTokens,
+                totalTokens: prev.totalTokens + event.payload.usage.totalTokens,
+              }));
+            }
+
             // 実ディスク（カレントディレクトリ）へ成果物を自動書き出し
             try {
               await core.getVFS().flushToDisk(outDir);
@@ -192,7 +230,9 @@ export const App: React.FC<AppProps> = ({
             if (currentRunMode === 'plan') {
               // Plan mode finished -> await user confirmation
               setStatus('confirming');
-              setCurrentActivity('Plan created and saved to disk. Waiting for confirmation...');
+              setCurrentActivity(
+                'Plan created and saved to disk. Waiting for confirmation...'
+              );
               isRunningRef.current = false;
               return;
             } else {
@@ -221,80 +261,80 @@ export const App: React.FC<AppProps> = ({
     }
   };
 
-  // Submit prompt or handle slash commands (/model, /effort)
-  const handleSubmit = (submittedText: string) => {
+  // Reset conversation and session state
+  const handleClearSession = () => {
+    savedVfsRef.current = new VirtualFS();
+    setEvents([]);
+    setPlanContent('');
+    setIsPlanConfirmed(undefined);
+    setTurns(0);
+    setVirtualFiles({});
+    setCurrentActivity('Ready');
+    setStatus('idle');
+  };
+
+  // Command execution context shared with slash command handlers
+  const commandContext: CommandContext = {
+    model,
+    setModel,
+    effort: thinkingLevel,
+    setEffort: setThinkingLevel,
+    mode,
+    setMode,
+    executePrompt: (promptText, overrideMode) => {
+      const runMode = overrideMode || mode;
+      setEvents([]);
+      setPlanContent('');
+      setIsPlanConfirmed(undefined);
+      setTurns(0);
+      setVirtualFiles({});
+      executeAgent(promptText, runMode, savedVfsRef.current);
+    },
+    clearSession: handleClearSession,
+    logActivity: (msg) => setCurrentActivity(msg),
+    logThought: (msg) => {
+      setEvents((prev) => [
+        ...prev,
+        {
+          type: 'THOUGHT',
+          payload: { thought: msg },
+          timestamp: Date.now(),
+        },
+      ]);
+    },
+    openPicker: (type) => setActivePicker(type),
+    vfs: savedVfsRef.current,
+    skillManager: skillManagerRef.current,
+    sessionUsage,
+    apiKey,
+    setApiKey,
+    isSimulate,
+    setSimulate: setIsSimulate,
+  };
+
+  // Submit prompt or handle slash commands
+  const handleSubmit = async (submittedText: string) => {
     const trimmed = submittedText.trim();
     if (!trimmed || isRunningRef.current) return;
 
-    // Handle /model command
-    if (trimmed === '/model' || trimmed.startsWith('/model ')) {
-      setInputPrompt('');
-      const arg = trimmed.slice('/model'.length).trim();
-      if (!arg) {
-        setActivePicker('model');
+    setInputPrompt('');
+
+    // Check if user submitted a slash command
+    if (trimmed.startsWith('/')) {
+      const handled = await commandRegistry.executeCommand(trimmed, commandContext);
+      if (handled) {
         return;
       }
-
-      const matched = AVAILABLE_MODELS.find(
-        (m) => m.toLowerCase() === arg.toLowerCase()
-      );
-      if (matched) {
-        setModel(matched);
-        setCurrentActivity(`Model switched to ${matched}`);
-        setEvents((prev) => [
-          ...prev,
-          {
-            type: 'THOUGHT',
-            payload: { thought: `Switched active model to: ${matched}` },
-            timestamp: Date.now(),
-          },
-        ]);
-      } else {
-        setActivePicker('model');
-      }
-      return;
-    }
-
-    // Handle /effort command
-    if (trimmed === '/effort' || trimmed.startsWith('/effort ')) {
-      setInputPrompt('');
-      const arg = trimmed.slice('/effort'.length).trim();
-      if (!arg) {
-        setActivePicker('effort');
-        return;
-      }
-
-      const matched = THINKING_LEVELS.find(
-        (l) => l.toLowerCase() === arg.toLowerCase()
-      );
-      if (matched) {
-        setThinkingLevel(matched);
-        setCurrentActivity(`Thinking level (effort) switched to ${matched}`);
-        setEvents((prev) => [
-          ...prev,
-          {
-            type: 'THOUGHT',
-            payload: {
-              thought: `Switched thinking level (effort) to: ${matched}`,
-            },
-            timestamp: Date.now(),
-          },
-        ]);
-      } else {
-        setActivePicker('effort');
-      }
-      return;
     }
 
     // Standard task prompt execution
-    setInputPrompt('');
     setEvents([]);
     setPlanContent('');
     setIsPlanConfirmed(undefined);
     setTurns(0);
     setVirtualFiles({});
 
-    executeAgent(trimmed, mode);
+    executeAgent(trimmed, mode, savedVfsRef.current);
   };
 
   // Handle [y/n] plan confirmation
@@ -336,11 +376,13 @@ export const App: React.FC<AppProps> = ({
         mode={mode}
         model={model}
         thinkingLevel={thinkingLevel}
+        hasApiKey={Boolean(apiKey)}
+        isSimulate={isSimulate}
         turns={turns}
         maxTurns={maxTurns}
       />
 
-      {/* 2. Modal Picker (Active when /model or /effort is opened) */}
+      {/* 2. Modal Picker (Active when /model or /effort is opened without args) */}
       {activePicker === 'model' && (
         <ModalPicker
           title="Select Active Model (/model)"
@@ -405,11 +447,12 @@ export const App: React.FC<AppProps> = ({
         maxDisplay={8}
       />
 
-      {/* 5. Input & Control Bar */}
+      {/* 5. Input & Control Bar with Autocomplete */}
       <InputBar
         status={status}
         value={inputPrompt}
         isPickerActive={activePicker !== 'none'}
+        commandContext={commandContext}
         onChange={setInputPrompt}
         onSubmit={handleSubmit}
         onConfirmPlan={handleConfirmPlan}

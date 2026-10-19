@@ -3,11 +3,17 @@ import React from 'react';
 import { render } from 'ink';
 import { App } from './app.js';
 
+// Load .env if present in current working directory
+try {
+  (process as any).loadEnvFile?.();
+} catch {}
+
 // Parse command line arguments
 const args = process.argv.slice(2);
 let initialMode: 'auto' | 'plan' | 'act' = 'auto';
 let model = 'gemini-3.8-flash';
 let initialEffort = 'high';
+let initialApiKey: string | undefined = undefined;
 let outDir = process.cwd();
 let simulate: boolean | undefined = undefined;
 const promptWords: string[] = [];
@@ -29,6 +35,11 @@ for (let i = 0; i < args.length; i++) {
     model = arg.split('=')[1];
   } else if (arg.startsWith('--effort=') || arg.startsWith('--thinking=')) {
     initialEffort = arg.split('=')[1].toLowerCase();
+  } else if (arg.startsWith('--key=') || arg.startsWith('--api-key=')) {
+    initialApiKey = arg.split('=')[1];
+  } else if (arg === '-k' || arg === '--key') {
+    initialApiKey = args[i + 1];
+    i++;
   } else if (arg.startsWith('--out-dir=') || arg.startsWith('--outDir=')) {
     outDir = arg.split('=')[1];
   } else if (arg === '--simulate') {
@@ -48,6 +59,7 @@ const { waitUntilExit } = render(
     initialMode={initialMode}
     model={model}
     initialEffort={initialEffort}
+    initialApiKey={initialApiKey}
     outDir={outDir}
     simulate={simulate}
   />

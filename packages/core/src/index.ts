@@ -19,7 +19,7 @@ export class MelonpanCore {
   private vfs: VirtualFS;
 
   constructor(options: MelonpanCoreOptions = {}) {
-    this.skillManager = new SkillManager({ skillsDir: options.skillsDir });
+    this.skillManager = options.skillManager ?? new SkillManager({ skillsDir: options.skillsDir });
     this.vfs = options.vfs ?? new VirtualFS();
     this.agent = new ReactAgent({
       apiKey: options.apiKey,
@@ -53,31 +53,30 @@ export class MelonpanCore {
 
     // 2. プロンプトに応じたスキルの動的解決と本文ロード (Progressive Disclosure)
     const skill = await this.skillManager.resolveAndLoad(prompt);
-    if (!skill) {
+    if (skill) {
       yield {
-        type: 'ERROR',
+        type: 'SKILL_LOADED',
         payload: {
-          error: new Error(`No matching skill found for input: "${prompt}"`),
-          phase: 'resolution',
+          name: skill.name,
+          description: skill.description,
+          filePath: skill.filePath,
+          instructionPreview:
+            skill.instruction.length > 150
+              ? skill.instruction.slice(0, 150) + '...'
+              : skill.instruction,
         },
         timestamp: Date.now(),
       };
-      return;
+    } else {
+      yield {
+        type: 'THOUGHT',
+        payload: {
+          thought:
+            'ℹ️ No matching or active skills found. Operating in General Autonomous Agent mode.',
+        },
+        timestamp: Date.now(),
+      };
     }
-
-    yield {
-      type: 'SKILL_LOADED',
-      payload: {
-        name: skill.name,
-        description: skill.description,
-        filePath: skill.filePath,
-        instructionPreview:
-          skill.instruction.length > 150
-            ? skill.instruction.slice(0, 150) + '...'
-            : skill.instruction,
-      },
-      timestamp: Date.now(),
-    };
 
     // 3. ReAct 自律ループの実行
     yield* this.agent.execute(prompt, skill, this.vfs);

@@ -21,6 +21,8 @@ export class SkillManager {
   private metadataIndex: Map<string, SkillMetadata> = new Map();
   // ブラウザ環境やテスト用に直接メモリ登録されたスキル
   private inMemorySkills: Map<string, { content: string; dirName: string }> = new Map();
+  // 無効化されたスキル一覧
+  private disabledSkills: Set<string> = new Set();
 
   constructor(options: SkillManagerOptions = {}) {
     if (options.skillsDir) {
@@ -104,6 +106,45 @@ export class SkillManager {
   }
 
   /**
+   * 指定したスキルを有効化する
+   */
+  enableSkill(name: string): boolean {
+    if (!this.metadataIndex.has(name)) {
+      return false;
+    }
+    this.disabledSkills.delete(name);
+    return true;
+  }
+
+  /**
+   * 指定したスキルを無効化する
+   */
+  disableSkill(name: string): boolean {
+    if (!this.metadataIndex.has(name)) {
+      return false;
+    }
+    this.disabledSkills.add(name);
+    return true;
+  }
+
+  /**
+   * 指定したスキルが有効か判定
+   */
+  isSkillEnabled(name: string): boolean {
+    return !this.disabledSkills.has(name);
+  }
+
+  /**
+   * 全スキルのステータス（有効/無効）を取得
+   */
+  getSkillsStatus(): Array<SkillMetadata & { enabled: boolean }> {
+    return Array.from(this.metadataIndex.values()).map((meta) => ({
+      ...meta,
+      enabled: !this.disabledSkills.has(meta.name),
+    }));
+  }
+
+  /**
    * ユーザー入力プロンプトを評価し、最適なスキルを決定した上でその指示本文 (Markdown) をオンデマンド取得する
    */
   async resolveAndLoad(userInput: string): Promise<LoadedSkill | undefined> {
@@ -114,8 +155,12 @@ export class SkillManager {
     const inputLower = userInput.toLowerCase();
     let matchedMeta: SkillMetadata | undefined;
 
-    // 1. 各スキルの description や name, keywords とのマッチング
+    // 1. 各スキルの description や name, keywords とのマッチング (無効化スキルはスキップ)
     for (const meta of this.metadataIndex.values()) {
+      if (this.disabledSkills.has(meta.name)) {
+        continue;
+      }
+
       if (meta.name === 'game-generator') {
         const gameKeywords = [
           'ゲーム',
@@ -148,11 +193,17 @@ export class SkillManager {
       }
     }
 
-    // 2. マッチしなかった場合はデフォルトスキルにフォールバック
-    if (!matchedMeta && this.metadataIndex.has(this.defaultSkillName)) {
+    // 2. マッチしなかった場合はデフォルトスキルにフォールバック (有効なもののみ)
+    if (
+      !matchedMeta &&
+      this.metadataIndex.has(this.defaultSkillName) &&
+      !this.disabledSkills.has(this.defaultSkillName)
+    ) {
       matchedMeta = this.metadataIndex.get(this.defaultSkillName);
-    } else if (!matchedMeta && this.metadataIndex.size > 0) {
-      matchedMeta = Array.from(this.metadataIndex.values())[0];
+    } else if (!matchedMeta) {
+      matchedMeta = Array.from(this.metadataIndex.values()).find(
+        (m) => !this.disabledSkills.has(m.name)
+      );
     }
 
     if (!matchedMeta) {

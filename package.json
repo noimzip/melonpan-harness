@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @melonpan/core run build && pnpm --filter @melonpan/cli run build",
-    "test": "pnpm --filter @melonpan/core run test",
+    "test": "pnpm -r run test",
     "test:cli": "tsx packages/core/examples/cli-test.ts",
     "demo": "tsx packages/core/examples/cli-subagent-test.ts --mode=auto",
     "demo:plan": "tsx packages/core/examples/cli-subagent-test.ts --mode=plan",

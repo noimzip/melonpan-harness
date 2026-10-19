@@ -53,7 +53,7 @@ export class ReactAgent {
    */
   async *execute(
     prompt: string,
-    skill: LoadedSkill,
+    skill: LoadedSkill | undefined,
     vfs: VirtualFS
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const startTime = Date.now();
@@ -106,6 +106,19 @@ OPERATIONAL MODE: [ACT MODE]
         `.trim();
       }
 
+      const activeSkillSection = skill
+        ? `
+==================================================
+ACTIVE SKILL SPECIFICATION: [${skill.name}]
+==================================================
+${skill.instruction}`.trim()
+        : `
+==================================================
+ACTIVE SKILL SPECIFICATION: [General Autonomous Agent]
+==================================================
+No specialized domain skill is active (all skills disabled or no specific match).
+Rely on your core software engineering, creative design, and problem-solving capabilities to inspect the request, generate solutions, and verify deliverables.`.trim();
+
       const systemInstruction = `
 You are an autonomous elite creative technologist and game engineer powered by Melonpan Core.
 You operate in a strict ReAct (Reasoning + Acting) loop.
@@ -118,10 +131,7 @@ YOUR WORKSPACE TOOLS:
 
 ${modeSpecificInstruction}
 
-==================================================
-ACTIVE SKILL SPECIFICATION: [${skill.name}]
-==================================================
-${skill.instruction}
+${activeSkillSection}
 `.trim();
 
       const config: Record<string, any> = {
@@ -150,6 +160,8 @@ ${skill.instruction}
 
       let turns = 0;
       let currentMessage: any = prompt;
+      let totalPromptTokens = 0;
+      let totalCompletionTokens = 0;
 
       while (turns < this.maxTurns) {
         turns++;
@@ -157,6 +169,13 @@ ${skill.instruction}
         const response = await chat.sendMessage({
           message: currentMessage,
         });
+
+        // トークン使用量の集計 (usageMetadata)
+        const usageMeta = (response as any).usageMetadata;
+        if (usageMeta) {
+          totalPromptTokens += usageMeta.promptTokenCount || 0;
+          totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
+        }
 
         // 思考 (Thought) の抽出と配信
         if (response.text && response.text.trim()) {
@@ -374,6 +393,11 @@ ${skill.instruction}
                 files: vfs.getFiles(),
                 turns,
                 durationMs: Date.now() - startTime,
+                usage: {
+                  promptTokens: totalPromptTokens,
+                  completionTokens: totalCompletionTokens,
+                  totalTokens: totalPromptTokens + totalCompletionTokens,
+                },
               },
               timestamp: Date.now(),
             };
@@ -397,6 +421,11 @@ ${skill.instruction}
           files: vfs.getFiles(),
           turns,
           durationMs: Date.now() - startTime,
+          usage: {
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            totalTokens: totalPromptTokens + totalCompletionTokens,
+          },
         },
         timestamp: Date.now(),
       };
@@ -417,7 +446,7 @@ ${skill.instruction}
    */
   private async *executeSimulation(
     prompt: string,
-    skill: LoadedSkill,
+    skill: LoadedSkill | undefined,
     vfs: VirtualFS,
     startTime: number
   ): AsyncGenerator<AgentEvent, void, unknown> {
@@ -559,6 +588,11 @@ ${skill.instruction}
           files: vfs.getFiles(),
           turns: 2,
           durationMs: Date.now() - startTime,
+          usage: {
+            promptTokens: 1250,
+            completionTokens: 450,
+            totalTokens: 1700,
+          },
         },
         timestamp: Date.now(),
       };
@@ -975,6 +1009,11 @@ ${skill.instruction}
         files: vfs.getFiles(),
         turns: turnsCount,
         durationMs: Date.now() - startTime,
+        usage: {
+          promptTokens: turnsCount * 1400,
+          completionTokens: turnsCount * 650,
+          totalTokens: turnsCount * 2050,
+        },
       },
       timestamp: Date.now(),
     };

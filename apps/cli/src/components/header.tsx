@@ -7,6 +7,8 @@ export interface HeaderProps {
   mode: 'plan' | 'act' | 'auto';
   model?: string;
   thinkingLevel?: string;
+  hasApiKey?: boolean;
+  isSimulate?: boolean;
   turns?: number;
   maxTurns?: number;
 }
@@ -16,9 +18,12 @@ export const Header: React.FC<HeaderProps> = ({
   mode,
   model = 'gemini-3.8-flash',
   thinkingLevel = 'high',
+  hasApiKey = false,
+  isSimulate = true,
   turns = 0,
   maxTurns = 12,
 }) => {
+  const isLive = hasApiKey && !isSimulate;
   const getStatusBadge = () => {
     switch (status) {
       case 'idle':
@@ -76,6 +81,16 @@ export const Header: React.FC<HeaderProps> = ({
           <Text color="magenta" bold>
             {thinkingLevel}
           </Text>
+          <Text color="gray">  |  API: </Text>
+          {isLive ? (
+            <Text color="green" bold>
+              🟢 Live
+            </Text>
+          ) : (
+            <Text color="yellow" bold>
+              🟡 Sim
+            </Text>
+          )}
         </Box>
         <Box>
           <Text color="gray">

@@ -1,11 +1,15 @@
-import React, { useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
 import TextInput from 'ink-text-input';
+import { CommandContext } from '../commands/types.js';
+import { commandRegistry } from '../commands/registry.js';
+import { CommandSuggest } from './command-suggest.js';
 
 export interface InputBarProps {
   status: 'idle' | 'running' | 'confirming' | 'completed' | 'error';
   value: string;
   isPickerActive?: boolean;
+  commandContext?: CommandContext;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onConfirmPlan: (approved: boolean) => void;
@@ -16,25 +20,74 @@ export const InputBar: React.FC<InputBarProps> = ({
   status,
   value,
   isPickerActive = false,
+  commandContext,
   onChange,
   onSubmit,
   onConfirmPlan,
   onReset,
 }) => {
   const { isRawModeSupported } = useStdin();
+  const [isDismissed, setIsDismissed] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Listen for single-key responses when in raw-mode supported TTY environments
+  // Compute autocomplete suggestions when typing slash commands
+  const suggestions = useMemo(() => {
+    if (isDismissed || !commandContext || !value.startsWith('/')) {
+      return [];
+    }
+    return commandRegistry.getAutocompleteSuggestions(value, commandContext);
+  }, [isDismissed, commandContext, value]);
+
+  // Keep selected index within bounds
+  const safeSelectedIndex = suggestions.length > 0
+    ? Math.min(selectedIndex, suggestions.length - 1)
+    : 0;
+
+  // Intercept special keys (Esc, Tab, Up, Down) for Autocomplete and Confirmation
   useInput(
     (input, key) => {
+      // 1. Confirming state
       if (status === 'confirming') {
         if (input.toLowerCase() === 'y') {
           onConfirmPlan(true);
         } else if (input.toLowerCase() === 'n') {
           onConfirmPlan(false);
         }
-      } else if (status === 'completed' || status === 'error') {
+        return;
+      }
+
+      // 2. Completed / Error state
+      if (status === 'completed' || status === 'error') {
         if (key.return || input === ' ') {
           onReset();
+        }
+        return;
+      }
+
+      // 3. Autocomplete navigation in Idle state
+      if (status === 'idle' && suggestions.length > 0) {
+        if (key.escape) {
+          setIsDismissed(true);
+          return;
+        }
+
+        if (key.upArrow) {
+          setSelectedIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1));
+          return;
+        }
+
+        if (key.downArrow) {
+          setSelectedIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0));
+          return;
+        }
+
+        if (key.tab) {
+          const selected = suggestions[safeSelectedIndex];
+          if (selected) {
+            onChange(selected.text);
+            setSelectedIndex(0);
+          }
+          return;
         }
       }
     },
@@ -42,7 +95,6 @@ export const InputBar: React.FC<InputBarProps> = ({
       isActive:
         Boolean(isRawModeSupported) &&
         !isPickerActive &&
-        status !== 'idle' &&
         status !== 'running',
     }
   );
@@ -59,11 +111,12 @@ export const InputBar: React.FC<InputBarProps> = ({
     }
 
     const onData = (chunk: Buffer | string) => {
-      const text = chunk.toString().trim().toLowerCase();
+      const text = chunk.toString().trim();
+      const lower = text.toLowerCase();
       if (status === 'confirming') {
-        if (text === 'y' || text.startsWith('y')) {
+        if (lower === 'y' || lower.startsWith('y')) {
           onConfirmPlan(true);
-        } else if (text === 'n' || text.startsWith('n')) {
+        } else if (lower === 'n' || lower.startsWith('n')) {
           onConfirmPlan(false);
         }
       } else if (status === 'idle') {
@@ -83,8 +136,16 @@ export const InputBar: React.FC<InputBarProps> = ({
 
   // Handle TextInput changes, immediately detecting pasted newlines
   const handleTextChange = (newVal: string) => {
-    if (newVal.includes('\n') || newVal.includes('\r')) {
-      const lines = newVal.split(/[\r\n]+/);
+    // Strip accidental escape characters
+    const sanitized = newVal.replace(/\u001b/g, '');
+
+    if (isDismissed && sanitized !== value) {
+      setIsDismissed(false);
+    }
+    setSelectedIndex(0);
+
+    if (sanitized.includes('\n') || sanitized.includes('\r')) {
+      const lines = sanitized.split(/[\r\n]+/);
       const submitted = lines[0]?.trim();
       if (submitted) {
         onChange('');
@@ -92,7 +153,36 @@ export const InputBar: React.FC<InputBarProps> = ({
         return;
       }
     }
-    onChange(newVal);
+    onChange(sanitized);
+  };
+
+  // Handle Enter submission
+  const handleInputSubmit = (submittedText: string) => {
+    const trimmed = submittedText.trim();
+    if (!trimmed) return;
+
+    // If autocomplete suggestions are active, apply or execute the highlighted suggestion
+    if (suggestions.length > 0 && !isDismissed) {
+      const selected = suggestions[safeSelectedIndex];
+      if (selected) {
+        // If suggestion ends with a space (e.g. "/model ", "/effort ", "/skills enable "),
+        // transition to argument completion without submitting
+        if (selected.text.endsWith(' ') && submittedText !== selected.text) {
+          onChange(selected.text);
+          setSelectedIndex(0);
+          return;
+        }
+
+        // Final leaf command (e.g. "/clear", "/cost", "/model gemini-4-argon"): execute!
+        onChange('');
+        onSubmit(selected.text);
+        return;
+      }
+    }
+
+    // Normal submit
+    onChange('');
+    onSubmit(submittedText);
   };
 
   return (
@@ -112,6 +202,16 @@ export const InputBar: React.FC<InputBarProps> = ({
     >
       {status === 'idle' && (
         <Box flexDirection="column">
+          {/* Autocomplete Suggestion Popup directly above prompt */}
+          {suggestions.length > 0 && !isDismissed && (
+            <Box marginBottom={1}>
+              <CommandSuggest
+                suggestions={suggestions}
+                selectedIndex={safeSelectedIndex}
+              />
+            </Box>
+          )}
+
           <Box>
             <Text color="cyan" bold>
               ❯{' '}
@@ -121,8 +221,8 @@ export const InputBar: React.FC<InputBarProps> = ({
                 focus={!isPickerActive}
                 value={value}
                 onChange={handleTextChange}
-                onSubmit={onSubmit}
-                placeholder="Enter prompt or /model, /effort..."
+                onSubmit={handleInputSubmit}
+                placeholder="Enter prompt or / (e.g. /model, /effort, /skills, /help)..."
               />
             ) : (
               <Text color="gray">
@@ -132,7 +232,7 @@ export const InputBar: React.FC<InputBarProps> = ({
           </Box>
           <Box marginTop={1}>
             <Text color="gray">
-              [Enter: Submit] [/model: Select Model] [/effort: Select Effort] [Ctrl+C: Quit]
+              [Enter: Submit] [/: Commands & Autocomplete] [/help: Help] [Ctrl+C: Quit]
             </Text>
           </Box>
         </Box>
