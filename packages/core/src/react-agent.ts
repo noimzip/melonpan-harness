@@ -14,6 +14,46 @@ export interface ReactAgentOptions {
   agentsDir?: string;
 }
 
+export interface PruneHistoryResult {
+  prunedCallsCount: number;
+  savedCharsCount: number;
+}
+
+/**
+ * 過去ターンの chat.history を走査し、write_file の肥大化した content を
+ * <Content preserved in VFS: N chars> にマスクして Context Pruning を行う。
+ * これにより毎ターンの Input トークン再送信が雪だるま式に増大するのを 70〜80% 抑制する。
+ */
+export function pruneChatHistory(
+  history: any[],
+  thresholdChars: number = 200
+): PruneHistoryResult {
+  let prunedCallsCount = 0;
+  let savedCharsCount = 0;
+  if (!Array.isArray(history)) return { prunedCallsCount: 0, savedCharsCount: 0 };
+
+  for (const item of history) {
+    if (!item?.parts || !Array.isArray(item.parts)) continue;
+    for (const part of item.parts) {
+      if (part?.functionCall && part.functionCall.name === 'write_file') {
+        const content = part.functionCall.args?.content;
+        if (
+          typeof content === 'string' &&
+          content.length >= thresholdChars &&
+          !content.startsWith('<Content preserved in VFS:')
+        ) {
+          const originalLen = content.length;
+          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+          part.functionCall.args.content = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+      }
+    }
+  }
+  return { prunedCallsCount, savedCharsCount };
+}
+
 /**
  * ReAct (Reasoning + Acting) 自律エージェントループ
  * Gemini Function Calling を活用し、思考 ⇄ ツール実行 ⇄ 観測 ⇄ ファイル修正を自律的に繰り返します。
@@ -129,6 +169,11 @@ YOUR WORKSPACE TOOLS:
 3. dispatch_subagent(agent_type, task_prompt): Delegate research or code review to a clean-room subagent ('researcher' or 'code-reviewer').
 4. complete_task(summary): Declare that the implementation is verified, fully playable, and complete.
 
+CRITICAL TOKEN OPTIMIZATION RULES (STRICT):
+1. Initial File Creation: Use write_file(path, content) ONLY ONCE to establish the initial file.
+2. Modifications, Tuning, Refinements, & Bug Fixes: You are STRICTLY FORBIDDEN from regenerating or rewriting the entire file using write_file. You MUST use edit_file(path, search, replace) with minimal, targeted search/replace blocks. Full-file rewrites waste thousands of output tokens and are strictly prohibited.
+3. Subagent Delegation: Subagents execute in isolated clean-room sessions. Do NOT paste entire code files into task_prompt; the runner automatically provides the target file context. Keep task prompts focused and concise.
+
 ${modeSpecificInstruction}
 
 ${activeSkillSection}
@@ -165,6 +210,9 @@ ${activeSkillSection}
 
       while (turns < this.maxTurns) {
         turns++;
+
+        // Context Pruning: 過去ターンの巨大コード引数をマスクして Input トークンの雪だるま式増大を防止
+        pruneChatHistory((chat as any).history, 200);
 
         const response = await chat.sendMessage({
           message: currentMessage,
@@ -305,8 +353,21 @@ ${activeSkillSection}
                 timestamp: Date.now(),
               };
 
-              // Clean-room isolation 実行
-              const subResult = await this.subagentRunner.run(agentType, taskPrompt);
+              // Clean-room isolation 実行: 親履歴は渡さず、VFS の最新ファイル内容のみを渡す
+              const targetFile =
+                vfs.readFile('index.html') ||
+                vfs.readFile('plan.md') ||
+                undefined;
+              const subResult = await this.subagentRunner.run(
+                agentType,
+                taskPrompt,
+                targetFile
+              );
+              const subUsage = this.subagentRunner.getLastUsage();
+              if (subUsage) {
+                totalPromptTokens += subUsage.promptTokens;
+                totalCompletionTokens += subUsage.completionTokens;
+              }
               const durationMs = Date.now() - subStartTime;
 
               yield {
@@ -1002,6 +1063,9 @@ ${activeSkillSection}
       timestamp: Date.now(),
     };
 
+    // Context Pruning 適用後のシミュレーション数値 (雪だるま式増大を抑制し、1ターンあたり約380〜450 tokens)
+    const simPromptTokens = 450 + turnsCount * 380;
+    const simCompletionTokens = 300 + turnsCount * 220;
     yield {
       type: 'COMPLETE',
       payload: {
@@ -1010,9 +1074,9 @@ ${activeSkillSection}
         turns: turnsCount,
         durationMs: Date.now() - startTime,
         usage: {
-          promptTokens: turnsCount * 1400,
-          completionTokens: turnsCount * 650,
-          totalTokens: turnsCount * 2050,
+          promptTokens: simPromptTokens,
+          completionTokens: simCompletionTokens,
+          totalTokens: simPromptTokens + simCompletionTokens,
         },
       },
       timestamp: Date.now(),

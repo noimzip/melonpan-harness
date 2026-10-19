@@ -12,7 +12,7 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   'gemma-4-31b-it': { inputPerMillion: 0.2, outputPerMillion: 0.5 },
 };
 
-const USD_TO_JPY_RATE = 155;
+const USD_TO_JPY_RATE = 158;
 
 export const costCommand: CommandDefinition = {
   name: 'cost',

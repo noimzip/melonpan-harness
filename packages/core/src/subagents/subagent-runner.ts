@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load as yamlLoad } from 'js-yaml';
+import { TokenUsage } from '../types.js';
 
 export interface SubagentDefinition {
   name: string;
@@ -28,6 +29,7 @@ export class SubagentRunner {
   private agentsDir: string;
   private simulate: boolean;
   private definitions: Map<string, SubagentDefinition> = new Map();
+  private lastUsage?: TokenUsage;
 
   constructor(options: SubagentRunnerOptions = {}) {
     const envApiKey =
@@ -125,15 +127,35 @@ export class SubagentRunner {
   }
 
   /**
-   * サブエージェントを Clean-Room Isolation 環境で実行
+   * 直近のサブエージェント実行で消費したトークン数を取得
    */
-  async run(agentType: string, taskPrompt: string): Promise<string> {
+  getLastUsage(): TokenUsage | undefined {
+    return this.lastUsage;
+  }
+
+  /**
+   * サブエージェントを Clean-Room Isolation 環境で実行
+   * 親エージェントの会話履歴は一切引き継がず、依頼文と必要なファイルコンテキストのみを独立セッションに渡します。
+   */
+  async run(agentType: string, taskPrompt: string, fileContext?: string): Promise<string> {
     await this.loadDefinitions();
     const def = this.definitions.get(agentType);
-    const instruction = def?.instruction || this.getDefaultInstruction(agentType);
+    const baseInstruction = def?.instruction || this.getDefaultInstruction(agentType);
+    const instruction = `${baseInstruction}\n\n[STRICT CLEAN-ROOM CONSTRAINTS]: Do NOT include conversational filler, greetings, or step-by-step thinking traces. Output ONLY a concise, structured bulleted summary of conclusions and actionable findings (maximum 150-200 words) so that the parent agent can immediately act on it without context pollution.`;
+
+    const message = fileContext
+      ? `${taskPrompt}\n\n[Target File Content (VFS)]:\n\`\`\`html\n${fileContext}\n\`\`\``
+      : taskPrompt;
 
     // 1. オフライン / テスト用確定型シミュレーション
     if (this.simulate) {
+      const promptLen = message.length;
+      const simPromptTokens = Math.max(80, Math.min(350, Math.round(promptLen / 4)));
+      this.lastUsage = {
+        promptTokens: simPromptTokens,
+        completionTokens: 160,
+        totalTokens: simPromptTokens + 160,
+      };
       return this.simulateSubagent(agentType, taskPrompt);
     }
 
@@ -147,8 +169,20 @@ export class SubagentRunner {
     });
 
     const response = await chat.sendMessage({
-      message: taskPrompt,
+      message,
     });
+
+    // usageMetadata の集計
+    const usageMeta = (response as any).usageMetadata;
+    if (usageMeta) {
+      this.lastUsage = {
+        promptTokens: usageMeta.promptTokenCount || 0,
+        completionTokens: usageMeta.candidatesTokenCount || 0,
+        totalTokens: (usageMeta.promptTokenCount || 0) + (usageMeta.candidatesTokenCount || 0),
+      };
+    } else {
+      this.lastUsage = undefined;
+    }
 
     return response.text?.trim() || 'No response from sub-agent.';
   }
@@ -158,10 +192,10 @@ export class SubagentRunner {
    */
   private getDefaultInstruction(agentType: string): string {
     if (agentType === 'researcher') {
-      return `You are a technical research sub-agent. Investigate the technical topic and return 1. 結論 (Conclusion), 2. 推奨実装 (Recommended Implementation), 3. 懸念点・リスク (Risks & Considerations). Keep it concise and actionable.`;
+      return `You are a technical research sub-agent. Investigate the technical topic and return 1. 結論 (Conclusion), 2. 推奨実装 (Recommended Implementation), 3. 懸念点・リスク (Risks & Considerations). Keep it concise, focused, and actionable.`;
     }
     if (agentType === 'code-reviewer') {
-      return `You are a multi-perspective code reviewer. Audit the code across 1. Performance, 2. Security, 3. Visual & UI/UX. Output Critical, Warning, and Verdict (APPROVED or NEEDS_REVISION).`;
+      return `You are a multi-perspective code reviewer. Audit the code across 1. Performance, 2. Security, 3. Visual & UI/UX. Output Critical, Warning, and Verdict (APPROVED or NEEDS_REVISION). Keep it concise and bulleted.`;
     }
     return `You are an expert sub-agent specializing in ${agentType}. Provide clear, direct, and actionable advice for the task.`;
   }
