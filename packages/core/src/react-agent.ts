@@ -76,7 +76,7 @@ export class ReactAgent {
     this.apiKey = options.apiKey || envApiKey || '';
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
-    this.maxTurns = options.maxTurns ?? 12;
+    this.maxTurns = options.maxTurns ?? 100;
     this.simulate = options.simulate ?? !this.apiKey;
     this.mode = options.mode || 'act';
 

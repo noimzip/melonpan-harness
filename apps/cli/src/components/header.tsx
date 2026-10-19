@@ -21,7 +21,7 @@ export const Header: React.FC<HeaderProps> = ({
   hasApiKey = false,
   isSimulate = true,
   turns = 0,
-  maxTurns = 12,
+  maxTurns = 100,
 }) => {
   const isLive = hasApiKey && !isSimulate;
   const getStatusBadge = () => {

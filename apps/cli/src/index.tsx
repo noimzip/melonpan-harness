@@ -16,6 +16,7 @@ let initialEffort = 'high';
 let initialApiKey: string | undefined = undefined;
 let outDir = process.cwd();
 let simulate: boolean | undefined = undefined;
+let maxTurns = 100;
 const promptWords: string[] = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -42,6 +43,17 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (arg.startsWith('--out-dir=') || arg.startsWith('--outDir=')) {
     outDir = arg.split('=')[1];
+  } else if (arg.startsWith('--max-turns=') || arg.startsWith('--maxTurns=')) {
+    const parsed = parseInt(arg.split('=')[1], 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      maxTurns = parsed;
+    }
+  } else if (arg === '--max-turns' || arg === '--maxTurns') {
+    const next = parseInt(args[i + 1], 10);
+    if (!isNaN(next) && next > 0) {
+      maxTurns = next;
+      i++;
+    }
   } else if (arg === '--simulate') {
     simulate = true;
   } else if (arg === '--no-simulate') {
@@ -62,6 +74,7 @@ const { waitUntilExit } = render(
     initialApiKey={initialApiKey}
     outDir={outDir}
     simulate={simulate}
+    maxTurns={maxTurns}
   />
 );
 

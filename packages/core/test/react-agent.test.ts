@@ -42,4 +42,12 @@ describe('ReactAgent', () => {
     expect(completeEvent.payload.files['index.html']).toBeDefined();
     expect(completeEvent.payload.turns).toBeGreaterThan(0);
   });
+
+  it('defaults maxTurns to 100 and allows custom maxTurns override', () => {
+    const defaultAgent = new ReactAgent({ simulate: true });
+    expect((defaultAgent as any).maxTurns).toBe(100);
+
+    const customAgent = new ReactAgent({ simulate: true, maxTurns: 50 });
+    expect((customAgent as any).maxTurns).toBe(50);
+  });
 });

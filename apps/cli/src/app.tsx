@@ -81,7 +81,7 @@ export const App: React.FC<AppProps> = ({
   initialApiKey,
   outDir = process.cwd(),
   simulate,
-  maxTurns = 12,
+  maxTurns = 100,
 }) => {
   const [status, setStatus] = useState<
     'idle' | 'running' | 'confirming' | 'completed' | 'error'

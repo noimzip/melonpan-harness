@@ -224,7 +224,7 @@ export interface MelonpanCoreOptions {
   thinkingLevel?: ThinkingLevelOption | string; // デフォルト: 'high'
   skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ
   agentsDir?: string; // デフォルト: パッケージ内の agents/ ディレクトリ
-  maxTurns?: number; // デフォルト: 10
+  maxTurns?: number; // デフォルト: 100
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
   mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
   vfs?: any; // VirtualFS (再利用・事前ロード用)
