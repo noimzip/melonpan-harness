@@ -29,7 +29,6 @@
   },
   "dependencies": {
     "@google/genai": "^2.30.0",
-    "js-yaml": "^5.5.0",
-    "openai": "^7.38.0"
+    "js-yaml": "^5.5.0"
   }
 }

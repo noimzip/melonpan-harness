@@ -197,14 +197,10 @@ export interface DispatchSubagentArgs {
 // ----------------------------------------------------
 
 export const AVAILABLE_MODELS = [
+  'gemma-4-31b-it',
+  'gemini-4-argon',
   'gemini-3.8-flash',
   'gemini-3.5-flash-lite',
-  'gemini-4-argon',
-  'gemma-4-31b-it',
-  'opencode/beam-free',
-  'opencode/deepseek-v4.1-flash-free',
-  'opencode/space-bunny-free',
-  'opencode/mimo-v2.6-flash-free',
 ] as const;
 
 export type AvailableModel = (typeof AVAILABLE_MODELS)[number];
@@ -224,7 +220,6 @@ export type ThinkingLevelOption = (typeof THINKING_LEVELS)[number];
 
 export interface MelonpanCoreOptions {
   apiKey?: string;
-  opencodeApiKey?: string;
   model?: AvailableModel | string; // デフォルト: 'gemini-3.8-flash'
   thinkingLevel?: ThinkingLevelOption | string; // デフォルト: 'high'
   skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ

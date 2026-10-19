@@ -23,7 +23,6 @@ export class MelonpanCore {
     this.vfs = options.vfs ?? new VirtualFS();
     this.agent = new ReactAgent({
       apiKey: options.apiKey,
-      opencodeApiKey: options.opencodeApiKey,
       model: options.model ?? 'gemini-3.8-flash',
       thinkingLevel: options.thinkingLevel ?? 'high',
       maxTurns: options.maxTurns,
@@ -111,5 +110,4 @@ export * from './skills/index.js';
 export * from './vfs/index.js';
 export * from './tools/index.js';
 export * from './subagents/index.js';
-export * from './providers/index.js';
 export * from './react-agent.js';
