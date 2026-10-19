@@ -29,24 +29,44 @@ export interface AppProps {
 
 const MODEL_ITEMS: PickerItem[] = [
   {
-    id: 'gemma-4-31b-it',
-    label: 'gemma-4-31b-it',
-    description: 'Open weights 31B instruction-tuned model',
-  },
-  {
-    id: 'gemini-4-argon',
-    label: 'gemini-4-argon',
-    description: 'Next-generation frontier reasoning model',
-  },
-  {
     id: 'gemini-3.8-flash',
     label: 'gemini-3.8-flash',
-    description: 'Flagship high-speed multimodality & reasoning (default)',
+    description: 'Google: Flagship high-speed multimodality & reasoning (default)',
   },
   {
     id: 'gemini-3.5-flash-lite',
     label: 'gemini-3.5-flash-lite',
-    description: 'Ultra-lightweight & fast response model',
+    description: 'Google: Ultra-lightweight & fast response model',
+  },
+  {
+    id: 'gemini-4-argon',
+    label: 'gemini-4-argon',
+    description: 'Google: Next-generation frontier reasoning model',
+  },
+  {
+    id: 'gemma-4-31b-it',
+    label: 'gemma-4-31b-it',
+    description: 'Google: Open weights 31B instruction-tuned model',
+  },
+  {
+    id: 'opencode/beam-free',
+    label: 'opencode/beam-free',
+    description: 'OpenCode: Ultra-fast coding model (Free tier)',
+  },
+  {
+    id: 'opencode/deepseek-v4.1-flash-free',
+    label: 'opencode/deepseek-v4.1-flash-free',
+    description: 'OpenCode: High-performance open reasoning model (Free tier)',
+  },
+  {
+    id: 'opencode/space-bunny-free',
+    label: 'opencode/space-bunny-free',
+    description: 'OpenCode: Creative agent & code generation model (Free tier)',
+  },
+  {
+    id: 'opencode/mimo-v2.6-flash-free',
+    label: 'opencode/mimo-v2.6-flash-free',
+    description: 'OpenCode: Multilingual lightning coding model (Free tier)',
   },
 ];
 

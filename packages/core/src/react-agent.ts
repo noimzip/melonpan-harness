@@ -1,11 +1,19 @@
-import { GoogleGenAI } from '@google/genai';
 import { SubagentRunner } from './subagents/subagent-runner.js';
 import { MELONPAN_TOOLS } from './tools/tool-definitions.js';
 import { AgentEvent, LoadedSkill } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
+import {
+  GeminiProvider,
+  OpenCodeProvider,
+  ModelProvider,
+  ProviderToolResult,
+  PruneHistoryResult,
+  pruneGeminiChatHistory,
+} from './providers/index.js';
 
 export interface ReactAgentOptions {
   apiKey?: string;
+  opencodeApiKey?: string;
   model?: string;
   thinkingLevel?: string;
   maxTurns?: number;
@@ -14,10 +22,7 @@ export interface ReactAgentOptions {
   agentsDir?: string;
 }
 
-export interface PruneHistoryResult {
-  prunedCallsCount: number;
-  savedCharsCount: number;
-}
+export type { PruneHistoryResult };
 
 /**
  * 過去ターンの chat.history を走査し、write_file の肥大化した content を
@@ -28,39 +33,18 @@ export function pruneChatHistory(
   history: any[],
   thresholdChars: number = 200
 ): PruneHistoryResult {
-  let prunedCallsCount = 0;
-  let savedCharsCount = 0;
-  if (!Array.isArray(history)) return { prunedCallsCount: 0, savedCharsCount: 0 };
-
-  for (const item of history) {
-    if (!item?.parts || !Array.isArray(item.parts)) continue;
-    for (const part of item.parts) {
-      if (part?.functionCall && part.functionCall.name === 'write_file') {
-        const content = part.functionCall.args?.content;
-        if (
-          typeof content === 'string' &&
-          content.length >= thresholdChars &&
-          !content.startsWith('<Content preserved in VFS:')
-        ) {
-          const originalLen = content.length;
-          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
-          part.functionCall.args.content = replacement;
-          prunedCallsCount++;
-          savedCharsCount += originalLen - replacement.length;
-        }
-      }
-    }
-  }
-  return { prunedCallsCount, savedCharsCount };
+  return pruneGeminiChatHistory(history, thresholdChars);
 }
 
 /**
  * ReAct (Reasoning + Acting) 自律エージェントループ
- * Gemini Function Calling を活用し、思考 ⇄ ツール実行 ⇄ 観測 ⇄ ファイル修正を自律的に繰り返します。
+ * Gemini Function Calling および OpenCode (OpenAI互換) Function Calling を活用し、
+ * 思考 ⇄ ツール実行 ⇄ 観測 ⇄ ファイル修正を自律的に繰り返します。
  * Clean-Room Sub-agent (researcher / code-reviewer) への委譲および Plan Mode に対応。
  */
 export class ReactAgent {
   private apiKey: string;
+  private opencodeApiKey: string;
   private model: string;
   private thinkingLevel: string;
   private maxTurns: number;
@@ -73,11 +57,17 @@ export class ReactAgent {
       typeof (globalThis as any).process !== 'undefined'
         ? (globalThis as any).process.env?.GEMINI_API_KEY
         : '';
+    const envOpenCodeApiKey =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.OPENCODE_API_KEY
+        : '';
     this.apiKey = options.apiKey || envApiKey || '';
+    this.opencodeApiKey = options.opencodeApiKey || envOpenCodeApiKey || 'free';
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
     this.maxTurns = options.maxTurns ?? 100;
-    this.simulate = options.simulate ?? !this.apiKey;
+    this.simulate =
+      options.simulate ?? (!this.apiKey && !this.model.startsWith('opencode/'));
     this.mode = options.mode || 'act';
 
     this.subagentRunner = new SubagentRunner({
@@ -116,10 +106,8 @@ export class ReactAgent {
       return;
     }
 
-    // 2. 本番 Gemini ReAct ループ
+    // 2. 本番 ReAct ループ (Gemini / OpenCode)
     try {
-      const ai = new GoogleGenAI({ apiKey: this.apiKey });
-
       let modeSpecificInstruction = '';
       if (this.mode === 'plan') {
         modeSpecificInstruction = `
@@ -179,32 +167,20 @@ ${modeSpecificInstruction}
 ${activeSkillSection}
 `.trim();
 
-      const config: Record<string, any> = {
-        systemInstruction,
-        tools: MELONPAN_TOOLS,
-      };
+      // プロバイダの動的決定: opencode/* -> OpenCodeProvider, その他 (gemini-*) -> GeminiProvider
+      const isOpencode = this.model.startsWith('opencode/');
+      const provider: ModelProvider = isOpencode
+        ? new OpenCodeProvider({ apiKey: this.opencodeApiKey })
+        : new GeminiProvider({ apiKey: this.apiKey });
 
-      // thinkingConfig による推論レベル（thinking level / effort）の設定
-      const thinkingLevelUpper = (this.thinkingLevel || 'high').toUpperCase();
-      const validLevels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
-      if (validLevels.includes(thinkingLevelUpper)) {
-        config.thinkingConfig = {
-          includeThoughts: true,
-          thinkingLevel: thinkingLevelUpper,
-        };
-      } else {
-        config.thinkingConfig = {
-          includeThoughts: true,
-        };
-      }
-
-      const chat = ai.chats.create({
+      const session = provider.createSession({
         model: this.model,
-        config,
+        systemInstruction,
+        thinkingLevel: this.thinkingLevel,
       });
 
       let turns = 0;
-      let currentMessage: any = prompt;
+      let currentInput: string | ProviderToolResult[] = prompt;
       let totalPromptTokens = 0;
       let totalCompletionTokens = 0;
 
@@ -212,17 +188,14 @@ ${activeSkillSection}
         turns++;
 
         // Context Pruning: 過去ターンの巨大コード引数をマスクして Input トークンの雪だるま式増大を防止
-        pruneChatHistory((chat as any).history, 200);
+        session.pruneHistory?.(200);
 
-        const response = await chat.sendMessage({
-          message: currentMessage,
-        });
+        const response = await session.sendMessage(currentInput);
 
-        // トークン使用量の集計 (usageMetadata)
-        const usageMeta = (response as any).usageMetadata;
-        if (usageMeta) {
-          totalPromptTokens += usageMeta.promptTokenCount || 0;
-          totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
+        // トークン使用量の集計
+        if (response.usage) {
+          totalPromptTokens += response.usage.promptTokens || 0;
+          totalCompletionTokens += response.usage.completionTokens || 0;
         }
 
         // 思考 (Thought) の抽出と配信
@@ -234,10 +207,10 @@ ${activeSkillSection}
           };
         }
 
-        const functionCalls = response.functionCalls;
+        const functionCalls = response.toolCalls;
 
         if (functionCalls && functionCalls.length > 0) {
-          const functionResponses: any[] = [];
+          const functionResponses: ProviderToolResult[] = [];
           let isComplete = false;
           let completionSummary = '';
 
@@ -291,11 +264,9 @@ ${activeSkillSection}
               };
 
               functionResponses.push({
-                functionResponse: {
-                  name: 'write_file',
-                  response: { output: observation },
-                  id: call.id,
-                },
+                callId: call.id,
+                name: 'write_file',
+                output: observation,
               });
             } else if (call.name === 'edit_file') {
               const pathArg = String(call.args?.path || '');
@@ -332,11 +303,10 @@ ${activeSkillSection}
               };
 
               functionResponses.push({
-                functionResponse: {
-                  name: 'edit_file',
-                  response: { output: observation },
-                  id: call.id,
-                },
+                callId: call.id,
+                name: 'edit_file',
+                output: observation,
+                isError: !editRes.success,
               });
             } else if (call.name === 'dispatch_subagent') {
               const agentType = String(call.args?.agent_type || 'researcher');
@@ -393,11 +363,9 @@ ${activeSkillSection}
               };
 
               functionResponses.push({
-                functionResponse: {
-                  name: 'dispatch_subagent',
-                  response: { output: observation },
-                  id: call.id,
-                },
+                callId: call.id,
+                name: 'dispatch_subagent',
+                output: observation,
               });
             } else if (call.name === 'complete_task') {
               isComplete = true;
@@ -417,11 +385,9 @@ ${activeSkillSection}
               };
 
               functionResponses.push({
-                functionResponse: {
-                  name: 'complete_task',
-                  response: { output: observation },
-                  id: call.id,
-                },
+                callId: call.id,
+                name: 'complete_task',
+                output: observation,
               });
             } else {
               const observation = `Unknown tool "${call.name}". Please use write_file, edit_file, dispatch_subagent, or complete_task.`;
@@ -437,11 +403,10 @@ ${activeSkillSection}
               };
 
               functionResponses.push({
-                functionResponse: {
-                  name: call.name,
-                  response: { error: observation },
-                  id: call.id,
-                },
+                callId: call.id,
+                name: call.name,
+                output: observation,
+                isError: true,
               });
             }
           }
@@ -466,10 +431,10 @@ ${activeSkillSection}
           }
 
           // 次のターンへツール観測結果を返却
-          currentMessage = functionResponses;
+          currentInput = functionResponses;
         } else {
           // ツール呼び出しがなかった場合はツール実行を促す
-          currentMessage =
+          currentInput =
             'Please proceed by calling write_file to create index.html, dispatch_subagent to review, or complete_task if finished.';
         }
       }

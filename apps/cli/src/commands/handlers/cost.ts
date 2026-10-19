@@ -10,6 +10,10 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   'gemini-3.8-flash': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
   'gemini-4-argon': { inputPerMillion: 1.25, outputPerMillion: 5.0 },
   'gemma-4-31b-it': { inputPerMillion: 0.2, outputPerMillion: 0.5 },
+  'opencode/beam-free': { inputPerMillion: 0.0, outputPerMillion: 0.0 },
+  'opencode/deepseek-v4.1-flash-free': { inputPerMillion: 0.0, outputPerMillion: 0.0 },
+  'opencode/space-bunny-free': { inputPerMillion: 0.0, outputPerMillion: 0.0 },
+  'opencode/mimo-v2.6-flash-free': { inputPerMillion: 0.0, outputPerMillion: 0.0 },
 };
 
 const USD_TO_JPY_RATE = 158;

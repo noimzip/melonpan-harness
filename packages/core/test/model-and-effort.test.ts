@@ -7,13 +7,16 @@ import {
 } from '../src/index.js';
 
 describe('Models and Thinking Levels (Effort)', () => {
-  it('defines the 4 required models and thinking levels correctly', () => {
-    expect(AVAILABLE_MODELS).toEqual([
-      'gemma-4-31b-it',
-      'gemini-4-argon',
-      'gemini-3.8-flash',
-      'gemini-3.5-flash-lite',
-    ]);
+  it('defines the required Gemini and OpenCode models and thinking levels correctly', () => {
+    expect(AVAILABLE_MODELS).toContain('gemini-3.8-flash');
+    expect(AVAILABLE_MODELS).toContain('gemini-3.5-flash-lite');
+    expect(AVAILABLE_MODELS).toContain('gemini-4-argon');
+    expect(AVAILABLE_MODELS).toContain('gemma-4-31b-it');
+    expect(AVAILABLE_MODELS).toContain('opencode/beam-free');
+    expect(AVAILABLE_MODELS).toContain('opencode/deepseek-v4.1-flash-free');
+    expect(AVAILABLE_MODELS).toContain('opencode/space-bunny-free');
+    expect(AVAILABLE_MODELS).toContain('opencode/mimo-v2.6-flash-free');
+    expect(AVAILABLE_MODELS.length).toBe(8);
 
     expect(THINKING_LEVELS).toEqual(['minimal', 'low', 'medium', 'high']);
   });

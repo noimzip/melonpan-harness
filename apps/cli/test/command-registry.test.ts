@@ -139,17 +139,25 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
 
     it('provides sub-argument suggestions for /model', () => {
       const suggestions = commandRegistry.getAutocompleteSuggestions('/model ', ctx);
-      expect(suggestions.length).toBe(4);
+      expect(suggestions.length).toBe(8);
       const displays = suggestions.map((s) => s.display);
       expect(displays).toContain('gemini-3.5-flash-lite');
       expect(displays).toContain('gemini-3.8-flash');
       expect(displays).toContain('gemini-4-argon');
       expect(displays).toContain('gemma-4-31b-it');
+      expect(displays).toContain('opencode/beam-free');
+      expect(displays).toContain('opencode/deepseek-v4.1-flash-free');
+      expect(displays).toContain('opencode/space-bunny-free');
+      expect(displays).toContain('opencode/mimo-v2.6-flash-free');
 
       // Incremental filtering
       const argonSuggestions = commandRegistry.getAutocompleteSuggestions('/model argon', ctx);
       expect(argonSuggestions.map((s) => s.display)).toEqual(['gemini-4-argon']);
       expect(argonSuggestions[0]?.text).toBe('/model gemini-4-argon');
+
+      const beamSuggestions = commandRegistry.getAutocompleteSuggestions('/model beam', ctx);
+      expect(beamSuggestions.map((s) => s.display)).toEqual(['opencode/beam-free']);
+      expect(beamSuggestions[0]?.text).toBe('/model opencode/beam-free');
     });
 
     it('provides sub-argument suggestions for /effort', () => {
@@ -205,6 +213,11 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
       await commandRegistry.executeCommand('/model gemini-4-argon', ctx);
       expect(modelState).toBe('gemini-4-argon');
       expect(loggedActivities.some((a) => a.includes('switched to gemini-4-argon'))).toBe(true);
+
+      // OpenCode model switch
+      await commandRegistry.executeCommand('/model opencode/beam-free', ctx);
+      expect(modelState).toBe('opencode/beam-free');
+      expect(loggedActivities.some((a) => a.includes('switched to opencode/beam-free'))).toBe(true);
 
       // Without args
       let pickerOpened = false;

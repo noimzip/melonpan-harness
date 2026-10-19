@@ -159,7 +159,40 @@ export class SubagentRunner {
       return this.simulateSubagent(agentType, taskPrompt);
     }
 
-    // 2. 本番 Clean-Room Gemini セッション
+    // 2. 本番 Clean-Room セッション (OpenCode または Gemini)
+    if (this.model.startsWith('opencode/')) {
+      const { OpenAI } = await import('openai');
+      const actualModel = this.model.replace('opencode/', '');
+      const envOpenCodeApiKey =
+        typeof (globalThis as any).process !== 'undefined'
+          ? (globalThis as any).process.env?.OPENCODE_API_KEY
+          : '';
+      const client = new OpenAI({
+        apiKey: envOpenCodeApiKey || 'free',
+        baseURL: 'https://opencode.ai/inference/openai/v1',
+      });
+
+      const response = await client.chat.completions.create({
+        model: actualModel,
+        messages: [
+          { role: 'system', content: instruction },
+          { role: 'user', content: message },
+        ],
+      });
+
+      if (response.usage) {
+        this.lastUsage = {
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+        };
+      } else {
+        this.lastUsage = undefined;
+      }
+
+      return response.choices[0]?.message?.content?.trim() || 'No response from sub-agent.';
+    }
+
     const ai = new GoogleGenAI({ apiKey: this.apiKey });
     const chat = ai.chats.create({
       model: this.model,

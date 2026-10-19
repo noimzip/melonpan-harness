@@ -23,6 +23,9 @@ export const Header: React.FC<HeaderProps> = ({
   turns = 0,
   maxTurns = 100,
 }) => {
+  const isOpencode = model.startsWith('opencode/');
+  const provider = isOpencode ? 'OpenCode' : 'Gemini';
+  const displayModel = isOpencode ? model.replace('opencode/', '') : model;
   const isLive = hasApiKey && !isSimulate;
   const getStatusBadge = () => {
     switch (status) {
@@ -75,7 +78,7 @@ export const Header: React.FC<HeaderProps> = ({
         <Box>
           <Text color="gray">Model: </Text>
           <Text color="green" bold>
-            {model}
+            [{provider}: {displayModel}]
           </Text>
           <Text color="gray">  |  Effort: </Text>
           <Text color="magenta" bold>
