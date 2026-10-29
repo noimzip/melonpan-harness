@@ -212,7 +212,18 @@ ${activeSkillSection}
         turns++;
 
         // Context Pruning: 過去ターンの巨大コード引数をマスクして Input トークンの雪だるま式増大を防止
-        pruneChatHistory((chat as any).history, 200);
+        const pruneStats = pruneChatHistory((chat as any).history, 200);
+        if (pruneStats.prunedCallsCount > 0) {
+          yield {
+            type: 'CONTEXT_PRUNED',
+            payload: {
+              prunedCallsCount: pruneStats.prunedCallsCount,
+              savedCharsCount: pruneStats.savedCharsCount,
+              thresholdChars: 200,
+            },
+            timestamp: Date.now(),
+          };
+        }
 
         const response = await chat.sendMessage({
           message: currentMessage,
@@ -223,6 +234,16 @@ ${activeSkillSection}
         if (usageMeta) {
           totalPromptTokens += usageMeta.promptTokenCount || 0;
           totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
+          yield {
+            type: 'USAGE',
+            payload: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+              totalTokens: totalPromptTokens + totalCompletionTokens,
+              turn: turns,
+            },
+            timestamp: Date.now(),
+          };
         }
 
         // 思考 (Thought) の抽出と配信
@@ -643,6 +664,27 @@ ${activeSkillSection}
       };
 
       yield {
+        type: 'TOOL_RESULT',
+        payload: {
+          name: 'complete_task',
+          result: 'Task completion confirmed.',
+          callId: 'sim-plan-complete',
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
+        type: 'USAGE',
+        payload: {
+          promptTokens: 1250,
+          completionTokens: 450,
+          totalTokens: 1700,
+          turn: 2,
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
         type: 'COMPLETE',
         payload: {
           summary: planSummary,
@@ -973,6 +1015,17 @@ ${activeSkillSection}
       timestamp: Date.now(),
     };
 
+    const simulatedPlaceholder = `<Content preserved in VFS: ${simulatedHtml.length} chars>`;
+    yield {
+      type: 'CONTEXT_PRUNED',
+      payload: {
+        prunedCallsCount: 1,
+        savedCharsCount: Math.max(0, simulatedHtml.length - simulatedPlaceholder.length),
+        thresholdChars: 200,
+      },
+      timestamp: Date.now(),
+    };
+
     // Phase 3: Code Review (Sub-agent)
     turnsCount++;
     yield {
@@ -1066,6 +1119,16 @@ ${activeSkillSection}
     // Context Pruning 適用後のシミュレーション数値 (雪だるま式増大を抑制し、1ターンあたり約380〜450 tokens)
     const simPromptTokens = 450 + turnsCount * 380;
     const simCompletionTokens = 300 + turnsCount * 220;
+    yield {
+      type: 'USAGE',
+      payload: {
+        promptTokens: simPromptTokens,
+        completionTokens: simCompletionTokens,
+        totalTokens: simPromptTokens + simCompletionTokens,
+        turn: turnsCount,
+      },
+      timestamp: Date.now(),
+    };
     yield {
       type: 'COMPLETE',
       payload: {

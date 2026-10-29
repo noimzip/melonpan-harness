@@ -6,7 +6,7 @@ import * as path from 'node:path';
 async function main() {
   console.log(`\n========================================`);
   console.log(`🍈 Melonpan Agent Harness (Mock Demo)`);
-  console.log(`高専祭オフライン実演 & 自動修復ループのシミュレーション`);
+  console.log(`オフライン実演 & 自動修復ループのシミュレーション`);
   console.log(`========================================\n`);
 
   // 1回目は意図的に構文エラーを含むコード、2回目に完動コードを返すプロバイダ

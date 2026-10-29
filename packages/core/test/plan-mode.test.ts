@@ -37,6 +37,13 @@ describe('Plan Mode & Sub-agent Delegation', () => {
 
     const planCreatedEvent = events.find((e) => e.type === 'PLAN_CREATED');
     expect(planCreatedEvent.payload.path).toBe('plan.md');
+
+    // The simulated complete_task must also emit an observation so UI cards do
+    // not stay stuck on RUNNING after the plan is ready.
+    const completeResult = events.find(
+      (e) => e.type === 'TOOL_RESULT' && e.payload.name === 'complete_task'
+    );
+    expect(completeResult).toBeDefined();
   });
 
   it('runs in auto mode: executes Plan -> Act -> Audit with both researcher and code-reviewer', async () => {

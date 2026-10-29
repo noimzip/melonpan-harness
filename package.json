@@ -2,7 +2,7 @@
   "name": "melonpan-harness-root",
   "version": "0.1.0",
   "private": true,
-  "description": "Melonpan agent harness monorepo for Kosen Festival",
+  "description": "Melonpan agent harness monorepo",
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @melonpan/core run build && pnpm --filter @melonpan/cli run build",

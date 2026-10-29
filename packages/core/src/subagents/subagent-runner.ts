@@ -240,7 +240,7 @@ export class SubagentRunner {
         '### 4. Verdict (判定)',
         '- **Critical**: 0 件',
         '- **Warning**: 0 件',
-        '- **判定**: `APPROVED` (高品質・本番展示可能)',
+        '- **判定**: `APPROVED` (高品質・本番稼働可能)',
       ].join('\n');
     }
 

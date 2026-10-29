@@ -50,6 +50,8 @@ export type AgentEventType =
   | 'SUBAGENT_COMPLETED'  // サブエージェントの処理完了と報告受領
   | 'TOOL_RESULT'         // ツール実行結果 (Observation)
   | 'FILE_CHANGED'        // VFS上のファイル変更 (write, edit)
+  | 'USAGE'               // ターン単位の累計トークン使用量
+  | 'CONTEXT_PRUNED'      // Context Pruning による履歴圧縮の実績
   | 'COMPLETE'            // タスク完了宣言と全成果物VFS
   | 'ERROR';              // エラー
 
@@ -118,6 +120,17 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
+/** そのrun開始時点からの累計トークン数（turnは1始まり） */
+export interface UsagePayload extends TokenUsage {
+  turn: number;
+}
+
+export interface ContextPrunedPayload {
+  prunedCallsCount: number;
+  savedCharsCount: number;
+  thresholdChars: number;
+}
+
 export interface CompletePayload {
   summary: string;
   files: Record<string, string>;
@@ -151,6 +164,10 @@ export type SubagentCompletedEvent = AgentEvent<SubagentCompletedPayload> & {
 };
 export type ToolResultEvent = AgentEvent<ToolResultPayload> & { type: 'TOOL_RESULT' };
 export type FileChangedEvent = AgentEvent<FileChangedPayload> & { type: 'FILE_CHANGED' };
+export type UsageEvent = AgentEvent<UsagePayload> & { type: 'USAGE' };
+export type ContextPrunedEvent = AgentEvent<ContextPrunedPayload> & {
+  type: 'CONTEXT_PRUNED';
+};
 export type CompleteEvent = AgentEvent<CompletePayload> & { type: 'COMPLETE' };
 export type ErrorEvent = AgentEvent<ErrorPayload> & { type: 'ERROR' };
 
@@ -165,6 +182,8 @@ export type MelonpanEvent =
   | SubagentCompletedEvent
   | ToolResultEvent
   | FileChangedEvent
+  | UsageEvent
+  | ContextPrunedEvent
   | CompleteEvent
   | ErrorEvent;
 
