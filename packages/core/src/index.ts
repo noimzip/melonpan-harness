@@ -110,4 +110,6 @@ export * from './skills/index.js';
 export * from './vfs/index.js';
 export * from './tools/index.js';
 export * from './subagents/index.js';
+export * from './prompts/index.js';
+export * from './runtime/index.js';
 export * from './react-agent.js';
