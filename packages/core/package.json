@@ -25,7 +25,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.9",
     "typescript": "^5.8.2",
-    "vitest": "^3.0.7"
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",
