@@ -14,45 +14,11 @@ export interface ReactAgentOptions {
   agentsDir?: string;
 }
 
-export interface PruneHistoryResult {
-  prunedCallsCount: number;
-  savedCharsCount: number;
-}
-
-/**
- * 過去ターンの chat.history を走査し、write_file の肥大化した content を
- * <Content preserved in VFS: N chars> にマスクして Context Pruning を行う。
- * これにより毎ターンの Input トークン再送信が雪だるま式に増大するのを 70〜80% 抑制する。
- */
-export function pruneChatHistory(
-  history: any[],
-  thresholdChars: number = 200
-): PruneHistoryResult {
-  let prunedCallsCount = 0;
-  let savedCharsCount = 0;
-  if (!Array.isArray(history)) return { prunedCallsCount: 0, savedCharsCount: 0 };
-
-  for (const item of history) {
-    if (!item?.parts || !Array.isArray(item.parts)) continue;
-    for (const part of item.parts) {
-      if (part?.functionCall && part.functionCall.name === 'write_file') {
-        const content = part.functionCall.args?.content;
-        if (
-          typeof content === 'string' &&
-          content.length >= thresholdChars &&
-          !content.startsWith('<Content preserved in VFS:')
-        ) {
-          const originalLen = content.length;
-          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
-          part.functionCall.args.content = replacement;
-          prunedCallsCount++;
-          savedCharsCount += originalLen - replacement.length;
-        }
-      }
-    }
-  }
-  return { prunedCallsCount, savedCharsCount };
-}
+import {
+  pruneChatHistory,
+  type PruneHistoryResult,
+} from './session/context-strategy.js';
+export { pruneChatHistory, type PruneHistoryResult };
 
 /**
  * ReAct (Reasoning + Acting) 自律エージェントループ

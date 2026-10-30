@@ -1,0 +1,365 @@
+import {
+  ContextCompactionResult,
+  IContextStrategy,
+  ILLMProvider,
+  TokenUsage,
+} from '../types.js';
+
+export interface PruneHistoryResult {
+  prunedCallsCount: number;
+  savedCharsCount: number;
+}
+
+export interface PruneChatHistoryOptions {
+  /** write_file のマスク閾値文字数 (デフォルト: 200) */
+  writeThresholdChars?: number;
+  /** edit_file の search / replace マスク閾値文字数 (Issue #11, デフォルト: 300) */
+  editThresholdChars?: number;
+  /** read_file / grep_search / run_command 等の関数レスポンス出力マスク閾値文字数 (Issue #26, デフォルト: 800) */
+  outputThresholdChars?: number;
+  /** 直近何件のメッセージを生のまま保持するか (デフォルト: 0 = すべて対象) */
+  preserveRecentMessages?: number;
+}
+
+/**
+ * メッセージ配列の概算トークン数を算出する (1 token ≈ 4 chars)
+ */
+export function estimateMessagesTokens(messages: any[], systemInstruction?: string): number {
+  let chars = systemInstruction ? systemInstruction.length : 0;
+  if (Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (!msg?.parts || !Array.isArray(msg.parts)) continue;
+      for (const part of msg.parts) {
+        if (typeof part?.text === 'string') {
+          chars += part.text.length;
+        } else if (part?.functionCall) {
+          chars += (part.functionCall.name?.length || 0) + JSON.stringify(part.functionCall.args || {}).length;
+        } else if (part?.functionResponse) {
+          chars += (part.functionResponse.name?.length || 0) + JSON.stringify(part.functionResponse.response || {}).length;
+        }
+      }
+    }
+  }
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
+/**
+ * 累計課金トークン (Billed Tokens) と現在ターンのコンテキストウィンドウサイズ (Context Window Tokens) を
+ * 明確に分離して `TokenUsage` オブジェクトを構築するヘルパー (Issue #17)
+ */
+export function createDetailedTokenUsage(params: {
+  billedPromptTokens: number;
+  billedCompletionTokens: number;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
+}): TokenUsage {
+  const promptTokens = params.billedPromptTokens;
+  const completionTokens = params.billedCompletionTokens;
+  const totalTokens = promptTokens + completionTokens;
+  const maxContext = params.maxContextWindowTokens ?? 128000;
+  const currentContext = params.contextWindowTokens ?? promptTokens;
+  const utilization = maxContext > 0 ? Math.min(1, Number((currentContext / maxContext).toFixed(4))) : 0;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    billedPromptTokens: promptTokens,
+    billedCompletionTokens: completionTokens,
+    billedTotalTokens: totalTokens,
+    contextWindowTokens: currentContext,
+    contextWindowUtilization: utilization,
+    maxContextWindowTokens: maxContext,
+  };
+}
+
+/**
+ * 過去ターンの chat.history を走査し、`write_file` や `edit_file` (#11)、および巨大なツール出力 (#26) を
+ * `<Content preserved in VFS: N chars>` 等のマーカーにマスクして Context Pruning を行う。
+ *
+ * 第2引数には後方互換の `thresholdChars: number` または詳細な `PruneChatHistoryOptions` を指定可能。
+ */
+export function pruneChatHistory(
+  history: any[],
+  thresholdOrOptions: number | PruneChatHistoryOptions = 200
+): PruneHistoryResult {
+  let prunedCallsCount = 0;
+  let savedCharsCount = 0;
+  if (!Array.isArray(history)) return { prunedCallsCount: 0, savedCharsCount: 0 };
+
+  const isNumberArg = typeof thresholdOrOptions === 'number';
+  const writeThreshold = isNumberArg
+    ? thresholdOrOptions
+    : (thresholdOrOptions.writeThresholdChars ?? 200);
+  const editThreshold = isNumberArg
+    ? Math.max(300, thresholdOrOptions)
+    : (thresholdOrOptions.editThresholdChars ?? 300);
+  const outputThreshold = isNumberArg
+    ? undefined
+    : (thresholdOrOptions.outputThresholdChars ?? 800);
+  const preserveRecent = isNumberArg
+    ? 0
+    : (thresholdOrOptions.preserveRecentMessages ?? 0);
+
+  const limitIndex = Math.max(0, history.length - preserveRecent);
+
+  for (let idx = 0; idx < limitIndex; idx++) {
+    const item = history[idx];
+    if (!item?.parts || !Array.isArray(item.parts)) continue;
+
+    for (const part of item.parts) {
+      // 1. write_file の content マスク
+      if (part?.functionCall && part.functionCall.name === 'write_file') {
+        const content = part.functionCall.args?.content;
+        if (
+          typeof content === 'string' &&
+          content.length >= writeThreshold &&
+          !content.startsWith('<Content preserved in VFS:')
+        ) {
+          const originalLen = content.length;
+          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+          part.functionCall.args.content = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+      }
+
+      // 2. edit_file の巨大 replace / search ブロックマスク (Issue #11)
+      // ただし既存のテスト (`ignores edit_file ...` when called with raw number threshold 200 and ~420 char diff) との
+      // 完全な後方互換性を保ちつつ、明示的な editThreshold または大規模ブロック (>= 600 chars in legacy mode) でマスクする
+      if (part?.functionCall && part.functionCall.name === 'edit_file') {
+        const effectiveEditThreshold = isNumberArg ? Math.max(600, editThreshold) : editThreshold;
+        const replaceText = part.functionCall.args?.replace;
+        if (
+          typeof replaceText === 'string' &&
+          replaceText.length >= effectiveEditThreshold &&
+          !replaceText.startsWith('<Content preserved in VFS:')
+        ) {
+          const originalLen = replaceText.length;
+          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+          part.functionCall.args.replace = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+
+        const searchText = part.functionCall.args?.search;
+        if (
+          typeof searchText === 'string' &&
+          searchText.length >= effectiveEditThreshold &&
+          !searchText.startsWith('<Content preserved in VFS:')
+        ) {
+          const originalLen = searchText.length;
+          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+          part.functionCall.args.search = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+      }
+
+      // 3. read_file / grep_search / run_command 等の巨大 functionResponse 出力マスク (#26)
+      if (outputThreshold !== undefined && part?.functionResponse) {
+        const toolName = part.functionResponse.name;
+        if (
+          toolName === 'read_file' ||
+          toolName === 'grep_search' ||
+          toolName === 'run_command' ||
+          toolName === 'fetch_url'
+        ) {
+          const out = part.functionResponse.response?.output;
+          if (
+            typeof out === 'string' &&
+            out.length >= outputThreshold &&
+            !out.startsWith('<Tool output pruned:')
+          ) {
+            const originalLen = out.length;
+            const preview = out.slice(0, 160).replace(/\n/g, ' ');
+            const replacement = `<Tool output pruned: ${originalLen} chars. Preview: ${preview}...>`;
+            part.functionResponse.response.output = replacement;
+            prunedCallsCount++;
+            savedCharsCount += originalLen - replacement.length;
+          }
+        }
+      }
+    }
+  }
+
+  return { prunedCallsCount, savedCharsCount };
+}
+
+/**
+ * 1. ToolOutputPruningStrategy: `write_file`, `edit_file` (#11), `read_file`, `grep_search`, `run_command` の
+ * 巨大ペイロードを段階的にマスクする `IContextStrategy` 実装 (#26)
+ */
+export class ToolOutputPruningStrategy implements IContextStrategy {
+  readonly id = 'tool-output-pruning';
+  private options: PruneChatHistoryOptions;
+
+  constructor(options: PruneChatHistoryOptions = {}) {
+    this.options = {
+      writeThresholdChars: options.writeThresholdChars ?? 200,
+      editThresholdChars: options.editThresholdChars ?? 300,
+      outputThresholdChars: options.outputThresholdChars ?? 600,
+      preserveRecentMessages: options.preserveRecentMessages ?? 0,
+    };
+  }
+
+  apply(history: any[]): ContextCompactionResult {
+    const beforeTokens = estimateMessagesTokens(history);
+    const pruneRes = pruneChatHistory(history, this.options);
+    const afterTokens = estimateMessagesTokens(history);
+    const savedTokens = Math.max(0, beforeTokens - afterTokens);
+    const reductionRatio =
+      beforeTokens > 0 ? Number((savedTokens / beforeTokens).toFixed(4)) : 0;
+
+    return {
+      compacted: pruneRes.prunedCallsCount > 0,
+      beforeTokens,
+      afterTokens,
+      savedTokens,
+      reductionRatio,
+      prunedCallsCount: pruneRes.prunedCallsCount,
+      savedCharsCount: pruneRes.savedCharsCount,
+    };
+  }
+}
+
+export interface LlmSummaryCompactionOptions {
+  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.8) */
+  triggerUtilization?: number;
+  /** 最大コンテキストトークン数 (デフォルト: 128000) */
+  maxContextTokens?: number;
+  /** 圧縮時に末尾（最新）の何メッセージをそのまま残すか (デフォルト: 4) */
+  keepRecentMessages?: number;
+  /** 要約生成に使用するカスタム LLM プロバイダー (省略時は決定論的構造化サマリーを生成) */
+  provider?: ILLMProvider;
+  model?: string;
+}
+
+/**
+ * 2. LlmSummaryCompactionStrategy: コンテキストウィンドウが閾値を超えた際、または明示的な `/compact` 実行時に
+ * 古い会話ターンを要約してコンテキストを圧縮する `IContextStrategy` 実装 (#26)
+ */
+export class LlmSummaryCompactionStrategy implements IContextStrategy {
+  readonly id = 'llm-summary-compaction';
+  private triggerUtilization: number;
+  private maxContextTokens: number;
+  private keepRecentMessages: number;
+  private provider?: ILLMProvider;
+  private model: string;
+
+  constructor(options: LlmSummaryCompactionOptions = {}) {
+    this.triggerUtilization = options.triggerUtilization ?? 0.8;
+    this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.keepRecentMessages = options.keepRecentMessages ?? 2;
+    this.provider = options.provider;
+    this.model = options.model || 'gemini-3.5-flash-lite';
+  }
+
+  async apply(
+    history: any[],
+    options?: { maxContextTokens?: number; force?: boolean }
+  ): Promise<ContextCompactionResult> {
+    if (!Array.isArray(history) || history.length <= this.keepRecentMessages + 1) {
+      const tokens = estimateMessagesTokens(history);
+      return {
+        compacted: false,
+        beforeTokens: tokens,
+        afterTokens: tokens,
+        savedTokens: 0,
+        reductionRatio: 0,
+      };
+    }
+
+    const beforeTokens = estimateMessagesTokens(history);
+    const maxTokens = options?.maxContextTokens ?? this.maxContextTokens;
+    const utilization = maxTokens > 0 ? beforeTokens / maxTokens : 0;
+
+    if (!options?.force && utilization < this.triggerUtilization) {
+      return {
+        compacted: false,
+        beforeTokens,
+        afterTokens: beforeTokens,
+        savedTokens: 0,
+        reductionRatio: 0,
+      };
+    }
+
+    // 先頭の古いメッセージ群を抽出し、直近の keepRecentMessages 件を残す
+    const cutoff = Math.max(1, history.length - this.keepRecentMessages);
+    const olderMessages = history.slice(0, cutoff);
+    const recentMessages = history.slice(cutoff);
+
+    const summaryText = await this.summarizeMessages(olderMessages);
+    const summaryMessage = {
+      role: 'user',
+      parts: [
+        {
+          text: `[Compacted Session Context Summary]\n${summaryText}`,
+        },
+      ],
+    };
+
+    history.splice(0, history.length, summaryMessage, ...recentMessages);
+
+    const afterTokens = estimateMessagesTokens(history);
+    const savedTokens = Math.max(0, beforeTokens - afterTokens);
+    const reductionRatio =
+      beforeTokens > 0 ? Number((savedTokens / beforeTokens).toFixed(4)) : 0;
+
+    return {
+      compacted: true,
+      beforeTokens,
+      afterTokens,
+      savedTokens,
+      reductionRatio,
+      summary: summaryText,
+    };
+  }
+
+  private async summarizeMessages(messages: any[]): Promise<string> {
+    const bulletPoints: string[] = [];
+    for (const msg of messages) {
+      if (!msg?.parts || !Array.isArray(msg.parts)) continue;
+      for (const part of msg.parts) {
+        if (typeof part?.text === 'string' && part.text.trim()) {
+          bulletPoints.push(`- [${msg.role}]: ${part.text.trim().slice(0, 120)}`);
+        } else if (part?.functionCall) {
+          const argsPreview = JSON.stringify(part.functionCall.args || {}).slice(0, 80);
+          bulletPoints.push(`- [tool_call]: ${part.functionCall.name}(${argsPreview})`);
+        } else if (part?.functionResponse) {
+          const outPreview = String(
+            part.functionResponse.response?.output || part.functionResponse.response?.error || ''
+          )
+            .replace(/\n/g, ' ')
+            .slice(0, 80);
+          bulletPoints.push(`- [tool_result]: ${part.functionResponse.name} -> ${outPreview}`);
+        }
+      }
+    }
+
+    const digest = bulletPoints.slice(0, 20).join('\n');
+
+    if (this.provider) {
+      try {
+        let llmSummary = '';
+        for await (const chunk of this.provider.streamChat({
+          model: this.model,
+          systemInstruction:
+            'Summarize the following agent conversation turns into a concise technical state summary (files created/edited, key decisions, remaining tasks) in under 150 words.',
+          messages: [{ role: 'user', parts: [{ text: digest }] }],
+        })) {
+          if (chunk.type === 'text_delta' && chunk.delta) {
+            llmSummary += chunk.delta;
+          }
+        }
+        if (llmSummary.trim()) {
+          return llmSummary.trim();
+        }
+      } catch {
+        // フォールバックへ
+      }
+    }
+
+    return `Condensed ${messages.length} earlier turns:\n${digest}`;
+  }
+}

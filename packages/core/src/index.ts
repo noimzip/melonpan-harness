@@ -113,4 +113,5 @@ export * from './subagents/index.js';
 export * from './prompts/index.js';
 export * from './runtime/index.js';
 export * from './permissions/index.js';
+export * from './session/index.js';
 export * from './react-agent.js';
