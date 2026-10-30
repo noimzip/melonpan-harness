@@ -345,6 +345,101 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       throw new Error(`OpenAICompatibleProvider HTTP ${response.status}: ${errText}`);
     }
 
+    if (response.headers?.get?.('content-type')?.includes('text/event-stream') && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let promptTokens = 0;
+      let completionTokens = 0;
+      const toolCallsMap: Map<number, { id: string; name: string; argsRaw: string }> = new Map();
+
+      while (true) {
+        if (signal?.aborted) {
+          throw new Error('OpenAICompatibleProvider stream aborted.');
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line || !line.startsWith('data:')) continue;
+          const payloadStr = line.slice(5).trim();
+          if (payloadStr === '[DONE]') continue;
+
+          try {
+            const eventData: any = JSON.parse(payloadStr);
+            if (eventData?.usage) {
+              promptTokens = eventData.usage.prompt_tokens ?? promptTokens;
+              completionTokens = eventData.usage.completion_tokens ?? completionTokens;
+            }
+            const delta = eventData?.choices?.[0]?.delta;
+            if (!delta) continue;
+
+            const reasoningDelta = delta.reasoning_content || delta.reasoning;
+            if (typeof reasoningDelta === 'string' && reasoningDelta.length > 0) {
+              yield { type: 'thought_delta', delta: reasoningDelta };
+            }
+            if (typeof delta.content === 'string' && delta.content.length > 0) {
+              yield { type: 'text_delta', delta: delta.content };
+            }
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tcDelta of delta.tool_calls) {
+                const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
+                const existing = toolCallsMap.get(idx) || {
+                  id: tcDelta.id || `call_${idx + 1}`,
+                  name: tcDelta.function?.name || 'unknown',
+                  argsRaw: '',
+                };
+                if (tcDelta.id) existing.id = tcDelta.id;
+                if (tcDelta.function?.name) existing.name = tcDelta.function.name;
+                if (typeof tcDelta.function?.arguments === 'string') {
+                  existing.argsRaw += tcDelta.function.arguments;
+                  yield {
+                    type: 'tool_call_delta',
+                    delta: tcDelta.function.arguments,
+                    toolCall: { id: existing.id, name: existing.name, args: {} },
+                  };
+                }
+                toolCallsMap.set(idx, existing);
+              }
+            }
+          } catch {
+            // ignore malformed SSE chunk
+          }
+        }
+      }
+
+      for (const tc of toolCallsMap.values()) {
+        let parsedArgs: Record<string, any> = {};
+        try {
+          parsedArgs = tc.argsRaw ? JSON.parse(tc.argsRaw) : {};
+        } catch {
+          parsedArgs = {};
+        }
+        yield {
+          type: 'tool_call',
+          toolCall: { id: tc.id, name: tc.name, args: parsedArgs },
+        };
+      }
+
+      const finalPrompt =
+        promptTokens || estimateMessagesTokens(request.messages, request.systemInstruction);
+      const finalComp = completionTokens || 100;
+      yield {
+        type: 'usage',
+        usage: {
+          promptTokens: finalPrompt,
+          completionTokens: finalComp,
+          totalTokens: finalPrompt + finalComp,
+        },
+      };
+      yield { type: 'done' };
+      return;
+    }
+
     const data: any = await response.json();
     const choice = data?.choices?.[0]?.message;
 

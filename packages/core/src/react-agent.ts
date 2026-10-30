@@ -24,6 +24,7 @@ import {
   LLMMessage,
   LoadedSkill,
   SkillMetadata,
+  ToolExecutionResult,
   ToolMiddleware,
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
@@ -145,6 +146,9 @@ export class ReactAgent {
         simulate: this.simulate,
         toolRegistry: this.toolRegistry,
         provider: this.provider,
+        commandExecutor: this.commandExecutor,
+        webProvider: this.webProvider,
+        skillManager: this.skillManager,
       });
   }
 
@@ -169,6 +173,9 @@ export class ReactAgent {
 
   setProvider(provider?: ILLMProvider): void {
     this.provider = provider;
+    if (this.subagentRunner instanceof SubagentRunner) {
+      this.subagentRunner.setProvider(provider);
+    }
   }
 
   /**
@@ -199,6 +206,11 @@ export class ReactAgent {
     if (this.subagentRunner instanceof SubagentRunner) {
       this.subagentRunner.setFileSystem(vfs);
       this.subagentRunner.setToolRegistry(this.toolRegistry);
+      this.subagentRunner.setAdapters({
+        commandExecutor: this.commandExecutor,
+        webProvider: this.webProvider,
+        skillManager: this.skillManager,
+      });
     }
 
     // AbortSignal 事前チェック (#27)
@@ -237,7 +249,19 @@ export class ReactAgent {
 
     // 1. オフライン / テスト用確定型シミュレーションモード (カスタムプロバイダー未指定時)
     if (this.simulate && !this.provider) {
+      if (execOptions.history) {
+        execOptions.history.push({
+          role: 'user',
+          parts: [{ text: prompt }],
+        });
+      }
       yield* this.executeSimulation(prompt, skill, vfs, startTime, signal);
+      if (execOptions.history) {
+        execOptions.history.push({
+          role: 'model',
+          parts: [{ text: `[Completed simulated execution for: ${prompt}]` }],
+        });
+      }
       return;
     }
 
@@ -248,13 +272,17 @@ export class ReactAgent {
         ? this.skillManager.getEnabledSkills()
         : undefined);
 
-    const systemInstruction = this.promptComposer.compose({
-      mode: this.mode,
-      activeSkill: skill,
-      availableSkills,
-      availableTools: this.toolRegistry.getAll(),
-      workspaceRoot: execOptions.workspaceRoot,
-    });
+    let currentActiveSkill = skill;
+    const buildSystemPrompt = () =>
+      this.promptComposer.compose({
+        mode: this.mode,
+        activeSkill: currentActiveSkill,
+        availableSkills,
+        availableTools: this.toolRegistry.getAll(),
+        workspaceRoot: execOptions.workspaceRoot,
+      });
+
+    const systemInstruction = buildSystemPrompt();
 
     // 2. カスタム ILLMProvider またはデルタストリーミングモード (#27)
     if (this.provider) {
@@ -264,7 +292,11 @@ export class ReactAgent {
         systemInstruction,
         vfs,
         startTime,
-        execOptions
+        execOptions,
+        (activatedSkill) => {
+          currentActiveSkill = activatedSkill;
+          return buildSystemPrompt();
+        }
       );
       return;
     }
@@ -294,6 +326,9 @@ export class ReactAgent {
       const chat = ai.chats.create({
         model: this.model,
         config,
+        ...(execOptions.history && execOptions.history.length > 0
+          ? { history: execOptions.history as any }
+          : {}),
       });
 
       let turns = 0;
@@ -304,6 +339,9 @@ export class ReactAgent {
 
       while (turns < this.maxTurns) {
         if (signal?.aborted) {
+          if (execOptions.history && Array.isArray((chat as any).history)) {
+            execOptions.history.splice(0, execOptions.history.length, ...(chat as any).history);
+          }
           yield {
             type: 'COMPLETE',
             payload: {
@@ -357,6 +395,10 @@ export class ReactAgent {
         const response = await chat.sendMessage({
           message: currentMessage,
         });
+
+        if (execOptions.history && Array.isArray((chat as any).history)) {
+          execOptions.history.splice(0, execOptions.history.length, ...(chat as any).history);
+        }
 
         // トークン使用量の集計 (usageMetadata) (#17)
         const usageMeta = (response as any).usageMetadata;
@@ -427,21 +469,49 @@ export class ReactAgent {
               timestamp: Date.now(),
             };
 
-            const emittedEvents: AgentEvent[] = [];
-            const execRes = await this.toolRegistry.execute(callName, callArgs, {
-              fs: vfs,
-              commandExecutor: this.commandExecutor,
-              webProvider: this.webProvider,
-              subagentSpawner: this.subagentRunner,
-              skillManager: this.skillManager,
-              signal,
-              callId: call.id,
-              emit: (ev) => emittedEvents.push(ev),
-            });
+            const eventQueue: AgentEvent[] = [];
+            let notifyEvent: (() => void) | undefined;
+            let toolDone = false;
 
-            for (const ev of emittedEvents) {
-              yield ev;
+            const execPromise = this.toolRegistry
+              .execute(callName, callArgs, {
+                fs: vfs,
+                commandExecutor: this.commandExecutor,
+                webProvider: this.webProvider,
+                subagentSpawner: this.subagentRunner,
+                skillManager: this.skillManager,
+                signal,
+                callId: call.id,
+                emit: (ev) => {
+                  eventQueue.push(ev);
+                  if (notifyEvent) {
+                    const fn = notifyEvent;
+                    notifyEvent = undefined;
+                    fn();
+                  }
+                },
+              })
+              .finally(() => {
+                toolDone = true;
+                if (notifyEvent) {
+                  const fn = notifyEvent;
+                  notifyEvent = undefined;
+                  fn();
+                }
+              });
+
+            while (!toolDone || eventQueue.length > 0) {
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
+              }
+              if (!toolDone) {
+                await new Promise<void>((r) => {
+                  notifyEvent = r;
+                });
+              }
             }
+
+            const execRes = await execPromise;
 
             // サブエージェントのトークン消費量を親累計に合算
             const subUsage = execRes.metadata?.usage as any;
@@ -546,9 +616,11 @@ export class ReactAgent {
     systemInstruction: string,
     vfs: IFileSystem,
     startTime: number,
-    execOptions: ReactAgentExecuteOptions
+    execOptions: ReactAgentExecuteOptions,
+    onSkillActivated?: (skill: LoadedSkill) => string
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const signal = execOptions.signal;
+    let activeSystemInstruction = systemInstruction;
     const messages: LLMMessage[] = execOptions.history
       ? execOptions.history
       : [];
@@ -622,7 +694,7 @@ export class ReactAgent {
         for await (const chunk of provider.streamChat(
           {
             model: this.model,
-            systemInstruction,
+            systemInstruction: activeSystemInstruction,
             messages,
             tools: this.toolRegistry.toFunctionDeclarations(),
             thinkingLevel: this.thinkingLevel,
@@ -725,20 +797,60 @@ export class ReactAgent {
               timestamp: Date.now(),
             };
 
-            const emittedEvents: AgentEvent[] = [];
-            const execRes = await this.toolRegistry.execute(call.name, call.args || {}, {
-              fs: vfs,
-              commandExecutor: this.commandExecutor,
-              webProvider: this.webProvider,
-              subagentSpawner: this.subagentRunner,
-              skillManager: this.skillManager,
-              signal,
-              callId: call.id,
-              emit: (ev) => emittedEvents.push(ev),
-            });
+            const eventQueue: AgentEvent[] = [];
+            let notifyEvent: (() => void) | undefined;
+            let toolDone = false;
 
-            for (const ev of emittedEvents) {
-              yield ev;
+            const execPromise = this.toolRegistry
+              .execute(call.name, call.args || {}, {
+                fs: vfs,
+                commandExecutor: this.commandExecutor,
+                webProvider: this.webProvider,
+                subagentSpawner: this.subagentRunner,
+                skillManager: this.skillManager,
+                signal,
+                callId: call.id,
+                emit: (ev) => {
+                  eventQueue.push(ev);
+                  if (notifyEvent) {
+                    const fn = notifyEvent;
+                    notifyEvent = undefined;
+                    fn();
+                  }
+                },
+              })
+              .finally(() => {
+                toolDone = true;
+                if (notifyEvent) {
+                  const fn = notifyEvent;
+                  notifyEvent = undefined;
+                  fn();
+                }
+              });
+
+            while (!toolDone || eventQueue.length > 0) {
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
+              }
+              if (!toolDone) {
+                await new Promise<void>((r) => {
+                  notifyEvent = r;
+                });
+              }
+            }
+
+            const execRes = await execPromise;
+
+            if (
+              call.name === 'activate_skill' &&
+              !execRes.isError &&
+              onSkillActivated &&
+              typeof this.skillManager?.activateSkill === 'function'
+            ) {
+              const activated = await this.skillManager.activateSkill(String(call.args?.name || ''));
+              if (activated) {
+                activeSystemInstruction = onSkillActivated(activated);
+              }
             }
 
             const subUsage = execRes.metadata?.usage as any;
@@ -875,7 +987,7 @@ export class ReactAgent {
       name: string,
       args: Record<string, any>,
       callId: string
-    ): AsyncGenerator<AgentEvent, void, unknown> {
+    ): AsyncGenerator<AgentEvent, ToolExecutionResult, unknown> {
       if (self.enableStreaming) {
         yield {
           type: 'TOOL_CALL_DELTA',
@@ -898,21 +1010,49 @@ export class ReactAgent {
         timestamp: Date.now(),
       };
 
-      const emitted: AgentEvent[] = [];
-      const res = await self.toolRegistry.execute(name, args, {
-        fs: vfs,
-        commandExecutor: self.commandExecutor,
-        webProvider: self.webProvider,
-        subagentSpawner: self.subagentRunner,
-        skillManager: self.skillManager,
-        signal,
-        callId,
-        emit: (ev) => emitted.push(ev),
-      });
+      const eventQueue: AgentEvent[] = [];
+      let notifyEvent: (() => void) | undefined;
+      let toolDone = false;
 
-      for (const ev of emitted) {
-        yield ev;
+      const execPromise = self.toolRegistry
+        .execute(name, args, {
+          fs: vfs,
+          commandExecutor: self.commandExecutor,
+          webProvider: self.webProvider,
+          subagentSpawner: self.subagentRunner,
+          skillManager: self.skillManager,
+          signal,
+          callId,
+          emit: (ev) => {
+            eventQueue.push(ev);
+            if (notifyEvent) {
+              const fn = notifyEvent;
+              notifyEvent = undefined;
+              fn();
+            }
+          },
+        })
+        .finally(() => {
+          toolDone = true;
+          if (notifyEvent) {
+            const fn = notifyEvent;
+            notifyEvent = undefined;
+            fn();
+          }
+        });
+
+      while (!toolDone || eventQueue.length > 0) {
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+        if (!toolDone) {
+          await new Promise<void>((r) => {
+            notifyEvent = r;
+          });
+        }
       }
+
+      const res = await execPromise;
 
       yield {
         type: 'TOOL_RESULT',
@@ -925,6 +1065,8 @@ export class ReactAgent {
         },
         timestamp: Date.now(),
       };
+
+      return res;
     };
 
     const emitThought = function* (
@@ -954,7 +1096,7 @@ export class ReactAgent {
         `[Plan Mode] Entering planning phase for "${prompt}". Dispatching "researcher" sub-agent for physics and visual architecture recommendations.`
       );
 
-      yield* runToolViaRegistry(
+      const subToolRes = yield* runToolViaRegistry(
         this,
         'dispatch_subagent',
         {
@@ -964,7 +1106,7 @@ export class ReactAgent {
         'sim-sub-1'
       );
 
-      const researchReport = await this.subagentRunner.run('researcher', prompt);
+      const researchReport = subToolRes.output;
 
       const planContent = [
         `# Implementation Plan: ${prompt}`,
@@ -1037,7 +1179,7 @@ export class ReactAgent {
         `[Auto Mode: Phase 1] Dispatching "researcher" sub-agent to investigate optimal mechanics and visual constraints.`
       );
 
-      yield* runToolViaRegistry(
+      const autoSubRes = yield* runToolViaRegistry(
         this,
         'dispatch_subagent',
         {
@@ -1047,7 +1189,7 @@ export class ReactAgent {
         'sim-sub-res'
       );
 
-      const resReport = await this.subagentRunner.run('researcher', prompt);
+      const resReport = autoSubRes.output;
       const autoPlan = `# Plan: ${prompt}\n\n${resReport}\n\n- Implementation file: index.html`;
       await vfs.writeFile('plan.md', autoPlan);
       yield {

@@ -93,6 +93,9 @@ export interface SubagentRunnerOptions {
   fs?: IFileSystem;
   toolRegistry?: ToolRegistry;
   provider?: ILLMProvider;
+  commandExecutor?: any;
+  webProvider?: any;
+  skillManager?: any;
   maxTurns?: number;
 }
 
@@ -111,6 +114,9 @@ export class SubagentRunner implements ISubagentSpawner {
   private vfs: IFileSystem;
   private parentToolRegistry: ToolRegistry;
   private provider?: ILLMProvider;
+  private commandExecutor?: any;
+  private webProvider?: any;
+  private skillManager?: any;
   private maxTurns: number;
   private definitions: Map<string, SubagentDefinition> = new Map();
   private lastUsage?: TokenUsage;
@@ -127,6 +133,9 @@ export class SubagentRunner implements ISubagentSpawner {
     this.vfs = options.fs ?? new VirtualFS();
     this.parentToolRegistry = options.toolRegistry ?? new ToolRegistry(createBuiltinTools());
     this.provider = options.provider;
+    this.commandExecutor = options.commandExecutor;
+    this.webProvider = options.webProvider;
+    this.skillManager = options.skillManager;
     this.maxTurns = options.maxTurns ?? 10;
   }
 
@@ -140,6 +149,12 @@ export class SubagentRunner implements ISubagentSpawner {
 
   setProvider(provider?: ILLMProvider): void {
     this.provider = provider;
+  }
+
+  setAdapters(adapters: { commandExecutor?: any; webProvider?: any; skillManager?: any }): void {
+    if (adapters.commandExecutor !== undefined) this.commandExecutor = adapters.commandExecutor;
+    if (adapters.webProvider !== undefined) this.webProvider = adapters.webProvider;
+    if (adapters.skillManager !== undefined) this.skillManager = adapters.skillManager;
   }
 
   private async resolveDefaultAgentsDir(): Promise<string> {
@@ -496,6 +511,9 @@ export class SubagentRunner implements ISubagentSpawner {
 
           const res = await scopedTools.execute(call.name, call.args || {}, {
             fs: this.vfs,
+            commandExecutor: this.commandExecutor,
+            webProvider: this.webProvider,
+            skillManager: this.skillManager,
             signal,
             callId: call.id,
             subagentId,
@@ -618,6 +636,9 @@ export class SubagentRunner implements ISubagentSpawner {
 
         const execRes = await scopedTools.execute(callName, call.args || {}, {
           fs: this.vfs,
+          commandExecutor: this.commandExecutor,
+          webProvider: this.webProvider,
+          skillManager: this.skillManager,
           signal,
           callId: call.id,
           subagentId,

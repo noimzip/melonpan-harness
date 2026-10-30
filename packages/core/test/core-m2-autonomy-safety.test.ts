@@ -132,6 +132,56 @@ describe('Core-M2: ToolMiddleware, IPermissionPolicy, ISkillLoader & Clean-Room 
       expect(execRes.isError).toBe(true);
       expect(execRes.output).toContain('User denied permission');
     });
+
+    it('streams PERMISSION_REQUESTED live during MelonpanCore.run without deadlocking and resumes on core.resolvePermission (#23)', async () => {
+      const { MelonpanCore, SimulatedProvider } = await import('../src/index.js');
+      const policy = new RuleBasedPermissionPolicy({
+        categoryRules: { write: 'ask' },
+      });
+
+      const simProvider = new SimulatedProvider([
+        () => [
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 'tc-perm-1',
+              name: 'write_file',
+              args: { path: 'approved.txt', content: 'live-approved' },
+            },
+          },
+          { type: 'done' },
+        ],
+        () => [
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 'tc-perm-2',
+              name: 'complete_task',
+              args: { summary: 'Done after live permission' },
+            },
+          },
+          { type: 'done' },
+        ],
+      ]);
+
+      const core = new MelonpanCore({
+        provider: simProvider,
+        permissionPolicy: policy,
+      });
+
+      const collected: AgentEvent[] = [];
+      for await (const ev of core.run('Write approved.txt')) {
+        collected.push(ev);
+        if (ev.type === 'PERMISSION_REQUESTED') {
+          // Resolve immediately while iterating core.run()
+          core.resolvePermission(ev.payload.requestId, 'allow');
+        }
+      }
+
+      expect(collected.some((e) => e.type === 'PERMISSION_REQUESTED')).toBe(true);
+      expect(collected.some((e) => e.type === 'PERMISSION_RESOLVED')).toBe(true);
+      expect(core.getVirtualFiles()['approved.txt']).toBe('live-approved');
+    });
   });
 
   describe('2. ISkillLoader, Generalized Skill Matching & activate_skill Tool (#24, #15)', () => {

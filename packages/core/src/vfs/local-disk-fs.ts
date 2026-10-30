@@ -34,7 +34,13 @@ export class LocalDiskFS implements IFileSystem {
 
   private async resolveSafePath(filePath: string): Promise<{ fullPath: string; relKey: string }> {
     const path = await import('node:path');
-    const resolvedRoot = path.resolve(this.rootDir);
+    const fs = await import('node:fs/promises');
+    let resolvedRoot = path.resolve(this.rootDir);
+    try {
+      resolvedRoot = await fs.realpath(resolvedRoot);
+    } catch {
+      // rootDir may not exist yet
+    }
 
     // 絶対パスとして渡された場合でも rootDir 配下であれば許可し、それ以外は拒否
     let candidate: string;
@@ -51,6 +57,39 @@ export class LocalDiskFS implements IFileSystem {
       throw new Error(
         `Path traversal blocked: "${filePath}" resolves outside workspace root "${resolvedRoot}".`
       );
+    }
+
+    // 既存パスまたは親ディレクトリのシンボリックリンク解決による脱出防止 (#3)
+    try {
+      const realCandidate = await fs.realpath(candidate);
+      if (
+        realCandidate !== resolvedRoot &&
+        !realCandidate.startsWith(resolvedRoot + path.sep)
+      ) {
+        throw new Error(
+          `Path traversal blocked (symlink escape): "${filePath}" points outside workspace root "${resolvedRoot}".`
+        );
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('Path traversal blocked')) {
+        throw err;
+      }
+      // 対象ファイル自体が未作成の場合は親ディレクトリを検証
+      try {
+        const realParent = await fs.realpath(path.dirname(candidate));
+        if (
+          realParent !== resolvedRoot &&
+          !realParent.startsWith(resolvedRoot + path.sep)
+        ) {
+          throw new Error(
+            `Path traversal blocked (parent symlink escape): "${filePath}" points outside workspace root "${resolvedRoot}".`
+          );
+        }
+      } catch (parentErr: any) {
+        if (parentErr?.message?.includes('Path traversal blocked')) {
+          throw parentErr;
+        }
+      }
     }
 
     const relKey = path.relative(resolvedRoot, candidate).replace(/\\/g, '/');

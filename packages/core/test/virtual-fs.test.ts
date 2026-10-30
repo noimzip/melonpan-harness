@@ -151,6 +151,18 @@ describe('VirtualFS / InMemoryVFS & LocalDiskFS (Issues #2, #3, #10, #20)', () =
 
       await expect(diskFs.readFile('../../etc/passwd')).rejects.toThrow(/Path traversal blocked/);
       await expect(diskFs.writeFile('/tmp/outside-melonpan.txt', 'bad')).rejects.toThrow(/Path traversal blocked/);
+
+      // Symlink pointing outside workspace root must also be blocked (#3)
+      const outsideFile = path.join(os.tmpdir(), `outside-secret-${Date.now()}.txt`);
+      await fs.writeFile(outsideFile, 'secret-outside-data', 'utf-8');
+      try {
+        const symlinkPath = path.join(tempDir, 'escaped-link.txt');
+        await fs.symlink(outsideFile, symlinkPath);
+        await expect(diskFs.readFile('escaped-link.txt')).rejects.toThrow(/Path traversal blocked/);
+        await expect(diskFs.writeFile('escaped-link.txt', 'overwrite')).rejects.toThrow(/Path traversal blocked/);
+      } finally {
+        await fs.rm(outsideFile, { force: true });
+      }
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
