@@ -1,27 +1,117 @@
 import { GoogleGenAI } from '@google/genai';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { load as yamlLoad } from 'js-yaml';
-import { SubagentDefinition, TokenUsage } from '../types.js';
+import {
+  AgentEvent,
+  IFileSystem,
+  ILLMProvider,
+  ISubagentSpawner,
+  SubagentDefinition,
+  SubagentRunResult,
+  SubagentSpawnOptions,
+  TokenUsage,
+} from '../types.js';
+import { ToolRegistry } from '../tools/tool-registry.js';
+import { createBuiltinTools } from '../tools/builtin-tools.js';
+import { VirtualFS } from '../vfs/virtual-fs.js';
+
 export type { SubagentDefinition };
+
+/**
+ * ファイルパスまたは内容から適切な Markdown コードフェンス言語タグを動的に推論する (Issue #12)
+ */
+export function inferCodeFenceLanguage(filePath?: string, content?: string): string {
+  if (filePath) {
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'ts':
+      case 'mts':
+      case 'cts':
+        return 'typescript';
+      case 'tsx':
+        return 'tsx';
+      case 'js':
+      case 'mjs':
+      case 'cjs':
+        return 'javascript';
+      case 'jsx':
+        return 'jsx';
+      case 'md':
+      case 'markdown':
+        return 'markdown';
+      case 'json':
+        return 'json';
+      case 'css':
+        return 'css';
+      case 'html':
+      case 'htm':
+        return 'html';
+      case 'py':
+        return 'python';
+      case 'sh':
+      case 'bash':
+        return 'bash';
+      case 'yml':
+      case 'yaml':
+        return 'yaml';
+      case 'rs':
+        return 'rust';
+      case 'go':
+        return 'go';
+      case 'sql':
+        return 'sql';
+    }
+  }
+
+  if (content) {
+    const trimmed = content.trimStart();
+    if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html') || trimmed.startsWith('<div')) {
+      return 'html';
+    }
+    if (trimmed.startsWith('# ') || trimmed.startsWith('## ') || trimmed.startsWith('---')) {
+      return 'markdown';
+    }
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return 'json';
+    }
+    if (
+      trimmed.startsWith('import ') ||
+      trimmed.startsWith('export ') ||
+      trimmed.includes('interface ')
+    ) {
+      return 'typescript';
+    }
+  }
+
+  return 'text';
+}
 
 export interface SubagentRunnerOptions {
   apiKey?: string;
   model?: string;
   agentsDir?: string;
   simulate?: boolean;
+  fs?: IFileSystem;
+  toolRegistry?: ToolRegistry;
+  provider?: ILLMProvider;
+  maxTurns?: number;
 }
 
 /**
- * Clean-Room Isolation サブエージェント実行エンジン
- * メインの会話コンテキストを引き継がず、独立した新規セッションで特化型エージェントを実行します。
+ * Clean-Room Isolation サブエージェント実行エンジン & ISubagentSpawner 実装 (Issues #25, #12, #13, #20)
+ * - メインの会話コンテキストを引き継がず、独立した新規セッションで特化型エージェントを実行
+ * - `agents/*.md` の `allowed-tools` / `readonly` に基づいてスコープ制限された `ToolRegistry` を構成
+ * - `subagentId` および `parentCallId` を付与した階層的イベント中継 (`onEvent`)
+ * - 対象ファイルの拡張子・内容に応じた動的コードフェンス言語指定 (#12)
  */
-export class SubagentRunner {
+export class SubagentRunner implements ISubagentSpawner {
   private apiKey: string;
   private model: string;
-  private agentsDir: string;
+  private agentsDir?: string;
   private simulate: boolean;
+  private vfs: IFileSystem;
+  private parentToolRegistry: ToolRegistry;
+  private provider?: ILLMProvider;
+  private maxTurns: number;
   private definitions: Map<string, SubagentDefinition> = new Map();
   private lastUsage?: TokenUsage;
 
@@ -33,21 +123,39 @@ export class SubagentRunner {
     this.apiKey = options.apiKey || envApiKey || '';
     this.model = options.model || 'gemini-3.8-flash';
     this.simulate = options.simulate ?? !this.apiKey;
+    this.agentsDir = options.agentsDir;
+    this.vfs = options.fs ?? new VirtualFS();
+    this.parentToolRegistry = options.toolRegistry ?? new ToolRegistry(createBuiltinTools());
+    this.provider = options.provider;
+    this.maxTurns = options.maxTurns ?? 10;
+  }
 
-    if (options.agentsDir) {
-      this.agentsDir = options.agentsDir;
-    } else {
-      try {
-        const currentFile = fileURLToPath(import.meta.url);
-        this.agentsDir = path.resolve(path.dirname(currentFile), '../../agents');
-      } catch {
-        this.agentsDir = path.resolve(process.cwd(), 'agents');
-      }
+  setFileSystem(fs: IFileSystem): void {
+    this.vfs = fs;
+  }
+
+  setToolRegistry(registry: ToolRegistry): void {
+    this.parentToolRegistry = registry;
+  }
+
+  setProvider(provider?: ILLMProvider): void {
+    this.provider = provider;
+  }
+
+  private async resolveDefaultAgentsDir(): Promise<string> {
+    if (this.agentsDir) return this.agentsDir;
+    try {
+      const path = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const currentFile = fileURLToPath(import.meta.url);
+      return path.resolve(path.dirname(currentFile), '../../agents');
+    } catch {
+      return 'agents';
     }
   }
 
   /**
-   * 定義ディレクトリからエージェント仕様をロード
+   * 定義ディレクトリからエージェント仕様をロード（ブラウザ環境でも安全にフォールバック）
    */
   async loadDefinitions(): Promise<Map<string, SubagentDefinition>> {
     if (this.definitions.size > 0) {
@@ -55,24 +163,59 @@ export class SubagentRunner {
     }
 
     try {
-      const entries = await fs.readdir(this.agentsDir, { withFileTypes: true });
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      const dirToScan = await this.resolveDefaultAgentsDir();
+      const entries = await fs.readdir(dirToScan, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isFile() && entry.name.endsWith('.md')) {
-          const filePath = path.join(this.agentsDir, entry.name);
+          const filePath = path.join(dirToScan, entry.name);
           const raw = await fs.readFile(filePath, 'utf-8');
           const def = this.parseAgentFile(raw, path.basename(entry.name, '.md'));
           this.definitions.set(def.name, def);
         }
       }
     } catch {
-      // 読み込みに失敗した場合も組み込みフォールバックで動作継続
+      // 読み込みに失敗した場合（ブラウザ環境など）も組み込みフォールバック定義を登録
+    }
+
+    // 組み込み定義の補完
+    if (!this.definitions.has('researcher')) {
+      this.definitions.set('researcher', {
+        name: 'researcher',
+        description: 'Specialist in researching technical specifications and algorithms.',
+        role: 'Technical & Architectural Researcher',
+        readonly: true,
+        allowedTools: ['read_file', 'list_files', 'grep_search', 'web_search', 'fetch_url', 'complete_task'],
+        instruction: this.getDefaultInstruction('researcher'),
+      });
+    }
+    if (!this.definitions.has('code-reviewer')) {
+      this.definitions.set('code-reviewer', {
+        name: 'code-reviewer',
+        description: 'Multi-perspective code auditor assessing performance, security, and UI/UX.',
+        role: 'Multi-Perspective Code Reviewer',
+        readonly: true,
+        allowedTools: ['read_file', 'list_files', 'grep_search', 'run_command', 'complete_task'],
+        instruction: this.getDefaultInstruction('code-reviewer'),
+      });
+    }
+    if (!this.definitions.has('coder')) {
+      this.definitions.set('coder', {
+        name: 'coder',
+        description: 'Focused implementation worker capable of reading, writing, and editing code.',
+        role: 'Focused Implementation Worker',
+        readonly: false,
+        allowedTools: ['read_file', 'list_files', 'grep_search', 'write_file', 'edit_file', 'run_command', 'complete_task'],
+        instruction: this.getDefaultInstruction('coder'),
+      });
     }
 
     return this.definitions;
   }
 
   /**
-   * Markdown + YAML Frontmatter パーサー
+   * Markdown + YAML Frontmatter パーサー (#25: `allowed-tools` および `readonly` 対応)
    */
   parseAgentFile(raw: string, defaultName: string): SubagentDefinition {
     const trimmed = raw.trimStart();
@@ -105,10 +248,22 @@ export class SubagentRunner {
       parsed = {};
     }
 
+    let allowedTools: string[] | undefined;
+    if (typeof parsed['allowed-tools'] === 'string') {
+      allowedTools = parsed['allowed-tools']
+        .split(',')
+        .map((t: string) => t.trim())
+        .filter(Boolean);
+    } else if (Array.isArray(parsed['allowed-tools'])) {
+      allowedTools = parsed['allowed-tools'].map((t: any) => String(t).trim()).filter(Boolean);
+    }
+
     return {
       name: parsed.name || defaultName,
       description: parsed.description || 'Specialized sub-agent',
       role: parsed.role,
+      readonly: typeof parsed.readonly === 'boolean' ? parsed.readonly : undefined,
+      allowedTools,
       instruction: body,
     };
   }
@@ -121,6 +276,18 @@ export class SubagentRunner {
   }
 
   /**
+   * 指定エージェントに適用されるスコープ制限付き ToolRegistry を生成する (#25)
+   */
+  async getScopedToolRegistry(agentType: string): Promise<ToolRegistry> {
+    await this.loadDefinitions();
+    const def = this.definitions.get(agentType);
+    return this.parentToolRegistry.createScopedRegistry({
+      allowedTools: def?.allowedTools,
+      readonly: def?.readonly ?? (agentType === 'researcher' || agentType === 'code-reviewer'),
+    });
+  }
+
+  /**
    * 直近のサブエージェント実行で消費したトークン数を取得
    */
   getLastUsage(): TokenUsage | undefined {
@@ -128,21 +295,108 @@ export class SubagentRunner {
   }
 
   /**
-   * サブエージェントを Clean-Room Isolation 環境で実行
-   * 親エージェントの会話履歴は一切引き継がず、依頼文と必要なファイルコンテキストのみを独立セッションに渡します。
+   * コンテキスト文字列（対象ファイル群）を動的な言語フェンスタグ付きで構築する (#12, #13)
    */
-  async run(agentType: string, taskPrompt: string, fileContext?: string): Promise<string> {
+  async buildPromptWithFileContext(
+    taskPrompt: string,
+    options?: {
+      filePath?: string;
+      files?: string[];
+      fileContext?: string;
+    }
+  ): Promise<string> {
+    const blocks: string[] = [taskPrompt];
+
+    if (options?.files && options.files.length > 0) {
+      for (const fp of options.files) {
+        const content = await this.vfs.readFile(fp);
+        if (content !== undefined) {
+          const lang = inferCodeFenceLanguage(fp, content);
+          blocks.push(`[Target File Content (${fp})]:\n\`\`\`${lang}\n${content}\n\`\`\``);
+        }
+      }
+      return blocks.join('\n\n');
+    }
+
+    if (options?.fileContext !== undefined) {
+      const lang = inferCodeFenceLanguage(options.filePath, options.fileContext);
+      const label = options.filePath
+        ? `[Target File Content (${options.filePath})]`
+        : `[Target File Content (VFS)]`;
+      blocks.push(`${label}:\n\`\`\`${lang}\n${options.fileContext}\n\`\`\``);
+    } else if (options?.filePath) {
+      const content = await this.vfs.readFile(options.filePath);
+      if (content !== undefined) {
+        const lang = inferCodeFenceLanguage(options.filePath, content);
+        blocks.push(
+          `[Target File Content (${options.filePath})]:\n\`\`\`${lang}\n${content}\n\`\`\``
+        );
+      }
+    }
+
+    return blocks.join('\n\n');
+  }
+
+  /**
+   * サブエージェントを Clean-Room Isolation 環境で実行 (#25, #12, #13)
+   * 第3引数には後方互換の `fileContext?: string` または構造化された `Partial<SubagentSpawnOptions>` を受け取ります。
+   */
+  async run(
+    agentType: string,
+    taskPrompt: string,
+    fileContextOrOptions?: string | Partial<SubagentSpawnOptions>
+  ): Promise<string> {
+    const opts: Partial<SubagentSpawnOptions> =
+      typeof fileContextOrOptions === 'string'
+        ? { fileContext: fileContextOrOptions }
+        : fileContextOrOptions || {};
+
+    const result = await this.spawn({
+      agentType,
+      taskPrompt,
+      ...opts,
+    });
+    return result.output;
+  }
+
+  /**
+   * Clean-Room ReAct ループによるサブエージェント実行と階層イベント中継 (#25)
+   */
+  async spawn(options: SubagentSpawnOptions): Promise<SubagentRunResult> {
+    const startTime = Date.now();
+    const { agentType, taskPrompt, signal, onEvent } = options;
+    const subagentId =
+      options.subagentId || `sub-${agentType}-${Date.now().toString(36)}`;
+    const parentCallId = options.parentCallId;
+
+    if (signal?.aborted) {
+      throw new Error(`Subagent "${agentType}" execution aborted.`);
+    }
+
     await this.loadDefinitions();
     const def = this.definitions.get(agentType);
+    const scopedTools = await this.getScopedToolRegistry(agentType);
     const baseInstruction = def?.instruction || this.getDefaultInstruction(agentType);
     const instruction = `${baseInstruction}\n\n[STRICT CLEAN-ROOM CONSTRAINTS]: Do NOT include conversational filler, greetings, or step-by-step thinking traces. Output ONLY a concise, structured bulleted summary of conclusions and actionable findings (maximum 150-200 words) so that the parent agent can immediately act on it without context pollution.`;
 
-    const message = fileContext
-      ? `${taskPrompt}\n\n[Target File Content (VFS)]:\n\`\`\`html\n${fileContext}\n\`\`\``
-      : taskPrompt;
+    const message = await this.buildPromptWithFileContext(taskPrompt, {
+      filePath: options.filePath,
+      files: options.files,
+      fileContext: options.fileContext,
+    });
+
+    const emitHierarchical = (event: AgentEvent) => {
+      if (onEvent) {
+        onEvent({
+          ...event,
+          subagentId,
+          parentCallId,
+        });
+      }
+    };
 
     // 1. オフライン / テスト用確定型シミュレーション
-    if (this.simulate) {
+    if (this.simulate && !this.provider) {
       const promptLen = message.length;
       const simPromptTokens = Math.max(80, Math.min(350, Math.round(promptLen / 4)));
       this.lastUsage = {
@@ -150,35 +404,279 @@ export class SubagentRunner {
         completionTokens: 160,
         totalTokens: simPromptTokens + 160,
       };
-      return this.simulateSubagent(agentType, taskPrompt);
+
+      emitHierarchical({
+        type: 'THOUGHT',
+        payload: {
+          thought: `[Sub-agent ${agentType}] Analyzing task in isolated clean-room session (allowed tools: ${scopedTools.getToolNames().join(', ')})...`,
+        },
+        timestamp: Date.now(),
+      });
+
+      const output = this.simulateSubagent(agentType, taskPrompt);
+      return {
+        subagentId,
+        agentType,
+        output,
+        durationMs: Date.now() - startTime,
+        turns: 1,
+        usage: this.lastUsage,
+      };
     }
 
-    // 2. 本番 Clean-Room Gemini セッション
+    // 2. カスタム ILLMProvider が設定されている場合 (#27)
+    if (this.provider) {
+      let totalPrompt = 0;
+      let totalCompletion = 0;
+      let turns = 0;
+      let finalOutput = '';
+      const messages: any[] = [{ role: 'user', parts: [{ text: message }] }];
+
+      while (turns < this.maxTurns) {
+        if (signal?.aborted) {
+          throw new Error(`Subagent "${agentType}" aborted.`);
+        }
+        turns++;
+
+        let turnText = '';
+        const toolCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
+
+        for await (const chunk of this.provider.streamChat(
+          {
+            model: this.model,
+            systemInstruction: instruction,
+            messages,
+            tools: scopedTools.toFunctionDeclarations(),
+          },
+          signal
+        )) {
+          if (chunk.type === 'thought_delta' && chunk.delta) {
+            emitHierarchical({
+              type: 'THOUGHT_DELTA',
+              payload: { delta: chunk.delta },
+              timestamp: Date.now(),
+            });
+          } else if (chunk.type === 'text_delta' && chunk.delta) {
+            turnText += chunk.delta;
+          } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+            toolCalls.push(chunk.toolCall);
+          } else if (chunk.type === 'usage' && chunk.usage) {
+            totalPrompt += chunk.usage.promptTokens;
+            totalCompletion += chunk.usage.completionTokens;
+          }
+        }
+
+        if (turnText.trim()) {
+          finalOutput = turnText.trim();
+          emitHierarchical({
+            type: 'THOUGHT',
+            payload: { thought: finalOutput },
+            timestamp: Date.now(),
+          });
+        }
+
+        if (toolCalls.length === 0) {
+          break;
+        }
+
+        messages.push({
+          role: 'model',
+          parts: toolCalls.map((tc) => ({ functionCall: tc })),
+        });
+
+        const toolResponseParts: any[] = [];
+        let completedViaTool = false;
+
+        for (const call of toolCalls) {
+          emitHierarchical({
+            type: 'TOOL_CALL',
+            payload: { name: call.name, args: call.args || {}, callId: call.id },
+            timestamp: Date.now(),
+          });
+
+          const res = await scopedTools.execute(call.name, call.args || {}, {
+            fs: this.vfs,
+            signal,
+            callId: call.id,
+            subagentId,
+            parentCallId,
+            emit: emitHierarchical,
+          });
+
+          emitHierarchical({
+            type: 'TOOL_RESULT',
+            payload: {
+              name: call.name,
+              result: res.output,
+              isError: res.isError,
+              callId: call.id,
+              metadata: res.metadata,
+            },
+            timestamp: Date.now(),
+          });
+
+          if (res.isTaskComplete) {
+            completedViaTool = true;
+            if (res.completionSummary) {
+              finalOutput = res.completionSummary;
+            }
+          }
+
+          toolResponseParts.push({
+            functionResponse: {
+              id: call.id,
+              name: call.name,
+              response: res.isError ? { error: res.output } : { output: res.output },
+            },
+          });
+        }
+
+        messages.push({ role: 'user', parts: toolResponseParts });
+        if (completedViaTool) break;
+      }
+
+      this.lastUsage = {
+        promptTokens: totalPrompt || 100,
+        completionTokens: totalCompletion || 120,
+        totalTokens: (totalPrompt || 100) + (totalCompletion || 120),
+      };
+
+      return {
+        subagentId,
+        agentType,
+        output: finalOutput || 'Sub-agent completed task.',
+        durationMs: Date.now() - startTime,
+        turns,
+        usage: this.lastUsage,
+      };
+    }
+
+    // 3. 本番 Clean-Room Gemini セッション（Multi-turn ReAct with Scoped Tools）
     const ai = new GoogleGenAI({ apiKey: this.apiKey });
+    const geminiTools = scopedTools.toGeminiTools();
     const chat = ai.chats.create({
       model: this.model,
       config: {
         systemInstruction: instruction,
+        ...(geminiTools.length > 0 ? { tools: geminiTools } : {}),
       },
     });
 
-    const response = await chat.sendMessage({
-      message,
-    });
+    let currentMsg: any = message;
+    let turns = 0;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let finalReport = '';
 
-    // usageMetadata の集計
-    const usageMeta = (response as any).usageMetadata;
-    if (usageMeta) {
+    while (turns < this.maxTurns) {
+      if (signal?.aborted) {
+        throw new Error(`Subagent "${agentType}" aborted.`);
+      }
+      turns++;
+
+      const response = await chat.sendMessage({
+        message: currentMsg,
+      });
+
+      const usageMeta = (response as any).usageMetadata;
+      if (usageMeta) {
+        totalPromptTokens += usageMeta.promptTokenCount || 0;
+        totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
+      }
+
+      // 思考パートの抽出 (#4)
+      const parts = (response as any).candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part?.thought === true && typeof part.text === 'string' && part.text.trim()) {
+          emitHierarchical({
+            type: 'THOUGHT',
+            payload: { thought: part.text.trim() },
+            timestamp: Date.now(),
+          });
+        }
+      }
+
+      if (response.text && response.text.trim()) {
+        finalReport = response.text.trim();
+      }
+
+      const functionCalls = response.functionCalls;
+      if (!functionCalls || functionCalls.length === 0) {
+        break;
+      }
+
+      const functionResponses: any[] = [];
+      let isDone = false;
+
+      for (const call of functionCalls) {
+        const callName = call.name || 'unknown';
+        emitHierarchical({
+          type: 'TOOL_CALL',
+          payload: { name: callName, args: call.args || {}, callId: call.id },
+          timestamp: Date.now(),
+        });
+
+        const execRes = await scopedTools.execute(callName, call.args || {}, {
+          fs: this.vfs,
+          signal,
+          callId: call.id,
+          subagentId,
+          parentCallId,
+          emit: emitHierarchical,
+        });
+
+        emitHierarchical({
+          type: 'TOOL_RESULT',
+          payload: {
+            name: callName,
+            result: execRes.output,
+            isError: execRes.isError,
+            callId: call.id,
+            metadata: execRes.metadata,
+          },
+          timestamp: Date.now(),
+        });
+
+        if (execRes.isTaskComplete) {
+          isDone = true;
+          if (execRes.completionSummary) {
+            finalReport = execRes.completionSummary;
+          }
+        }
+
+        functionResponses.push({
+          functionResponse: {
+            name: callName,
+            response: execRes.isError ? { error: execRes.output } : { output: execRes.output },
+            id: call.id,
+          },
+        });
+      }
+
+      if (isDone) {
+        break;
+      }
+      currentMsg = functionResponses;
+    }
+
+    if (totalPromptTokens > 0 || totalCompletionTokens > 0) {
       this.lastUsage = {
-        promptTokens: usageMeta.promptTokenCount || 0,
-        completionTokens: usageMeta.candidatesTokenCount || 0,
-        totalTokens: (usageMeta.promptTokenCount || 0) + (usageMeta.candidatesTokenCount || 0),
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
+        totalTokens: totalPromptTokens + totalCompletionTokens,
       };
     } else {
       this.lastUsage = undefined;
     }
 
-    return response.text?.trim() || 'No response from sub-agent.';
+    return {
+      subagentId,
+      agentType,
+      output: finalReport || 'No response from sub-agent.',
+      durationMs: Date.now() - startTime,
+      turns,
+      usage: this.lastUsage,
+    };
   }
 
   /**
@@ -190,6 +688,9 @@ export class SubagentRunner {
     }
     if (agentType === 'code-reviewer') {
       return `You are a multi-perspective code reviewer. Audit the code across 1. Performance, 2. Security, 3. Visual & UI/UX. Output Critical, Warning, and Verdict (APPROVED or NEEDS_REVISION). Keep it concise and bulleted.`;
+    }
+    if (agentType === 'coder') {
+      return `You are a focused implementation sub-agent. Implement or refine the requested files using write_file or edit_file, verify your work, and summarize the changes concisely.`;
     }
     return `You are an expert sub-agent specializing in ${agentType}. Provide clear, direct, and actionable advice for the task.`;
   }

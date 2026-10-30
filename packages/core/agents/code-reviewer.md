@@ -2,6 +2,8 @@
 name: code-reviewer
 description: Multi-perspective code auditor assessing performance, security, and UI/UX polish.
 role: Multi-Perspective Code Reviewer
+readonly: true
+allowed-tools: read_file, list_files, grep_search, run_command, complete_task
 ---
 
 # Instructions for Code Reviewer
