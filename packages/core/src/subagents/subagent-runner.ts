@@ -3,14 +3,8 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load as yamlLoad } from 'js-yaml';
-import { TokenUsage } from '../types.js';
-
-export interface SubagentDefinition {
-  name: string;
-  description: string;
-  role?: string;
-  instruction: string;
-}
+import { SubagentDefinition, TokenUsage } from '../types.js';
+export type { SubagentDefinition };
 
 export interface SubagentRunnerOptions {
   apiKey?: string;

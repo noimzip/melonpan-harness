@@ -20,7 +20,7 @@ export class MelonpanCore {
 
   constructor(options: MelonpanCoreOptions = {}) {
     this.skillManager = options.skillManager ?? new SkillManager({ skillsDir: options.skillsDir });
-    this.vfs = options.vfs ?? new VirtualFS();
+    this.vfs = (options.vfs as VirtualFS) ?? new VirtualFS();
     this.agent = new ReactAgent({
       apiKey: options.apiKey,
       model: options.model ?? 'gemini-3.8-flash',

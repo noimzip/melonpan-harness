@@ -348,7 +348,9 @@ export const App: React.FC<AppProps> = ({
         savedVfsRef.current
       );
     } else {
+      savedVfsRef.current.deleteFile('plan.md');
       setIsPlanConfirmed(false);
+      setPlanContent('');
       setStatus('idle');
       setCurrentActivity('Plan discarded. Ready for new prompt.');
     }
