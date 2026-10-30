@@ -1,26 +1,87 @@
 import { ReactAgent } from './react-agent.js';
 import { SkillManager } from './skills/skill-manager.js';
-import { AgentEvent, MelonpanCoreOptions } from './types.js';
+import {
+  AgentEvent,
+  ClientCommand,
+  IAgentRuntime,
+  IFileSystem,
+  MelonpanCoreOptions,
+  PermissionDecision,
+  RunExecutionOptions,
+  SessionStateSnapshot,
+  ToolMiddleware,
+} from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
+import { AgentSession } from './session/agent-session.js';
+import {
+  createPermissionMiddleware,
+  createSafetyGuardMiddleware,
+} from './permissions/index.js';
+import { ProviderRegistry } from './providers/index.js';
 
 /**
- * MelonpanCore - Agent Skills標準仕様準拠・本格ReAct自律エージェントハーネス
+ * MelonpanCore - Agent Skills標準仕様準拠・モジュラーReAct自律エージェントハーネス (Core-M1 〜 Core-M4)
  *
- * 1. Agent Skills Standard Specification (agentskills.io)
- *    YAML Frontmatterによる軽量インデックス化とオンデマンドMarkdown本文ロード (Progressive Disclosure)
- * 2. ReAct自律ループ (Reasoning + Acting)
- *    Gemini API Function Callingによる Thought ⇄ Action ⇄ Observation の自律実行
- * 3. メモリ内仮想ファイルシステム (VirtualFS)
- *    write_file, edit_file による安全な差分修正とファイル管理
+ * 1. Pluggable Ports & Adapters:
+ *    - `IFileSystem` (`VirtualFS` / `InMemoryVFS` / `LocalDiskFS`)
+ *    - `ITool` & `ToolRegistry` + `ToolMiddleware` & `IPermissionPolicy`
+ *    - `IPromptComposer` (Domain-Agnostic Sections)
+ *    - `ISkillLoader` & `SkillManager` (Progressive Disclosure + `activate_skill`)
+ *    - `ISubagentSpawner` / `SubagentRunner` (Clean-Room Scoped ReAct + Hierarchical Events)
+ *    - `ISessionStore` & `AgentSession` + `IContextStrategy` (Pruning & Compaction)
+ *    - `ILLMProvider` & `ProviderRegistry` (Delta Streaming + `AbortSignal` Cancellation)
+ * 2. Transport-Agnostic Runtime Contract (`IAgentRuntime` / `AgentEventBus` / `seq` Replay Buffer)
  */
-export class MelonpanCore {
+export class MelonpanCore implements IAgentRuntime {
   private skillManager: SkillManager;
   private agent: ReactAgent;
-  private vfs: VirtualFS;
+  private vfs: IFileSystem;
+  private session: AgentSession;
+  private providerRegistry: ProviderRegistry;
 
   constructor(options: MelonpanCoreOptions = {}) {
-    this.skillManager = options.skillManager ?? new SkillManager({ skillsDir: options.skillsDir });
-    this.vfs = (options.vfs as VirtualFS) ?? new VirtualFS();
+    this.vfs = options.vfs ?? new VirtualFS();
+    this.skillManager =
+      options.skillManager ??
+      new SkillManager({
+        skillsDir: options.skillsDir,
+        fs: this.vfs,
+      });
+
+    this.providerRegistry = new ProviderRegistry();
+    if (options.provider) {
+      this.providerRegistry.registerProvider(options.provider);
+    }
+
+    this.session = new AgentSession({
+      mode: options.mode ?? 'act',
+      model: options.model ?? 'gemini-3.8-flash',
+      thinkingLevel: options.thinkingLevel ?? 'high',
+      maxContextTokens: options.maxContextTokens,
+      fs: this.vfs,
+      store: options.sessionStore,
+      contextStrategies: options.contextStrategies,
+      onRunPrompt: (prompt, runOpts) =>
+        this.run(prompt, {
+          mode: runOpts?.mode,
+          signal: runOpts?.signal,
+        }),
+    });
+
+    // ミドルウェアパイプライン構築 (#23)
+    const middlewares: ToolMiddleware[] = [createSafetyGuardMiddleware()];
+    if (options.permissionPolicy) {
+      middlewares.push(
+        createPermissionMiddleware(
+          options.permissionPolicy,
+          this.session.getPermissionCoordinator()
+        )
+      );
+    }
+    if (options.middlewares && options.middlewares.length > 0) {
+      middlewares.push(...options.middlewares);
+    }
+
     this.agent = new ReactAgent({
       apiKey: options.apiKey,
       model: options.model ?? 'gemini-3.8-flash',
@@ -29,16 +90,35 @@ export class MelonpanCore {
       simulate: options.simulate,
       mode: options.mode,
       agentsDir: options.agentsDir,
+      tools: options.tools,
+      middlewares,
+      promptComposer: options.promptComposer,
+      subagentSpawner: options.subagentSpawner,
+      commandExecutor: options.commandExecutor,
+      webProvider: options.webProvider,
+      skillManager: this.skillManager,
+      contextStrategies: options.contextStrategies,
+      provider: options.provider,
+      enableStreaming: options.enableStreaming,
+      maxContextTokens: options.maxContextTokens,
     });
   }
 
   /**
-   * ユーザー入力を受け取り、スキル動的解決・ReActループの全イベントストリームを送出する
+   * ユーザー入力を受け取り、スキル動的解決・ReActループの全イベントストリーム（単調増加 `seq` 付き）を送出する
    */
-  async *run(prompt: string): AsyncGenerator<AgentEvent, void, unknown> {
+  async *run(
+    prompt: string,
+    runOptions: RunExecutionOptions = {}
+  ): AsyncGenerator<AgentEvent, void, unknown> {
+    if (runOptions.mode) {
+      this.agent.setMode(runOptions.mode);
+      this.session.setMode(runOptions.mode);
+    }
+
     // 1. スキルメタデータの軽量インデックス化
     const indexed = await this.skillManager.loadAllMetadata();
-    yield {
+    yield this.session.recordEvent({
       type: 'SKILL_INDEXED',
       payload: {
         skills: indexed.map((s) => ({
@@ -49,12 +129,12 @@ export class MelonpanCore {
         count: indexed.length,
       },
       timestamp: Date.now(),
-    };
+    });
 
     // 2. プロンプトに応じたスキルの動的解決と本文ロード (Progressive Disclosure)
     const skill = await this.skillManager.resolveAndLoad(prompt);
     if (skill) {
-      yield {
+      yield this.session.recordEvent({
         type: 'SKILL_LOADED',
         payload: {
           name: skill.name,
@@ -66,33 +146,52 @@ export class MelonpanCore {
               : skill.instruction,
         },
         timestamp: Date.now(),
-      };
+      });
     } else {
-      yield {
+      yield this.session.recordEvent({
         type: 'THOUGHT',
         payload: {
           thought:
             'ℹ️ No matching or active skills found. Operating in General Autonomous Agent mode.',
         },
         timestamp: Date.now(),
-      };
+      });
     }
 
     // 3. ReAct 自律ループの実行
-    yield* this.agent.execute(prompt, skill, this.vfs);
+    for await (const event of this.agent.execute(prompt, skill, this.vfs, {
+      signal: runOptions.signal,
+      availableSkills: this.skillManager.getEnabledSkills(),
+      history: this.session.getMessages(),
+    })) {
+      yield this.session.recordEvent(event);
+    }
   }
 
   /**
    * 仮想ファイルシステム内の全成果物（ファイルパス: 内容）を取得
    */
   getVirtualFiles(): Record<string, string> {
-    return this.vfs.getFiles();
+    if (typeof (this.vfs as any).getFiles === 'function') {
+      return (this.vfs as any).getFiles();
+    }
+    if (typeof this.vfs.getSnapshot === 'function') {
+      return this.vfs.getSnapshot();
+    }
+    return {};
   }
 
   /**
    * 仮想ファイルシステムインスタンスを取得
    */
   getVFS(): VirtualFS {
+    return this.vfs as VirtualFS;
+  }
+
+  /**
+   * IFileSystem アダプターを取得
+   */
+  getFileSystem(): IFileSystem {
     return this.vfs;
   }
 
@@ -101,6 +200,71 @@ export class MelonpanCore {
    */
   getSkillManager(): SkillManager {
     return this.skillManager;
+  }
+
+  /**
+   * ReactAgent インスタンスを取得
+   */
+  getAgent(): ReactAgent {
+    return this.agent;
+  }
+
+  /**
+   * セッション管理インスタンス (`AgentSession`) を取得 (#26)
+   */
+  getSession(): AgentSession {
+    return this.session;
+  }
+
+  /**
+   * プロバイダーレジストリを取得 (#27)
+   */
+  getProviderRegistry(): ProviderRegistry {
+    return this.providerRegistry;
+  }
+
+  /**
+   * 双方向 ClientCommand を送信する (`IAgentRuntime` 契約 #52)
+   */
+  async sendCommand(command: ClientCommand): Promise<void> {
+    if (command.type === 'SWITCH_MODEL') {
+      this.agent.setModel(command.model, command.thinkingLevel);
+      if (command.providerId) {
+        const p = this.providerRegistry.getProvider(command.providerId);
+        if (p) {
+          this.agent.setProvider(p);
+        }
+      }
+    }
+    await this.session.sendCommand(command);
+  }
+
+  /**
+   * イベントバスを購読する (`IAgentRuntime` 契約 #52)
+   */
+  subscribe(listener: (event: AgentEvent) => void): () => void {
+    return this.session.subscribe(listener);
+  }
+
+  /**
+   * 指定シーケンス番号以降のイベントを再取得する (`IAgentRuntime` 契約 #53)
+   */
+  getEventsSince(lastSeq: number = 0): AgentEvent[] {
+    return this.session.getEventsSince(lastSeq);
+  }
+
+  /**
+   * 現在のセッション状態スナップショットを取得する (`IAgentRuntime` 契約 #53)
+   */
+  getStateSnapshot(): SessionStateSnapshot {
+    return this.session.getStateSnapshot();
+  }
+
+  /**
+   * Permission 承認/拒否を解決する (#23)
+   */
+  resolvePermission(requestId: string, decision: PermissionDecision): boolean {
+    return this.session.resolvePermission(requestId, decision);
   }
 }
 
@@ -114,4 +278,5 @@ export * from './prompts/index.js';
 export * from './runtime/index.js';
 export * from './permissions/index.js';
 export * from './session/index.js';
+export * from './providers/index.js';
 export * from './react-agent.js';
