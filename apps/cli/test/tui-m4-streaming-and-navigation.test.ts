@@ -97,9 +97,18 @@ describe('TUI-M4: Real-Time Token Streaming, Multi-Provider Picker & Scrollable 
       expect(process.env.OPENAI_API_KEY).toBe('sk-test1234567890abcdef');
       expect(loggedActivities.some((a) => a.includes('OPENAI API key set'))).toBe(true);
     });
+
+    it('/model suggestions autocompletes models across providers when filtered', () => {
+      const gptSuggestions = extendedCommandRegistry.getAutocompleteSuggestions('/model gpt', ctx);
+      expect(gptSuggestions.some((s) => s.display === 'gpt-4o')).toBe(true);
+      expect(gptSuggestions.some((s) => s.display === 'gpt-4o-mini')).toBe(true);
+
+      const claudeSuggestions = extendedCommandRegistry.getAutocompleteSuggestions('/model claude', ctx);
+      expect(claudeSuggestions.some((s) => s.display === 'claude-3-7-sonnet')).toBe(true);
+    });
   });
 
-  describe('Issue #39: Task Cancellation Support', () => {
+  describe('Issue #39: Task Cancellation Support and EventList Rendering', () => {
     it('aborts running task via AbortController signal gracefully', () => {
       const abortController = new AbortController();
       let aborted = false;
@@ -112,6 +121,68 @@ describe('TUI-M4: Real-Time Token Streaming, Multi-Provider Picker & Scrollable 
       abortController.abort();
       expect(aborted).toBe(true);
       expect(abortController.signal.aborted).toBe(true);
+    });
+
+    it('renders EventList with Task Cancelled banner when event.payload.aborted is true', async () => {
+      const { EventList } = await import('../src/components/event-list.js');
+      const { render } = await import('ink');
+      const { PassThrough } = await import('node:stream');
+      const React = await import('react');
+
+      const cancelledEvent: any = {
+        type: 'COMPLETE',
+        payload: {
+          summary: 'Execution aborted.',
+          aborted: true,
+          turns: 0,
+          durationMs: 15,
+        },
+        timestamp: Date.now(),
+      };
+
+      let output = '';
+      const stream = new PassThrough();
+      stream.on('data', (c) => {
+        output += c.toString();
+      });
+
+      const instance = render(React.createElement(EventList, { events: [cancelledEvent], isRunning: false }), {
+        stdout: stream as any,
+        stderr: stream as any,
+      });
+      instance.unmount();
+
+      expect(output).toContain('Task Cancelled by User');
+      expect(output).not.toContain('Task Complete!');
+    });
+
+    it('computes Header isLive properly for non-Gemini providers with env keys', async () => {
+      const { Header } = await import('../src/components/header.js');
+      const { render } = await import('ink');
+      const { PassThrough } = await import('node:stream');
+      const React = await import('react');
+
+      process.env.OPENAI_API_KEY = 'sk-valid-openai-key';
+
+      let output = '';
+      const stream = new PassThrough();
+      stream.on('data', (c) => {
+        output += c.toString();
+      });
+
+      const instance = render(React.createElement(Header, {
+        status: 'idle',
+        mode: 'auto',
+        provider: 'openai',
+        model: 'gpt-4o',
+        isSimulate: false,
+      }), {
+        stdout: stream as any,
+        stderr: stream as any,
+      });
+      instance.unmount();
+
+      expect(output).toContain('Live');
     });
   });
 });

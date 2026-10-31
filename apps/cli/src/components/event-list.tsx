@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdin } from 'ink';
 import Spinner from 'ink-spinner';
 import chalk from 'chalk';
 import figures from 'figures';
@@ -70,21 +70,32 @@ export const EventList: React.FC<EventListProps> = ({
   streamingThought = '',
   streamingText = '',
 }) => {
+  const { isRawModeSupported } = useStdin();
   // Scrollback state (#39)
   const [scrollOffset, setScrollOffset] = useState<number>(0);
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
-  useInput((input, key) => {
-    // Scrollback navigation: PageUp / '[' to scroll back, PageDown / ']' to scroll forward
-    if (key.pageUp || input === '[') {
-      setScrollOffset((prev) => Math.min(prev + 5, Math.max(0, events.length - maxDisplay)));
-    } else if (key.pageDown || input === ']') {
-      setScrollOffset((prev) => Math.max(0, prev - 5));
-    } else if (input === 'e' || input === 'o') {
-      // Toggle expansion of the latest event
-      setExpandedIndex((prev) => (prev === null ? events.length - 1 - scrollOffset : null));
-    }
-  });
+  useInput(
+    (input, key) => {
+      // Scrollback navigation: PageUp to scroll back, PageDown to scroll forward
+      if (key.pageUp) {
+        setScrollOffset((prev) => Math.min(prev + 5, Math.max(0, events.length - maxDisplay)));
+      } else if (key.pageDown) {
+        setScrollOffset((prev) => Math.max(0, prev - 5));
+      } else if (key.end || (key.escape && scrollOffset > 0)) {
+        setScrollOffset(0);
+        setExpandedIndex(null);
+      } else if (isRunning && (input === '[' || input === ']')) {
+        // Bracket keys only allowed when running (TextInput is not focused)
+        if (input === '[') {
+          setScrollOffset((prev) => Math.min(prev + 5, Math.max(0, events.length - maxDisplay)));
+        } else {
+          setScrollOffset((prev) => Math.max(0, prev - 5));
+        }
+      }
+    },
+    { isActive: Boolean(isRawModeSupported) }
+  );
 
   // Calculate slice range based on scroll offset
   const endIndex = events.length - scrollOffset;
@@ -247,6 +258,17 @@ export const EventList: React.FC<EventListProps> = ({
       }
 
       case 'COMPLETE':
+        if (event.payload.aborted) {
+          return (
+            <Box key={index} flexDirection="column" marginY={1}>
+              <Text bold color="yellow">
+                ⚠️ Task Cancelled by User ({event.payload.turns} turns, {event.payload.durationMs}ms)
+              </Text>
+              <Text color="gray">   {event.payload.summary}</Text>
+            </Box>
+          );
+        }
+
         return (
           <Box key={index} flexDirection="column" marginY={1}>
             <Text bold color="green">

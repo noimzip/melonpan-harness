@@ -10,6 +10,9 @@ import {
   RuleBasedPermissionPolicy,
   PermissionDecision,
   PermissionRequestedPayload,
+  ILLMProvider,
+  GeminiProvider,
+  OpenAICompatibleProvider,
 } from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
@@ -18,6 +21,37 @@ import { InputBar } from './components/input-bar.js';
 import { ModalPicker, PickerItem } from './components/modal-picker.js';
 import { CommandContext, SessionUsage } from './commands/types.js';
 import { commandRegistry, extendedCommandRegistry } from './commands/registry.js';
+
+function createProviderInstance(
+  providerId: string,
+  modelName: string,
+  apiKey?: string
+): ILLMProvider | undefined {
+  if (providerId === 'openai' || modelName.startsWith('gpt-') || modelName.startsWith('o3-')) {
+    const key = (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '') || apiKey || '';
+    return new OpenAICompatibleProvider({
+      id: 'openai',
+      baseUrl: (typeof process !== 'undefined' ? process.env?.OPENAI_BASE_URL : '') || 'https://api.openai.com/v1',
+      apiKey: key,
+    });
+  }
+  if (providerId === 'anthropic' || modelName.startsWith('claude-')) {
+    const key = (typeof process !== 'undefined' ? process.env?.ANTHROPIC_API_KEY : '') || apiKey || '';
+    return new OpenAICompatibleProvider({
+      id: 'anthropic',
+      baseUrl: (typeof process !== 'undefined' ? process.env?.ANTHROPIC_BASE_URL : '') || 'https://api.anthropic.com/v1',
+      apiKey: key,
+    });
+  }
+  if (providerId === 'gemini' || modelName.startsWith('gemini') || modelName.startsWith('gemma')) {
+    const key = apiKey || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '';
+    return new GeminiProvider({
+      apiKey: key,
+      useStreamingApi: true,
+    });
+  }
+  return undefined;
+}
 
 export interface AppProps {
   initialPrompt?: string;
@@ -204,10 +238,15 @@ export const App: React.FC<AppProps> = ({
 
   // Initialize or obtain Core instance
   const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act'): MelonpanCore => {
+    const currentProvider = isSimulate
+      ? undefined
+      : createProviderInstance(provider, model, apiKey);
+
     if (!coreRef.current) {
       coreRef.current = new MelonpanCore({
         apiKey: apiKey || undefined,
         model,
+        provider: currentProvider,
         thinkingLevel,
         mode: currentRunMode,
         simulate: isSimulate,
@@ -220,6 +259,7 @@ export const App: React.FC<AppProps> = ({
     } else {
       coreRef.current.getAgent().setModel(model, thinkingLevel);
       coreRef.current.getAgent().setMode(currentRunMode);
+      coreRef.current.getAgent().setProvider(currentProvider);
       coreRef.current.getSession().setMode(currentRunMode);
     }
     return coreRef.current;
@@ -295,7 +335,7 @@ export const App: React.FC<AppProps> = ({
 
           case 'TOOL_CALL':
             turnCounter++;
-            setTurns(turnCounter);
+            setTurns((prev) => prev + 1);
             setStreamingThought('');
             setCurrentActivity(`Action: ${event.payload.name}`);
             break;
@@ -348,6 +388,14 @@ export const App: React.FC<AppProps> = ({
             setStreamingThought('');
             setStreamingText('');
 
+            // If task was aborted, transition cleanly to idle without celebrating or flushing
+            if (event.payload.aborted || abortController.signal.aborted) {
+              setStatus('idle');
+              setCurrentActivity('Task execution cancelled by user.');
+              isRunningRef.current = false;
+              return;
+            }
+
             // Accumulate token usage if provided (#36)
             if (event.payload.usage) {
               setSessionUsage((prev) => ({
@@ -370,7 +418,7 @@ export const App: React.FC<AppProps> = ({
                   await (core.getFileSystem() as any).flushToDisk(outDir);
                 }
               } catch (diskErr: any) {
-                console.error('Failed to flush deliverables to disk:', diskErr);
+                setCurrentActivity(`Deliverables flush note: ${diskErr?.message || diskErr}`);
               }
             }
 
@@ -482,11 +530,27 @@ export const App: React.FC<AppProps> = ({
   // Command execution context shared with slash command handlers
   const commandContext: CommandContext = {
     model,
-    setModel,
+    setModel: (m) => {
+      setModel(m);
+      if (coreRef.current) {
+        coreRef.current.getAgent().setModel(m, thinkingLevel);
+      }
+    },
     provider,
-    setProvider,
+    setProvider: (p) => {
+      setProvider(p);
+      if (coreRef.current) {
+        const inst = isSimulate ? undefined : createProviderInstance(p, model, apiKey);
+        coreRef.current.getAgent().setProvider(inst);
+      }
+    },
     effort: thinkingLevel,
-    setEffort: setThinkingLevel,
+    setEffort: (e) => {
+      setThinkingLevel(e);
+      if (coreRef.current) {
+        coreRef.current.getAgent().setModel(model, e);
+      }
+    },
     mode,
     setMode,
     executePrompt: (promptText, overrideMode) => {
@@ -534,6 +598,12 @@ export const App: React.FC<AppProps> = ({
     const trimmed = submittedText.trim();
     if (!trimmed || isRunningRef.current) return;
 
+    // Reset previous rejected plan state on new user prompt submission (#8)
+    if (isPlanConfirmed === false) {
+      setPlanContent('');
+      setIsPlanConfirmed(undefined);
+    }
+
     setInputPrompt('');
 
     // Check if user submitted a slash command
@@ -580,7 +650,7 @@ export const App: React.FC<AppProps> = ({
         await fsRef.current.deleteFile?.('plan.md');
       } catch {}
       setIsPlanConfirmed(false);
-      setPlanContent('');
+      // Retain planContent so PlanViewer displays the REJECTED badge (#8)
       setStatus('idle');
       setCurrentActivity('Plan rejected. Ready for new prompt.');
     }
@@ -626,8 +696,16 @@ export const App: React.FC<AppProps> = ({
           selectedId={model}
           onSelect={(selectedModel, selectedItem) => {
             setModel(selectedModel);
+            const targetProv = selectedItem.providerId || provider;
             if (selectedItem.providerId) {
               setProvider(selectedItem.providerId);
+            }
+            if (coreRef.current) {
+              const nextProviderInst = isSimulate
+                ? undefined
+                : createProviderInstance(targetProv, selectedModel, apiKey);
+              coreRef.current.getAgent().setModel(selectedModel, thinkingLevel);
+              coreRef.current.getAgent().setProvider(nextProviderInst);
             }
             setActivePicker('none');
             setCurrentActivity(`Model switched to ${selectedModel}`);

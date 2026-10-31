@@ -32,9 +32,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
         initialMode = val;
       }
     } else if (arg === '-m' || arg === '--mode') {
-      const next = argv[++i]?.toLowerCase();
+      const next = argv[i + 1]?.toLowerCase();
       if (next === 'plan' || next === 'act' || next === 'auto') {
         initialMode = next;
+        i++;
       }
     } else if (arg.startsWith('--model=')) {
       model = arg.split('=')[1];
@@ -45,8 +46,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
     } else if (arg.startsWith('--effort=') || arg.startsWith('--thinking=')) {
       initialEffort = arg.split('=')[1].toLowerCase();
     } else if (arg === '--effort' || arg === '--thinking') {
-      if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
-        initialEffort = argv[++i]?.toLowerCase();
+      const next = argv[i + 1]?.toLowerCase();
+      if (next && ['minimal', 'low', 'medium', 'high'].includes(next)) {
+        initialEffort = next;
+        i++;
       }
     } else if (arg.startsWith('--key=') || arg.startsWith('--api-key=')) {
       initialApiKey = arg.split('=')[1];
@@ -66,9 +69,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
         fsMode = val;
       }
     } else if (arg === '--fs') {
-      const next = argv[++i]?.toLowerCase();
+      const next = argv[i + 1]?.toLowerCase();
       if (next === 'disk' || next === 'vfs') {
         fsMode = next;
+        i++;
       }
     } else if (arg.startsWith('--provider=')) {
       provider = arg.split('=')[1].toLowerCase();

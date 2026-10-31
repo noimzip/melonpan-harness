@@ -64,16 +64,8 @@ export const InputBar: React.FC<InputBarProps> = ({
   // Intercept special keys (Esc, Tab, Up, Down)
   useInput(
     (input, key) => {
-      // 0. Permission Prompt handling
+      // 0. Permission Prompt handling: delegated to PermissionPrompt component
       if (status === 'awaiting_permission') {
-        const lower = input.toLowerCase();
-        if (lower === 'y') {
-          onPermissionDecision?.('allow');
-        } else if (lower === 'a') {
-          onPermissionDecision?.('always_allow');
-        } else if (lower === 'n' || key.escape) {
-          onPermissionDecision?.('deny');
-        }
         return;
       }
 
@@ -244,7 +236,7 @@ export const InputBar: React.FC<InputBarProps> = ({
     if (!trimmed) return;
 
     // Add to prompt history (#39)
-    if (!trimmed.startsWith('/') && !historyRef.current.includes(trimmed)) {
+    if (!historyRef.current.includes(trimmed)) {
       historyRef.current.push(trimmed);
     }
     setHistoryPointer(-1);

@@ -49,6 +49,16 @@ describe('TUI-M1: Core Stability, Plan Flow & Tool Telemetry UI', () => {
       expect(parsed.initialMode).toBe('plan');
       expect(parsed.initialPrompt).toBe('Refactor authentication');
     });
+
+    it('prevents swallowing prompt words when space-separated flags like -m or --fs lack valid values', () => {
+      const parsedMode = parseCliArgs(['-m', 'Create', 'a', 'snake', 'game']);
+      expect(parsedMode.initialMode).toBe('auto');
+      expect(parsedMode.initialPrompt).toBe('Create a snake game');
+
+      const parsedFs = parseCliArgs(['--fs', 'Build', 'a', 'web', 'dashboard']);
+      expect(parsedFs.fsMode).toBe('vfs');
+      expect(parsedFs.initialPrompt).toBe('Build a web dashboard');
+    });
   });
 
   describe('Issue #7: Autocomplete Enter vs Raw Command Submission', () => {
@@ -100,6 +110,33 @@ describe('TUI-M1: Core Stability, Plan Flow & Tool Telemetry UI', () => {
       }
       expect(flushSpy).not.toHaveBeenCalled();
       expect(vfs.exists('plan.md')).toBe(false);
+    });
+
+    it('renders REJECTED, APPROVED, and PENDING badges correctly', async () => {
+      const { PlanViewer } = await import('../src/components/plan-viewer.js');
+      const { render } = await import('ink');
+      const { PassThrough } = await import('node:stream');
+      const React = await import('react');
+
+      const planText = '# Architecture Plan\n- [ ] Phase 1\n- [x] Phase 2';
+
+      const renderHelper = (isConfirmed?: boolean) => {
+        let text = '';
+        const stream = new PassThrough();
+        stream.on('data', (c) => {
+          text += c.toString();
+        });
+        const inst = render(React.createElement(PlanViewer, { planContent: planText, isConfirmed }), {
+          stdout: stream as any,
+          stderr: stream as any,
+        });
+        inst.unmount();
+        return text;
+      };
+
+      expect(renderHelper(false)).toContain('REJECTED');
+      expect(renderHelper(true)).toContain('APPROVED');
+      expect(renderHelper(undefined)).toContain('PENDING APPROVAL');
     });
   });
 

@@ -47,7 +47,14 @@ export const Header: React.FC<HeaderProps> = ({
   contextWindowTokens = 0,
   maxContextTokens = 128_000,
 }) => {
-  const isLive = hasApiKey && !isSimulate;
+  const activeKey =
+    provider === 'openai'
+      ? (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '')
+      : provider === 'anthropic'
+      ? (typeof process !== 'undefined' ? process.env?.ANTHROPIC_API_KEY : '')
+      : hasApiKey;
+
+  const isLive = Boolean(activeKey) && !isSimulate;
 
   const getStatusBadge = () => {
     switch (status) {

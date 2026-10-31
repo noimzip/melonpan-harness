@@ -126,7 +126,7 @@ export const modelCommand: CommandDefinition = {
     if (!input.startsWith(prefix)) return [];
     const query = input.slice(prefix.length).trim().toLowerCase();
 
-    // Default to the 4 standard AVAILABLE_MODELS for empty query
+    // Default to the 4 standard Gemini models for empty query
     if (!query) {
       return AVAILABLE_MODELS.map((m) => ({
         text: `/model ${m}`,
@@ -135,13 +135,13 @@ export const modelCommand: CommandDefinition = {
       }));
     }
 
-    // Incremental matching against all supported models
-    return ALL_SUPPORTED_MODELS.filter((m) => m.id.toLowerCase().includes(query)).map(
-      (m) => ({
-        text: `/model ${m.id}`,
-        display: m.id,
-        description: `[${m.provider}] ${m.description}`,
-      })
-    );
+    // Incremental matching against all supported models across all providers
+    return ALL_SUPPORTED_MODELS.filter(
+      (m) => m.id.toLowerCase().includes(query) || m.provider.toLowerCase().includes(query)
+    ).map((m) => ({
+      text: `/model ${m.id}`,
+      display: m.id,
+      description: `[${m.provider}] ${m.description}`,
+    }));
   },
 };
