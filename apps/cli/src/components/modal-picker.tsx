@@ -5,13 +5,15 @@ export interface PickerItem {
   id: string;
   label: string;
   description?: string;
+  group?: string;
+  providerId?: string;
 }
 
 export interface ModalPickerProps {
   title: string;
   items: PickerItem[];
   selectedId: string;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, item: PickerItem) => void;
   onCancel: () => void;
 }
 
@@ -49,7 +51,7 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
 
       if (key.return) {
         if (items[highlightedIndex]) {
-          onSelect(items[highlightedIndex].id);
+          onSelect(items[highlightedIndex].id, items[highlightedIndex]);
         }
         return;
       }
@@ -57,7 +59,7 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
       // Number key direct selection (1-indexed)
       const num = parseInt(input, 10);
       if (!isNaN(num) && num >= 1 && num <= items.length) {
-        onSelect(items[num - 1].id);
+        onSelect(items[num - 1].id, items[num - 1]);
       }
     },
     { isActive: Boolean(isRawModeSupported) }
@@ -77,14 +79,14 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
       }
       const num = parseInt(text, 10);
       if (!isNaN(num) && num >= 1 && num <= items.length) {
-        onSelect(items[num - 1].id);
+        onSelect(items[num - 1].id, items[num - 1]);
         return;
       }
       const matched = items.find(
         (it) => it.id.toLowerCase() === text || it.label.toLowerCase() === text
       );
       if (matched) {
-        onSelect(matched.id);
+        onSelect(matched.id, matched);
       }
     };
 
@@ -93,6 +95,8 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
       process.stdin.off('data', onData);
     };
   }, [isRawModeSupported, items, onSelect, onCancel]);
+
+  let currentGroup = '';
 
   return (
     <Box
@@ -111,25 +115,38 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
       {items.map((item, idx) => {
         const isHighlighted = idx === highlightedIndex;
         const isCurrent = item.id === selectedId;
+        const showGroupHeader = Boolean(item.group && item.group !== currentGroup);
+        if (item.group) {
+          currentGroup = item.group;
+        }
 
         return (
-          <Box key={item.id}>
-            <Text>
-              <Text color={isHighlighted ? 'cyan' : 'gray'} bold={isHighlighted}>
-                {isHighlighted ? '❯ ' : '  '}
-                {idx + 1}.{' '}
+          <Box key={item.id} flexDirection="column">
+            {showGroupHeader && (
+              <Box marginTop={idx > 0 ? 1 : 0} marginBottom={0}>
+                <Text color="yellow" bold>
+                  ─── {item.group} ─────────────────────────────
+                </Text>
+              </Box>
+            )}
+            <Box>
+              <Text>
+                <Text color={isHighlighted ? 'cyan' : 'gray'} bold={isHighlighted}>
+                  {isHighlighted ? '❯ ' : '  '}
+                  {idx + 1}.{' '}
+                </Text>
+                <Text
+                  bold={isHighlighted || isCurrent}
+                  color={isHighlighted ? 'cyan' : isCurrent ? 'green' : 'white'}
+                >
+                  {item.label}
+                </Text>
+                {isCurrent && <Text color="green"> (current)</Text>}
+                {item.description && (
+                  <Text color="gray"> - {item.description}</Text>
+                )}
               </Text>
-              <Text
-                bold={isHighlighted || isCurrent}
-                color={isHighlighted ? 'cyan' : isCurrent ? 'green' : 'white'}
-              >
-                {item.label}
-              </Text>
-              {isCurrent && <Text color="green"> (current)</Text>}
-              {item.description && (
-                <Text color="gray"> - {item.description}</Text>
-              )}
-            </Text>
+            </Box>
           </Box>
         );
       })}

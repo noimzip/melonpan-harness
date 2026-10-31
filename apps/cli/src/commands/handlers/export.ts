@@ -6,7 +6,12 @@ export const exportCommand: CommandDefinition = {
   syntax: '/export [path]',
   description: 'メモリ内VFSの全成果物をローカル実ディスク（デフォルト: ./output/）に保存',
   execute: async (args, ctx) => {
-    const files = ctx.vfs.getFiles();
+    const files =
+      typeof (ctx.vfs as any).getFiles === 'function'
+        ? (ctx.vfs as any).getFiles()
+        : typeof (ctx.vfs as any).getSnapshot === 'function'
+        ? (ctx.vfs as any).getSnapshot()
+        : {};
     const count = Object.keys(files).length;
 
     if (count === 0) {
@@ -18,8 +23,11 @@ export const exportCommand: CommandDefinition = {
     const targetDir = args[0]?.trim() || './output/';
 
     try {
-      const writtenPaths = await ctx.vfs.flushToDisk(targetDir);
-      const fileNames = writtenPaths.map((p) => path.basename(p)).join(', ');
+      let writtenPaths: string[] = [];
+      if (typeof (ctx.vfs as any).flushToDisk === 'function') {
+        writtenPaths = await (ctx.vfs as any).flushToDisk(targetDir);
+      }
+      const fileNames = writtenPaths.map((p: string) => path.basename(p)).join(', ');
       ctx.logActivity(`Exported ${writtenPaths.length} files to ${targetDir}`);
       ctx.logThought(`💾 Saved deliverables to "${targetDir}": ${fileNames}`);
     } catch (err: any) {

@@ -9,7 +9,11 @@ export function maskApiKey(key?: string): string {
   return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
 }
 
-export async function saveKeyToEnv(apiKey: string, baseDir: string = process.cwd()): Promise<string> {
+export async function saveKeyToEnv(
+  apiKey: string,
+  baseDir: string = process.cwd(),
+  envVarName: string = 'GEMINI_API_KEY'
+): Promise<string> {
   const envPath = path.resolve(baseDir, '.env');
   let content = '';
   try {
@@ -18,8 +22,8 @@ export async function saveKeyToEnv(apiKey: string, baseDir: string = process.cwd
     content = '';
   }
 
-  const lineRegex = /^GEMINI_API_KEY=.*$/m;
-  const newLine = `GEMINI_API_KEY=${apiKey}`;
+  const lineRegex = new RegExp(`^${envVarName}=.*$`, 'm');
+  const newLine = `${envVarName}=${apiKey}`;
 
   let newContent = '';
   if (lineRegex.test(content)) {
@@ -35,28 +39,39 @@ export async function saveKeyToEnv(apiKey: string, baseDir: string = process.cwd
 export const keyCommand: CommandDefinition = {
   name: 'key',
   aliases: ['apikey', 'api-key'],
-  syntax: '/key [api-key | clear | save <api-key> | status]',
-  description: 'Gemini APIキーの設定・確認・.env保存・クリア',
+  syntax: '/key [api-key | clear | save <api-key> | status | openai <key> | anthropic <key>]',
+  description: 'マルチプロバイダーAPIキー (Gemini, OpenAI, Anthropic) の設定・確認・.env保存',
   execute: async (args, ctx) => {
     const sub = args[0]?.trim();
 
     // 1. Status check / Help
     if (!sub || sub.toLowerCase() === 'status') {
-      const masked = maskApiKey(ctx.apiKey);
+      const geminiKey = ctx.apiKey || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
+      const openaiKey = typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '';
+      const anthropicKey = typeof process !== 'undefined' ? process.env?.ANTHROPIC_API_KEY : '';
+
+      const maskedGemini = maskApiKey(geminiKey);
+      const maskedOpenAI = maskApiKey(openaiKey);
+      const maskedAnthropic = maskApiKey(anthropicKey);
+
       const isLive = Boolean(ctx.apiKey) && !ctx.isSimulate;
       const engineMode = isLive
-        ? '🟢 Live (Real Gemini API)'
+        ? '🟢 Live (Real Model API)'
         : '🟡 Simulation (Offline Mock)';
 
-      ctx.logActivity(`API Key: ${masked} | Engine: ${isLive ? 'Live' : 'Simulation'}`);
+      ctx.logActivity(`API Key: ${maskedGemini} | Engine: ${isLive ? 'Live' : 'Simulation'}`);
       ctx.logThought(`🔑 Gemini API Key Status:`);
-      ctx.logThought(`  • Active Key  : ${masked}`);
+      ctx.logThought(`  • Active Key  : ${maskedGemini}`);
+      ctx.logThought(`  • OpenAI Key  : ${maskedOpenAI}`);
+      ctx.logThought(`  • Anthropic   : ${maskedAnthropic}`);
       ctx.logThought(`  • Engine Mode : ${engineMode}`);
       ctx.logThought(`  ───────────────────────────────────────────`);
       ctx.logThought(`💡 Usage:`);
-      ctx.logThought(`  • /key <api-key>      : APIキーを設定し本番Gemini APIモードを有効化`);
-      ctx.logThought(`  • /key save <api-key> : APIキーを設定してカレントディレクトリの .env に永続保存`);
-      ctx.logThought(`  • /key clear          : APIキーを破棄しシミュレーションモードに戻す`);
+      ctx.logThought(`  • /key <api-key>             : Gemini APIキーを設定し本番Liveモードを有効化`);
+      ctx.logThought(`  • /key openai <api-key>      : OpenAI APIキーを設定`);
+      ctx.logThought(`  • /key anthropic <api-key>   : Anthropic APIキーを設定`);
+      ctx.logThought(`  • /key save <api-key>        : APIキーを設定してカレントディレクトリの .env に永続保存`);
+      ctx.logThought(`  • /key clear                 : APIキーを破棄しシミュレーションモードに戻す`);
       return;
     }
 
@@ -67,6 +82,8 @@ export const keyCommand: CommandDefinition = {
       }
       if (typeof process !== 'undefined' && process.env) {
         delete process.env.GEMINI_API_KEY;
+        delete process.env.OPENAI_API_KEY;
+        delete process.env.ANTHROPIC_API_KEY;
       }
       if (ctx.setSimulate) {
         ctx.setSimulate(true);
@@ -76,7 +93,31 @@ export const keyCommand: CommandDefinition = {
       return;
     }
 
-    // 3. Save API Key to .env
+    // 3. Provider-specific key set (e.g. /key openai sk-..., /key anthropic sk-ant-...)
+    if (sub.toLowerCase() === 'openai' || sub.toLowerCase() === 'anthropic' || sub.toLowerCase() === 'gemini') {
+      const provider = sub.toLowerCase();
+      const targetKey = args[1]?.trim();
+      if (!targetKey) {
+        ctx.logActivity(`Usage: /key ${provider} <api-key>`);
+        ctx.logThought(`⚠️ Please provide an API key: /key ${provider} <your-api-key>`);
+        return;
+      }
+
+      const envVar = provider === 'openai' ? 'OPENAI_API_KEY' : provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'GEMINI_API_KEY';
+      if (typeof process !== 'undefined' && process.env) {
+        process.env[envVar] = targetKey;
+      }
+      if (provider === 'gemini') {
+        if (ctx.setApiKey) ctx.setApiKey(targetKey);
+        if (ctx.setSimulate) ctx.setSimulate(false);
+      }
+      const masked = maskApiKey(targetKey);
+      ctx.logActivity(`${provider.toUpperCase()} API key set (${masked})`);
+      ctx.logThought(`🔑 ${provider.toUpperCase()} API key configured: [${masked}]`);
+      return;
+    }
+
+    // 4. Save API Key to .env
     if (sub.toLowerCase() === 'save') {
       const targetKey = args[1]?.trim() || ctx.apiKey;
       if (!targetKey) {
@@ -108,7 +149,7 @@ export const keyCommand: CommandDefinition = {
       return;
     }
 
-    // 4. Set API Key directly (/key <api-key>)
+    // 5. Set API Key directly (/key <api-key>)
     const newKey = sub;
     if (newKey.length < 8) {
       ctx.logActivity('Warning: Provided API key seems too short.');
@@ -138,7 +179,8 @@ export const keyCommand: CommandDefinition = {
 
     const remainder = input.slice(matchedPrefix.length).trimStart().toLowerCase();
 
-    const options: CommandSuggestion[] = [
+    // Standard 3 options
+    const baseOptions: CommandSuggestion[] = [
       {
         text: `${matchedPrefix}status`,
         display: 'status',
@@ -157,9 +199,23 @@ export const keyCommand: CommandDefinition = {
     ];
 
     if (!remainder) {
-      return options;
+      return baseOptions;
     }
 
-    return options.filter((opt) => opt.display.toLowerCase().startsWith(remainder));
+    const allOptions = [
+      ...baseOptions,
+      {
+        text: `${matchedPrefix}openai `,
+        display: 'openai <key>',
+        description: 'OpenAI APIキーを設定',
+      },
+      {
+        text: `${matchedPrefix}anthropic `,
+        display: 'anthropic <key>',
+        description: 'Anthropic APIキーを設定',
+      },
+    ];
+
+    return allOptions.filter((opt) => opt.display.toLowerCase().startsWith(remainder));
   },
 };

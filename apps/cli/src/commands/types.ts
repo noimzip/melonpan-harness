@@ -1,15 +1,20 @@
-import { VirtualFS, SkillManager } from '@melonpan/core';
+import { VirtualFS, SkillManager, IFileSystem, MelonpanCore } from '@melonpan/core';
 
 export interface SessionUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  contextWindowTokens?: number;
+  maxContextTokens?: number;
+  savedTokens?: number;
 }
 
 export interface CommandContext {
-  // Model & Effort
+  // Model & Provider & Effort
   model: string;
   setModel: (model: string) => void;
+  provider?: string;
+  setProvider?: (provider: string) => void;
   effort: string;
   setEffort: (effort: string) => void;
 
@@ -28,14 +33,21 @@ export interface CommandContext {
   clearSession: () => void;
   logActivity: (message: string) => void;
   logThought: (message: string) => void;
-  openPicker?: (type: 'model' | 'effort') => void;
+  openPicker?: (type: 'model' | 'effort' | 'key') => void;
 
-  // VFS & Skills
-  vfs: VirtualFS;
+  // VFS & Skills & Runtime Core
+  vfs: VirtualFS | IFileSystem;
   skillManager: SkillManager;
+  core?: MelonpanCore;
+  fsMode?: 'vfs' | 'disk';
 
   // Token usage & Cost tracking
   sessionUsage: SessionUsage;
+
+  // Permission & Compaction (#33, #35)
+  permissionPolicy?: any;
+  compactSession?: (instructions?: string) => Promise<void>;
+  cancelTask?: () => void;
 }
 
 export interface CommandSuggestion {

@@ -8,11 +8,14 @@ import { helpCommand } from './handlers/help.js';
 import { skillsCommand } from './handlers/skills.js';
 import { costCommand } from './handlers/cost.js';
 import { keyCommand } from './handlers/key.js';
+import { permissionsCommand } from './handlers/permissions.js';
+import { agentsCommand } from './handlers/agents.js';
+import { compactCommand } from './handlers/compact.js';
 
 export class CommandRegistry {
   private commands: Map<string, CommandDefinition> = new Map();
 
-  constructor() {
+  constructor(includeExtended = false) {
     this.register(modelCommand);
     this.register(effortCommand);
     this.register(planCommand);
@@ -22,6 +25,12 @@ export class CommandRegistry {
     this.register(skillsCommand);
     this.register(costCommand);
     this.register(keyCommand);
+
+    if (includeExtended) {
+      this.register(permissionsCommand);
+      this.register(agentsCommand);
+      this.register(compactCommand);
+    }
   }
 
   register(command: CommandDefinition): void {
@@ -94,11 +103,22 @@ export class CommandRegistry {
     if (!hasSpace) {
       const prefix = trimmedLeading.toLowerCase();
       const all = this.getAllCommands();
+      const takesArgsCommands = new Set([
+        'model',
+        'effort',
+        'plan',
+        'export',
+        'skills',
+        'key',
+        'permissions',
+        'agents',
+        'compact',
+      ]);
+
       return all
         .filter((cmd) => `/${cmd.name.toLowerCase()}`.startsWith(prefix))
         .map((cmd) => {
-          // If the command takes arguments (model, effort, plan, export, skills, key), add trailing space to hint sub-arg completion
-          const takesArgs = ['model', 'effort', 'plan', 'export', 'skills', 'key'].includes(cmd.name);
+          const takesArgs = takesArgsCommands.has(cmd.name.toLowerCase());
           return {
             text: takesArgs ? `/${cmd.name} ` : `/${cmd.name}`,
             display: `/${cmd.name}`,
@@ -107,7 +127,7 @@ export class CommandRegistry {
         });
     }
 
-    // Case 2: User typed command name followed by a space (e.g., "/model ", "/effort low", "/skills enable ")
+    // Case 2: User typed command name followed by a space (e.g., "/model ", "/effort low", "/permissions auto")
     const cmdName = parts[0]?.toLowerCase();
     const command = this.getCommand(cmdName);
     if (command && command.getSuggestions) {
@@ -118,4 +138,5 @@ export class CommandRegistry {
   }
 }
 
-export const commandRegistry = new CommandRegistry();
+export const commandRegistry = new CommandRegistry(false);
+export const extendedCommandRegistry = new CommandRegistry(true);
