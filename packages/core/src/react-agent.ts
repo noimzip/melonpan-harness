@@ -7,7 +7,9 @@ import { extractGeminiResponseParts } from './providers/index.js';
 import {
   createDetailedTokenUsage,
   estimateMessagesTokens,
+  LlmSummaryCompactionStrategy,
   pruneChatHistory,
+  ToolOutputPruningStrategy,
   type PruneHistoryResult,
 } from './session/context-strategy.js';
 import {
@@ -140,7 +142,11 @@ export class ReactAgent {
     this.commandExecutor = options.commandExecutor;
     this.webProvider = options.webProvider;
     this.skillManager = options.skillManager;
-    this.contextStrategies = options.contextStrategies || [];
+    this.contextStrategies =
+      options.contextStrategies ?? [
+        new ToolOutputPruningStrategy(),
+        new LlmSummaryCompactionStrategy({ maxContextTokens: this.maxContextTokens }),
+      ];
     this.provider = options.provider;
 
     this.subagentRunner =
@@ -324,7 +330,7 @@ export class ReactAgent {
         config.cachedContent = cachedContentName;
       } else {
         config.systemInstruction = systemInstruction;
-        config.tools = this.toolRegistry.toGeminiTools();
+        config.tools = stableTools && stableTools.length > 0 ? [{ functionDeclarations: stableTools }] : [];
       }
 
       const thinkingLevelUpper = (this.thinkingLevel || 'high').toUpperCase();

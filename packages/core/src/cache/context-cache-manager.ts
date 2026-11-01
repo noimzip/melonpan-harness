@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { FunctionDeclaration, LLMMessage, LLMChatRequest, TokenUsage } from '../types.js';
 
 export interface ContextCacheInfo {
@@ -11,7 +12,7 @@ export interface ContextCacheInfo {
 }
 
 export interface ContextCacheManagerOptions {
-  /** コンテキストキャッシュの有効期限 (秒単位, デフォルト: 300秒 = 5分) */
+  /** コンテキストキャッシュの有効期限 (秒単位, デフォルト: 1800秒 = 30分) */
   ttlSeconds?: number;
   /** Gemini Context Cache を有効化するか (デフォルト: true) */
   enableGeminiCache?: boolean;
@@ -20,16 +21,10 @@ export interface ContextCacheManagerOptions {
 }
 
 /**
- * 簡易文字列ハッシュ（キャッシュフィンガープリント用）
+ * 決定論的 SHA-256 ハッシュ（キャッシュフィンガープリント用）
  */
-function hashString(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36);
+function sha256Hex(str: string): string {
+  return createHash('sha256').update(str).digest('hex').slice(0, 16);
 }
 
 /**
@@ -39,9 +34,9 @@ function hashString(str: string): string {
  *    - ツール定義やシステム指示を決定論的順序で正規化し、プロバイダー側のプロンプトキャッシュヒット率を最大化する。
  * 2. Gemini Context Caching (`ai.caches.create`):
  *    - 長大なシステムプロンプトやツール定義をGemini Context Cacheに先行格納し、全ターンで cachedContent を再利用。
- *    - 最小トークン数未達時やAPI未対応時の安全なフォールバック。
+ *    - 最小トークン数未達時やAPI未対応モデル（例: Gemini 4 Argon）時の安全なフォールバック。
  * 3. OpenAI / OpenRouter Anthropic Prompt Caching:
- *    - システムプロンプトやツール定義へ `cache_control: { type: "ephemeral" }` を自動付与し、キャッシュ読取コストを約90%削減。
+ *    - システムプロンプト、ツール定義、およびマルチターン会話履歴の直前ターンに `cache_control: { type: "ephemeral" }` を自動付与し、キャッシュ読取コストを約90%削減。
  * 4. キャッシュトークン計測 & 燃費最適化:
  *    - `cachedPromptTokens`, `cacheCreationPromptTokens` を正確に抽出し、累計消費トークンと推定費用を最適化。
  */
@@ -52,7 +47,7 @@ export class ContextCacheManager {
   private enablePromptCaching: boolean;
 
   constructor(options: ContextCacheManagerOptions = {}) {
-    this.ttlSeconds = options.ttlSeconds ?? 300;
+    this.ttlSeconds = options.ttlSeconds ?? 1800; // 300ターンの長時間対話に耐える30分TTL
     this.enableGeminiCache = options.enableGeminiCache ?? true;
     this.enablePromptCaching = options.enablePromptCaching ?? true;
   }
@@ -66,12 +61,24 @@ export class ContextCacheManager {
   }
 
   /**
-   * システム指示およびツール定義から決定論的なフィンガープリントを生成
+   * システム指示およびツール定義から決定論的な SHA-256 フィンガープリントを生成
    */
   generateFingerprint(model: string, systemInstruction?: string, tools?: any[]): string {
     const stableTools = this.stabilizeTools(tools);
     const key = `${model}:::${systemInstruction || ''}:::${JSON.stringify(stableTools || [])}`;
-    return hashString(key);
+    return sha256Hex(key);
+  }
+
+  /**
+   * 明示的 Gemini Context Cache (`ai.caches.create`) が公式にサポートされているモデルか判定
+   * ※ Gemini 4 Argon およびそれ以降のモデルは暗黙的キャッシュ (Implicit Caching) のみ対応
+   */
+  isExplicitCacheSupported(model: string): boolean {
+    const m = (model || '').toLowerCase();
+    if (m.includes('gemini-4') || m.includes('argon')) {
+      return false;
+    }
+    return m.includes('gemini-1.5') || m.includes('gemini-2') || m.includes('gemini-3');
   }
 
   /**
@@ -87,6 +94,7 @@ export class ContextCacheManager {
     if (!this.enableGeminiCache) return undefined;
     const { ai, model, systemInstruction, tools, displayName } = options;
     if (!ai || !ai.caches || typeof ai.caches.create !== 'function') return undefined;
+    if (!this.isExplicitCacheSupported(model)) return undefined;
 
     const fingerprint = this.generateFingerprint(model, systemInstruction, tools);
     const existing = this.activeCaches.get(fingerprint);
@@ -130,7 +138,7 @@ export class ContextCacheManager {
       }
     } catch {
       // 最小トークン数未達やパーミッションエラー等でキャッシュ作成に失敗した場合は
-      // 通常の非キャッシュ実行にフォールバック（例外を送出せず続行）
+      // 通常の非キャッシュ実行（Gemini Implicit Caching）にフォールバック（例外を送出せず続行）
     }
 
     return undefined;
@@ -139,6 +147,11 @@ export class ContextCacheManager {
   /**
    * OpenAI / OpenRouter 互換メッセージ配列およびツール配列に Anthropic 互換の prompt caching マーカー
    * (`cache_control: { type: 'ephemeral' }`) を付与する
+   *
+   * Anthropic / OpenRouter では最大4個のブレークポイントを指定可能:
+   * 1. システムプロンプト (システム指示 + スキル定義)
+   * 2. ツール定義 (最後のツール)
+   * 3. 会話履歴の直前ターン（累積メッセージ全体をキャッシュ再利用）
    */
   applyPromptCacheControl(body: {
     messages?: any[];
@@ -155,7 +168,9 @@ export class ContextCacheManager {
         systemMsg.cache_control = { type: 'ephemeral' };
       } else if (Array.isArray(systemMsg.content) && systemMsg.content.length > 0) {
         const lastPart = systemMsg.content[systemMsg.content.length - 1];
-        lastPart.cache_control = { type: 'ephemeral' };
+        if (typeof lastPart === 'object' && lastPart !== null) {
+          lastPart.cache_control = { type: 'ephemeral' };
+        }
       }
     }
 
@@ -164,6 +179,26 @@ export class ContextCacheManager {
       const lastTool = body.tools[body.tools.length - 1];
       if (lastTool && typeof lastTool === 'object') {
         lastTool.cache_control = { type: 'ephemeral' };
+      }
+    }
+
+    // 3. マルチターン会話履歴の直前ターンに cache_control チェックポイントを付与
+    // メッセージが3件以上ある場合（例: system, user_1, assistant_1, user_2...）、
+    // 最新ターンの直前のメッセージ（末尾から2番目）にチェックポイントを置くことで、
+    // 過去全ターンのコンテキストを丸ごとキャッシュヒットさせ、再計算を防止する
+    if (body.messages.length >= 3) {
+      const prevTurnMsg = body.messages[body.messages.length - 2];
+      if (prevTurnMsg && prevTurnMsg.role !== 'system') {
+        if (typeof prevTurnMsg.content === 'string') {
+          prevTurnMsg.cache_control = { type: 'ephemeral' };
+        } else if (Array.isArray(prevTurnMsg.content) && prevTurnMsg.content.length > 0) {
+          const lastPart = prevTurnMsg.content[prevTurnMsg.content.length - 1];
+          if (typeof lastPart === 'object' && lastPart !== null) {
+            lastPart.cache_control = { type: 'ephemeral' };
+          }
+        } else if (prevTurnMsg.role === 'tool' || prevTurnMsg.tool_call_id) {
+          prevTurnMsg.cache_control = { type: 'ephemeral' };
+        }
       }
     }
   }
@@ -179,7 +214,11 @@ export class ContextCacheManager {
   } {
     const promptTokens = usageMeta?.promptTokenCount || 0;
     const completionTokens = usageMeta?.candidatesTokenCount || 0;
-    const cachedPromptTokens = usageMeta?.cachedContentTokenCount || 0;
+    const cachedPromptTokens =
+      usageMeta?.cachedContentTokenCount ||
+      usageMeta?.totalCachedTokens ||
+      usageMeta?.total_cached_tokens ||
+      0;
     const billedPromptTokens = Math.max(0, promptTokens - cachedPromptTokens);
 
     return {
@@ -200,8 +239,6 @@ export class ContextCacheManager {
     cacheCreationPromptTokens: number;
     billedPromptTokens: number;
   } {
-    const promptTokens = usage?.prompt_tokens ?? 0;
-    const completionTokens = usage?.completion_tokens ?? 0;
     const cachedPromptTokens =
       usage?.prompt_tokens_details?.cached_tokens ??
       usage?.cache_read_input_tokens ??
@@ -209,6 +246,13 @@ export class ContextCacheManager {
       0;
     const cacheCreationPromptTokens =
       usage?.cache_creation_input_tokens ?? 0;
+
+    const rawPrompt =
+      usage?.prompt_tokens ??
+      (usage?.input_tokens !== undefined ? usage.input_tokens + cachedPromptTokens : 0);
+    // Anthropic Native等で prompt_tokens が uncached 部分のみだった場合でも破綻しないよう正規化
+    const promptTokens = rawPrompt < cachedPromptTokens ? cachedPromptTokens + rawPrompt : rawPrompt;
+    const completionTokens = usage?.completion_tokens ?? usage?.output_tokens ?? 0;
     const billedPromptTokens = Math.max(0, promptTokens - cachedPromptTokens);
 
     return {

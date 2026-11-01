@@ -18,6 +18,10 @@ import {
   createSafetyGuardMiddleware,
 } from './permissions/index.js';
 import { ProviderRegistry } from './providers/index.js';
+import {
+  LlmSummaryCompactionStrategy,
+  ToolOutputPruningStrategy,
+} from './session/context-strategy.js';
 
 /**
  * MelonpanCore - Agent Skills標準仕様準拠・モジュラーReAct自律エージェントハーネス (Core-M1 〜 Core-M4)
@@ -53,14 +57,21 @@ export class MelonpanCore implements IAgentRuntime {
       this.providerRegistry.registerProvider(options.provider);
     }
 
+    const maxContextTokens = options.maxContextTokens ?? 128000;
+    const sharedStrategies =
+      options.contextStrategies ?? [
+        new ToolOutputPruningStrategy(),
+        new LlmSummaryCompactionStrategy({ maxContextTokens }),
+      ];
+
     this.session = new AgentSession({
       mode: options.mode ?? 'act',
       model: options.model ?? 'gemini-3.8-flash',
       thinkingLevel: options.thinkingLevel ?? 'high',
-      maxContextTokens: options.maxContextTokens,
+      maxContextTokens,
       fs: this.vfs,
       store: options.sessionStore,
-      contextStrategies: options.contextStrategies,
+      contextStrategies: sharedStrategies,
       onRunPrompt: (prompt, runOpts) =>
         this.run(prompt, {
           mode: runOpts?.mode,
@@ -97,10 +108,10 @@ export class MelonpanCore implements IAgentRuntime {
       commandExecutor: options.commandExecutor,
       webProvider: options.webProvider,
       skillManager: this.skillManager,
-      contextStrategies: options.contextStrategies,
+      contextStrategies: sharedStrategies,
       provider: options.provider,
       enableStreaming: options.enableStreaming,
-      maxContextTokens: options.maxContextTokens,
+      maxContextTokens,
       cacheManager: options.cacheManager,
     });
   }

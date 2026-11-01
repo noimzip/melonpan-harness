@@ -3,7 +3,7 @@ import { ContextCacheManager } from '../src/cache/context-cache-manager.js';
 import { MelonpanCore } from '../src/index.js';
 import { AgentSession } from '../src/session/agent-session.js';
 import { VirtualFS } from '../src/vfs/virtual-fs.js';
-import { ToolOutputPruningStrategy } from '../src/session/context-strategy.js';
+import { ToolOutputPruningStrategy, pruneChatHistory } from '../src/session/context-strategy.js';
 import type { FunctionDeclaration } from '../src/types.js';
 
 describe('ContextCacheManager', () => {
@@ -45,6 +45,8 @@ describe('ContextCacheManager', () => {
     const fpB = manager.generateFingerprint('gemini-3.8-flash', 'System instructions...', toolsB);
 
     expect(fpA).toBe(fpB);
+    expect(fpA).toHaveLength(16);
+    expect(/^[0-9a-f]{16}$/.test(fpA)).toBe(true);
 
     const fpDifferent = manager.generateFingerprint('gemini-3.8-flash', 'Different instructions', toolsA);
     expect(fpA).not.toBe(fpDifferent);
@@ -109,13 +111,23 @@ describe('ContextCacheManager', () => {
     expect(cache).toBeUndefined(); // Fallback without throwing
   });
 
-  it('applyPromptCacheControl injects ephemeral cache markers for Anthropic / OpenRouter', () => {
+  it('isExplicitCacheSupported identifies model support correctly', () => {
+    const manager = new ContextCacheManager();
+    expect(manager.isExplicitCacheSupported('gemini-3.8-flash')).toBe(true);
+    expect(manager.isExplicitCacheSupported('gemini-2.5-flash')).toBe(true);
+    expect(manager.isExplicitCacheSupported('gemini-4-argon')).toBe(false);
+  });
+
+  it('applyPromptCacheControl injects ephemeral cache markers for Anthropic / OpenRouter across multi-turn messages', () => {
     const manager = new ContextCacheManager({ enablePromptCaching: true });
 
     const body: Record<string, any> = {
       messages: [
         { role: 'system', content: 'You are an autonomous game engine agent.' },
-        { role: 'user', content: 'Create a game.' },
+        { role: 'user', content: 'Turn 1 user prompt.' },
+        { role: 'assistant', content: 'Turn 1 assistant response.' },
+        { role: 'tool', tool_call_id: 'call_1', content: '{"output":"file written"}' },
+        { role: 'user', content: 'Turn 2 user prompt.' },
       ],
       tools: [
         { type: 'function', function: { name: 'tool_1' } },
@@ -125,13 +137,16 @@ describe('ContextCacheManager', () => {
 
     manager.applyPromptCacheControl(body);
 
-    // System prompt marked
+    // 1. System prompt marked
     expect(body.messages[0].cache_control).toEqual({ type: 'ephemeral' });
-    expect(body.messages[1].cache_control).toBeUndefined();
 
-    // Last tool definition marked
+    // 2. Last tool definition marked
     expect(body.tools[0].cache_control).toBeUndefined();
     expect(body.tools[1].cache_control).toEqual({ type: 'ephemeral' });
+
+    // 3. Conversation history prior-turn checkpoint marked (Turn 1 tool response right before Turn 2)
+    expect(body.messages[3].cache_control).toEqual({ type: 'ephemeral' });
+    expect(body.messages[4].cache_control).toBeUndefined(); // Current turn remains uncached for new inputs
   });
 
   it('extractGeminiUsage extracts cachedPromptTokens and billedPromptTokens correctly', () => {
@@ -149,7 +164,7 @@ describe('ContextCacheManager', () => {
     expect(usage.billedPromptTokens).toBe(2500);
   });
 
-  it('extractOpenAIUsage extracts cachedPromptTokens from prompt_tokens_details', () => {
+  it('extractOpenAIUsage extracts cachedPromptTokens and normalizes Anthropic-style usage', () => {
     const manager = new ContextCacheManager();
 
     const rawUsage = {
@@ -164,6 +179,19 @@ describe('ContextCacheManager', () => {
     const usage = manager.extractOpenAIUsage(rawUsage);
     expect(usage.cachedPromptTokens).toBe(6000);
     expect(usage.billedPromptTokens).toBe(2000);
+
+    // Anthropic Native style where input_tokens excludes cache_read_input_tokens
+    const anthropicUsage = {
+      input_tokens: 500,
+      output_tokens: 300,
+      cache_read_input_tokens: 4500,
+      cache_creation_input_tokens: 200,
+    };
+
+    const normalized = manager.extractOpenAIUsage(anthropicUsage);
+    expect(normalized.cachedPromptTokens).toBe(4500);
+    expect(normalized.promptTokens).toBe(5000);
+    expect(normalized.billedPromptTokens).toBe(500);
   });
 });
 
@@ -214,5 +242,27 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect(usage.promptTokens).toBe(12000);
     expect(usage.completionTokens).toBe(800);
     expect(usage.cachedPromptTokens).toBe(9000);
+  });
+
+  it('pruneChatHistory masks both giant tool output and error responses', () => {
+    const hugeError = 'Error: Stack trace line 1\n'.repeat(40);
+    const history = [
+      {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              name: 'run_command',
+              response: { error: hugeError },
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = pruneChatHistory(history, { outputThresholdChars: 500 });
+    expect(result.prunedCallsCount).toBe(1);
+    expect(result.savedCharsCount).toBeGreaterThan(0);
+    expect(history[0].parts[0].functionResponse.response.error).toContain('<Tool output pruned:');
   });
 });

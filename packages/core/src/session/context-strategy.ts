@@ -162,26 +162,33 @@ export function pruneChatHistory(
 
       // 3. read_file / grep_search / run_command 等の巨大 functionResponse 出力マスク (#26)
       if (outputThreshold !== undefined && part?.functionResponse) {
-        const toolName = part.functionResponse.name;
+        const resObj = part.functionResponse.response;
+        const rawContent =
+          typeof resObj === 'string'
+            ? resObj
+            : typeof resObj?.output === 'string'
+              ? resObj.output
+              : typeof resObj?.error === 'string'
+                ? resObj.error
+                : undefined;
+
         if (
-          toolName === 'read_file' ||
-          toolName === 'grep_search' ||
-          toolName === 'run_command' ||
-          toolName === 'fetch_url'
+          typeof rawContent === 'string' &&
+          rawContent.length >= outputThreshold &&
+          !rawContent.startsWith('<Tool output pruned:')
         ) {
-          const out = part.functionResponse.response?.output;
-          if (
-            typeof out === 'string' &&
-            out.length >= outputThreshold &&
-            !out.startsWith('<Tool output pruned:')
-          ) {
-            const originalLen = out.length;
-            const preview = out.slice(0, 160).replace(/\n/g, ' ');
-            const replacement = `<Tool output pruned: ${originalLen} chars. Preview: ${preview}...>`;
+          const originalLen = rawContent.length;
+          const preview = rawContent.slice(0, 160).replace(/\n/g, ' ');
+          const replacement = `<Tool output pruned: ${originalLen} chars. Preview: ${preview}...>`;
+          if (typeof resObj === 'string') {
+            part.functionResponse.response = replacement;
+          } else if (resObj?.error !== undefined && resObj?.output === undefined) {
+            part.functionResponse.response.error = replacement;
+          } else if (resObj) {
             part.functionResponse.response.output = replacement;
-            prunedCallsCount++;
-            savedCharsCount += originalLen - replacement.length;
           }
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
         }
       }
     }

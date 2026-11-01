@@ -118,17 +118,21 @@ export class ToolRegistry {
   }
 
   /**
-   * LLM Function Calling 用の FunctionDeclaration 配列を出力する
+   * LLM Function Calling 用の FunctionDeclaration 配列を出力する（prefix cacheヒット率向上のためソート指定可）
    */
-  toFunctionDeclarations(): FunctionDeclaration[] {
-    return Array.from(this.tools.values()).map((t) => t.declaration);
+  toFunctionDeclarations(options?: { sort?: boolean }): FunctionDeclaration[] {
+    const decls = Array.from(this.tools.values()).map((t) => t.declaration);
+    if (options?.sort) {
+      return [...decls].sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+    }
+    return decls;
   }
 
   /**
    * @google/genai 形式の Tool[] を出力する
    */
-  toGeminiTools(): Tool[] {
-    const declarations = this.toFunctionDeclarations();
+  toGeminiTools(options?: { sort?: boolean }): Tool[] {
+    const declarations = this.toFunctionDeclarations(options);
     if (declarations.length === 0) return [];
     return [{ functionDeclarations: declarations }];
   }
@@ -136,8 +140,8 @@ export class ToolRegistry {
   /**
    * OpenAI 互換 (JSON Schema 準拠) の Tool[] を出力する
    */
-  toOpenAITools(): any[] {
-    return formatOpenAITools(this.toFunctionDeclarations());
+  toOpenAITools(options?: { sort?: boolean }): any[] {
+    return formatOpenAITools(this.toFunctionDeclarations(options));
   }
 
 
