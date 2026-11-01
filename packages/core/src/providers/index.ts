@@ -494,8 +494,94 @@ export class OpenAICompatibleProvider implements ILLMProvider {
   }
 }
 
+export interface OpenRouterProviderOptions extends OpenAICompatibleProviderOptions {}
+
 /**
- * 3. SimulatedProvider: オフライン・テスト用の決定論的ストリーミングプロバイダー (#27)
+ * 3. OpenRouterProvider: OpenRouter推論ゲートウェイプロバイダー
+ * - エンドポイント: https://openrouter.ai/api/v1
+ * - 環境変数: OPENROUTER_API_KEY / OPENROUTER_BASE_URL
+ * - 必須ヘッダー: HTTP-Referer, X-Title
+ */
+export class OpenRouterProvider extends OpenAICompatibleProvider {
+  constructor(options: OpenRouterProviderOptions = {}) {
+    const envKey =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.OPENROUTER_API_KEY || ''
+        : '';
+    const envBase =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.OPENROUTER_BASE_URL || ''
+        : '';
+    super({
+      id: options.id || 'openrouter',
+      baseUrl: options.baseUrl || envBase || 'https://openrouter.ai/api/v1',
+      apiKey: options.apiKey ?? envKey,
+      headers: {
+        'HTTP-Referer': 'https://github.com/noimzip/melonpan-harness',
+        'X-Title': 'Melonpan Harness',
+        ...options.headers,
+      },
+      fetchImpl: options.fetchImpl,
+    });
+  }
+}
+
+export interface OrcaRouterProviderOptions extends OpenAICompatibleProviderOptions {}
+
+/**
+ * 4. OrcaRouterProvider: OrcaRouter推論ゲートウェイプロバイダー
+ * - エンドポイント: https://api.orcarouter.ai/v1
+ * - 環境変数: ORCAROUTER_API_KEY / ORCAROUTER_BASE_URL
+ */
+export class OrcaRouterProvider extends OpenAICompatibleProvider {
+  constructor(options: OrcaRouterProviderOptions = {}) {
+    const envKey =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.ORCAROUTER_API_KEY || ''
+        : '';
+    const envBase =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.ORCAROUTER_BASE_URL || ''
+        : '';
+    super({
+      id: options.id || 'orcarouter',
+      baseUrl: options.baseUrl || envBase || 'https://api.orcarouter.ai/v1',
+      apiKey: options.apiKey ?? envKey,
+      headers: options.headers,
+      fetchImpl: options.fetchImpl,
+    });
+  }
+}
+
+export interface GroqProviderOptions extends OpenAICompatibleProviderOptions {}
+
+/**
+ * 5. GroqProvider: Groq LPU高速推論プロバイダー
+ * - エンドポイント: https://api.groq.com/openai/v1
+ * - 環境変数: GROQ_API_KEY / GROQ_BASE_URL
+ */
+export class GroqProvider extends OpenAICompatibleProvider {
+  constructor(options: GroqProviderOptions = {}) {
+    const envKey =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.GROQ_API_KEY || ''
+        : '';
+    const envBase =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.GROQ_BASE_URL || ''
+        : '';
+    super({
+      id: options.id || 'groq',
+      baseUrl: options.baseUrl || envBase || 'https://api.groq.com/openai/v1',
+      apiKey: options.apiKey ?? envKey,
+      headers: options.headers,
+      fetchImpl: options.fetchImpl,
+    });
+  }
+}
+
+/**
+ * 6. SimulatedProvider: オフライン・テスト用の決定論的ストリーミングプロバイダー (#27)
  */
 export class SimulatedProvider implements ILLMProvider {
   readonly id = 'simulated';
@@ -572,6 +658,9 @@ export class ProviderRegistry {
     const defaults = initialProviders ?? [
       new GeminiProvider(),
       new OpenAICompatibleProvider(),
+      new OpenRouterProvider(),
+      new OrcaRouterProvider(),
+      new GroqProvider(),
       new SimulatedProvider(),
     ];
     for (const p of defaults) {
@@ -607,3 +696,6 @@ export class ProviderRegistry {
     return this.defaultProviderId;
   }
 }
+
+export * from './discovery.js';
+
