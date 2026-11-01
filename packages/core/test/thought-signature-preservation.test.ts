@@ -15,6 +15,10 @@ import {
 
 let mockGenerateContent = vi.fn();
 let mockGenerateContentStream = vi.fn();
+let mockChatsCreate = vi.fn(() => ({
+  history: [],
+  sendMessage: vi.fn(),
+}));
 
 // Mock @google/genai module for testing GeminiProvider
 vi.mock('@google/genai', async (importOriginal) => {
@@ -30,10 +34,7 @@ vi.mock('@google/genai', async (importOriginal) => {
           generateContentStream: (...args: any[]) => mockGenerateContentStream(...args),
         };
         this.chats = {
-          create: vi.fn(() => ({
-            history: [],
-            sendMessage: vi.fn(),
-          })),
+          create: (...args: any[]) => mockChatsCreate(...args),
         };
       }
     },
@@ -336,6 +337,123 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
       expect(toolCallChunk?.toolCall?.thoughtSignature).toBe('sig_stream_part_abc');
       expect(toolCallChunk?.toolCall?.thought_signature).toBe('sig_stream_part_abc');
     });
+
+    it('preserves thought signature when signature arrives in thought chunk before tool call chunk in streaming', async () => {
+      const provider = new GeminiProvider({
+        apiKey: 'test-api-key',
+        useStreamingApi: true,
+      });
+
+      mockGenerateContentStream = vi.fn(async () => {
+        return (async function* () {
+          // Chunk 1: Thought part with snake_case thought_signature
+          yield {
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: 'I will inspect the filesystem.',
+                      thought: true,
+                      thought_signature: 'sig_early_thought_chunk_999',
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+          // Chunk 2: Tool call part without thought signature
+          yield {
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      functionCall: {
+                        id: 'call_stream_early_sig',
+                        name: 'default_api:activate_skill',
+                        args: { name: 'git' },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+          yield {
+            usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 20 },
+          };
+        })();
+      });
+
+      const chunks: LLMStreamChunk[] = [];
+      for await (const chunk of provider.streamChat({
+        model: 'gemini-3.8-flash',
+        messages: [{ role: 'user', parts: [{ text: 'Activate git' }] }],
+      })) {
+        chunks.push(chunk);
+      }
+
+      const toolCallChunk = chunks.find((c) => c.type === 'tool_call');
+      expect(toolCallChunk).toBeDefined();
+      expect(toolCallChunk?.toolCall?.name).toBe('default_api:activate_skill');
+      expect(toolCallChunk?.toolCall?.thoughtSignature).toBe('sig_early_thought_chunk_999');
+      expect(toolCallChunk?.toolCall?.thought_signature).toBe('sig_early_thought_chunk_999');
+      expect(toolCallChunk?.thoughtSignature).toBe('sig_early_thought_chunk_999');
+    });
+
+    it('preserves thought signature when signature arrives in later chunk or candidate level', async () => {
+      const provider = new GeminiProvider({
+        apiKey: 'test-api-key',
+        useStreamingApi: true,
+      });
+
+      mockGenerateContentStream = vi.fn(async () => {
+        return (async function* () {
+          // Chunk 1: Tool call without signature
+          yield {
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      functionCall: {
+                        id: 'call_stream_late',
+                        name: 'run_command',
+                        args: { command: 'ls' },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+          // Chunk 2: Late chunk carrying candidate-level thought_signature
+          yield {
+            candidates: [
+              {
+                thought_signature: 'sig_late_candidate_777',
+              },
+            ],
+            usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 10 },
+          };
+        })();
+      });
+
+      const chunks: LLMStreamChunk[] = [];
+      for await (const chunk of provider.streamChat({
+        model: 'gemini-3.8-flash',
+        messages: [{ role: 'user', parts: [{ text: 'List files' }] }],
+      })) {
+        chunks.push(chunk);
+      }
+
+      const toolCallChunk = chunks.find((c) => c.type === 'tool_call');
+      expect(toolCallChunk).toBeDefined();
+      // Backfill should have attached the late signature to the tool call object
+      expect(toolCallChunk?.toolCall?.thoughtSignature).toBe('sig_late_candidate_777');
+      expect(toolCallChunk?.toolCall?.thought_signature).toBe('sig_late_candidate_777');
+    });
   });
 
   describe('3. Multi-turn ReactAgent execution with GeminiProvider', () => {
@@ -581,6 +699,187 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
 
       const recentToolResp = messages.find((m) => m.role === 'user' && m.parts.some((p) => p.functionResponse));
       expect(recentToolResp).toBeDefined();
+    });
+
+    it('normalizes snake_case and message-level fallback signature on AgentSession.setMessages', () => {
+      const session = new AgentSession();
+      session.setMessages([
+        {
+          role: 'model',
+          parts: [
+            {
+              text: 'Thinking step',
+              thought: true,
+              thought_signature: 'sig_msg_level_456',
+            },
+            {
+              functionCall: {
+                name: 'activate_skill',
+                args: { name: 'git' },
+              },
+            },
+          ],
+        },
+      ]);
+
+      const msgs = session.getMessages();
+      expect(msgs).toHaveLength(1);
+      const fcPart = msgs[0]?.parts[1];
+      expect(fcPart?.thoughtSignature).toBe('sig_msg_level_456');
+      expect(fcPart?.thought_signature).toBe('sig_msg_level_456');
+      expect(fcPart?.functionCall?.thoughtSignature).toBe('sig_msg_level_456');
+    });
+  });
+
+  describe('6. Direct ai.chats.create execution mode history normalization (Non-provider mode)', () => {
+    it('normalizes chat.history in ReactAgent.execute so subsequent turns keep thoughtSignature', async () => {
+      const mockHistory: any[] = [];
+      const mockChatSendMessage = vi.fn(async ({ message }: any) => {
+        if (typeof message === 'string') {
+          // Turn 1 model response with snake_case thought_signature from API
+          const modelTurn = {
+            role: 'model',
+            parts: [
+              {
+                functionCall: {
+                  id: 'call_chat_1',
+                  name: 'read_file',
+                  args: { path: 'package.json' },
+                },
+                thought_signature: 'sig_chat_api_snake_123',
+              },
+            ],
+          };
+          mockHistory.push({ role: 'user', parts: [{ text: message }] });
+          mockHistory.push(modelTurn);
+          return {
+            candidates: [
+              {
+                content: modelTurn,
+                thought_signature: 'sig_chat_api_snake_123',
+              },
+            ],
+            functionCalls: [
+              {
+                id: 'call_chat_1',
+                name: 'read_file',
+                args: { path: 'package.json' },
+              },
+            ],
+            usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20 },
+          };
+        } else {
+          // Turn 2
+          const finalTurn = {
+            role: 'model',
+            parts: [{ text: 'File read complete.' }],
+          };
+          mockHistory.push({ role: 'user', parts: message });
+          mockHistory.push(finalTurn);
+          return {
+            candidates: [{ content: finalTurn }],
+            text: 'File read complete.',
+            usageMetadata: { promptTokenCount: 70, candidatesTokenCount: 30 },
+          };
+        }
+      });
+
+      mockChatsCreate.mockReturnValue({
+        history: mockHistory,
+        sendMessage: mockChatSendMessage,
+      });
+
+      const fs = new VirtualFS({ 'package.json': '{"name":"test"}' });
+      const registry = new ToolRegistry();
+      const agent = new ReactAgent({
+        apiKey: 'test-api-key',
+        tools: registry,
+      });
+
+      const events: any[] = [];
+      for await (const ev of agent.execute('Read package.json', undefined, fs)) {
+        events.push(ev);
+      }
+
+      // Verify that chat.history model turn was normalized to have camelCase thoughtSignature
+      const histModelTurn = mockHistory.find((m) => m.role === 'model' && m.parts[0]?.functionCall);
+      expect(histModelTurn).toBeDefined();
+      expect(histModelTurn.parts[0].thoughtSignature).toBe('sig_chat_api_snake_123');
+      expect(histModelTurn.parts[0].thought_signature).toBe('sig_chat_api_snake_123');
+      expect(histModelTurn.parts[0].functionCall.thoughtSignature).toBe('sig_chat_api_snake_123');
+    });
+
+    it('normalizes chat.history in SubagentRunner.run direct mode when API returns snake_case signatures', async () => {
+      const mockSubHistory: any[] = [];
+      const mockSubSendMessage = vi.fn(async ({ message }: any) => {
+        if (typeof message === 'string') {
+          const modelTurn = {
+            role: 'model',
+            parts: [
+              {
+                functionCall: {
+                  id: 'call_sub_1',
+                  name: 'read_file',
+                  args: { path: 'index.ts' },
+                },
+                thought_signature: 'sig_sub_snake_888',
+              },
+            ],
+          };
+          mockSubHistory.push({ role: 'user', parts: [{ text: message }] });
+          mockSubHistory.push(modelTurn);
+          return {
+            candidates: [
+              {
+                content: modelTurn,
+                thought_signature: 'sig_sub_snake_888',
+              },
+            ],
+            functionCalls: [
+              {
+                id: 'call_sub_1',
+                name: 'read_file',
+                args: { path: 'index.ts' },
+              },
+            ],
+            usageMetadata: { promptTokenCount: 30, candidatesTokenCount: 15 },
+          };
+        } else {
+          const finalTurn = {
+            role: 'model',
+            parts: [{ text: 'Code inspection done.' }],
+          };
+          mockSubHistory.push({ role: 'user', parts: message });
+          mockSubHistory.push(finalTurn);
+          return {
+            candidates: [{ content: finalTurn }],
+            text: 'Code inspection done.',
+            usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 20 },
+          };
+        }
+      });
+
+      mockChatsCreate.mockReturnValue({
+        history: mockSubHistory,
+        sendMessage: mockSubSendMessage,
+      });
+
+      const fs = new VirtualFS({ 'index.ts': 'export const x = 1;' });
+      const registry = new ToolRegistry();
+      const runner = new SubagentRunner({
+        apiKey: 'test-api-key',
+        fs,
+        toolRegistry: registry,
+      });
+
+      const res = await runner.run('researcher', 'Inspect index.ts');
+      expect(res).toContain('Code inspection done');
+
+      const histModelTurn = mockSubHistory.find((m) => m.role === 'model' && m.parts[0]?.functionCall);
+      expect(histModelTurn).toBeDefined();
+      expect(histModelTurn.parts[0].thoughtSignature).toBe('sig_sub_snake_888');
+      expect(histModelTurn.parts[0].thought_signature).toBe('sig_sub_snake_888');
+      expect(histModelTurn.parts[0].functionCall.thoughtSignature).toBe('sig_sub_snake_888');
     });
   });
 });
