@@ -1,5 +1,10 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Zen+Kurenaido&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@theme {
+  --font-sans: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-hand: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
 
 :root {
   --aesthetic-white: #fffaf1;
@@ -21,7 +26,7 @@
   --rough-shadow: 2px 4px 0 rgba(59, 39, 29, 0.22);
   --card-border: var(--walnut-brown);
 
-  --font-hand: 'Zen Kurenaido', 'Kiwi Maru', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-hand: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 

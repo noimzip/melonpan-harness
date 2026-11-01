@@ -142,8 +142,8 @@ const DEFAULT_GAME_HTML = `<!DOCTYPE html>
     });
 
     window.addEventListener('keyup', (e) => {
-      if (e.key === 'ArrowLeft' || e.key === 'a') leftPressed = true;
-      if (e.key === 'ArrowRight' || e.key === 'd') rightPressed = true;
+      if (e.key === 'ArrowLeft' || e.key === 'a') leftPressed = false;
+      if (e.key === 'ArrowRight' || e.key === 'd') rightPressed = false;
     });
 
     canvas.addEventListener('mousemove', (e) => {

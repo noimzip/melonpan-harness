@@ -60,7 +60,7 @@ export function App() {
 
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
     provider: 'simulation',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     apiKey: '',
     baseUrl: '',
     thinkingEffort: 'medium',
@@ -294,6 +294,7 @@ export function App() {
           onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenKiosk={() => setIsKioskOpen(true)}
+          onCloseSidebar={() => setIsSidebarOpen(false)}
         />
       )}
 
@@ -389,6 +390,12 @@ export function App() {
                     updateActiveSession((prev) => ({
                       ...prev,
                       plan: prev.plan ? { ...prev.plan, rawMarkdown: md } : undefined,
+                    }))
+                  }
+                  onUpdateTasks={(tasks) =>
+                    updateActiveSession((prev) => ({
+                      ...prev,
+                      plan: prev.plan ? { ...prev.plan, tasks } : undefined,
                     }))
                   }
                 />

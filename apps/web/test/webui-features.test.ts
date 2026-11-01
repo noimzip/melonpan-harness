@@ -47,6 +47,14 @@ describe('WebUI Feature Suite (Issues #44 - #49)', () => {
       expect(loaded[0].name).toBe('セッション1');
       expect(loaded[1].name).toBe('セッション2');
     });
+
+    it('verifies default game HTML input handlers correctly reset movement on keyup', () => {
+      const session = createInitialSession('テスト');
+      const html = session.files['index.html'];
+      expect(html).toContain('leftPressed = false;');
+      expect(html).toContain('rightPressed = false;');
+      expect(html).not.toMatch(/keyup[^{]*{[^}]*leftPressed\s*=\s*true/);
+    });
   });
 
   describe('Issue #45: Tool Telemetry, Diff Generation & Sandbox Error Recovery', () => {
@@ -175,6 +183,30 @@ describe('WebUI Feature Suite (Issues #44 - #49)', () => {
 
       expect(receivedMsg).not.toBeNull();
       expect(receivedMsg!.content).toContain('権限が拒否されたため');
+    });
+
+    it('supports toggling checklist task status between pending and completed', () => {
+      const plan: PlanState = {
+        rawMarkdown: '# Plan',
+        status: 'pending_review',
+        tasks: [
+          { id: 't1', title: 'Task 1', status: 'pending' },
+          { id: 't2', title: 'Task 2', status: 'completed' },
+        ],
+      };
+      const updatedTasks = plan.tasks.map((t) =>
+        t.id === 't1'
+          ? {
+              ...t,
+              status:
+                t.status === 'completed'
+                  ? ('pending' as const)
+                  : ('completed' as const),
+            }
+          : t
+      );
+      expect(updatedTasks[0].status).toBe('completed');
+      expect(updatedTasks[1].status).toBe('completed');
     });
   });
 

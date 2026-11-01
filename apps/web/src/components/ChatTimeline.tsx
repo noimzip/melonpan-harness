@@ -39,6 +39,8 @@ export function ChatTimeline({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showToolMenu, setShowToolMenu] = useState(false);
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -49,6 +51,45 @@ export function ChatTimeline({
   useEffect(() => {
     scrollToBottom(false);
   }, [messages.length]);
+
+  const handleToggleVoice = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert('お使いのブラウザはWeb Speech APIに対応していません。テキスト入力をご利用ください。');
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'ja-JP';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = () => setIsListening(false);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0]?.[0]?.transcript || '';
+        if (transcript) {
+          setInputText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (e) {
+      console.error('Speech recognition error:', e);
+      setIsListening(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,22 +119,23 @@ export function ChatTimeline({
         ref={scrollContainerRef}
         className="flex-1 overflow-y-auto px-4 py-6 space-y-6 max-w-4xl mx-auto w-full"
       >
-        {messages.map((msg) => {
+        {messages.map((msg, index) => {
           const isUser = msg.role === 'user';
           const isThoughtExpanded = expandedThoughts[msg.id] ?? msg.isStreaming ?? false;
+          const isInitialGreeting = index === 0 && !isUser && msg.content.includes('今日はどんな一日だった');
 
           return (
             <div
               key={msg.id}
               className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} space-y-1.5`}
             >
-              {/* Message Bubble */}
+              {/* Message Bubble matching hand-drawn reference image */}
               <div
                 className={[
-                  'max-w-[88%] sm:max-w-[80%] px-5 py-4 line-boil rough-outline rough-shadow text-[15px] leading-relaxed',
+                  'max-w-[92%] sm:max-w-[85%] px-5 py-4 line-boil rough-outline rough-shadow text-[15px] leading-relaxed',
                   isUser
-                    ? 'bg-[#edd9c5] text-[var(--foreground)] rounded-3xl rounded-tr-md self-end'
-                    : 'bg-[var(--card)] text-[var(--foreground)] rounded-3xl rounded-tl-md self-start',
+                    ? 'bg-[#edd9c5] text-[var(--foreground)] rounded-3xl self-end'
+                    : 'bg-[var(--card)] text-[var(--foreground)] rounded-3xl sm:rounded-[32px] self-start',
                 ].join(' ')}
               >
                 {/* Streaming Thought Box */}
@@ -135,6 +177,13 @@ export function ChatTimeline({
                 )}
               </div>
 
+              {/* Gentle hand-drawn subtitle for greeting prompt */}
+              {isInitialGreeting && (
+                <div className="text-[12px] opacity-60 px-3 tracking-wide">
+                  きょうの気持ち、なんでも話してね。
+                </div>
+              )}
+
               {/* Timestamp */}
               <div className="text-[11px] opacity-50 px-2">
                 {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -145,13 +194,13 @@ export function ChatTimeline({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Scroll to bottom button */}
+      {/* Scroll to bottom button matching reference image down chevron */}
       <button
         onClick={() => scrollToBottom(true)}
-        className="absolute right-6 bottom-28 w-10 h-10 rounded-full bg-[var(--card)] border-2 border-[var(--stroke)] rough-shadow flex items-center justify-center hover:scale-105 active:scale-95 transition-all text-[var(--foreground)]"
+        className="absolute right-6 bottom-28 w-9 h-9 rounded-full bg-[var(--card)] border-2 border-[var(--stroke)] rough-shadow flex items-center justify-center hover:scale-105 active:scale-95 transition-all text-[var(--foreground)]"
         title="一番下へスクロール"
       >
-        <ArrowDown size={18} />
+        <ChevronDown size={18} />
       </button>
 
       {/* Bottom Input Area matching reference image */}
@@ -276,12 +325,27 @@ export function ChatTimeline({
                   )}
                 </div>
 
+                {/* Microphone Voice Button matching reference image */}
+                <button
+                  type="button"
+                  onClick={handleToggleVoice}
+                  className={[
+                    'p-2 rounded-full transition-all flex items-center justify-center',
+                    isListening
+                      ? 'text-[var(--warm-error)] bg-red-100 animate-pulse border border-[var(--warm-error)]'
+                      : 'text-[var(--foreground)]/75 hover:bg-black/5 hover:scale-105',
+                  ].join(' ')}
+                  title={isListening ? '音声認識中... クリックで停止' : '音声入力 (マイク)'}
+                >
+                  <Mic size={18} />
+                </button>
+
                 {/* Stop or Send Button */}
                 {isAgentRunning ? (
                   <button
                     type="button"
                     onClick={onCancelTask}
-                    className="p-2.5 rounded-full bg-[var(--warm-error)] text-white hover:brightness-110 active:scale-95 transition-all shadow-md"
+                    className="px-4 py-2 rounded-2xl bg-[var(--warm-error)] text-white hover:brightness-110 active:scale-95 transition-all shadow-md flex items-center justify-center"
                     title="タスクを中断"
                   >
                     <Square size={16} fill="white" />
@@ -290,7 +354,7 @@ export function ChatTimeline({
                   <button
                     type="submit"
                     disabled={!inputText.trim()}
-                    className="p-2.5 rounded-full bg-[#af734a] text-white hover:brightness-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
+                    className="px-4 py-2 rounded-2xl bg-[#af734a] text-white hover:brightness-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md flex items-center justify-center"
                     title="メッセージを送信"
                   >
                     <Send size={16} />

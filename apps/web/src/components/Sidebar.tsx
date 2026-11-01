@@ -8,6 +8,8 @@ import {
   Sun,
   Moon,
   Settings,
+  HelpCircle,
+  Menu,
   Sparkles,
   Shield,
   Layers,
@@ -29,6 +31,7 @@ interface SidebarProps {
   onToggleTheme: () => void;
   onOpenSettings: () => void;
   onOpenKiosk: () => void;
+  onCloseSidebar?: () => void;
 }
 
 export function Sidebar({
@@ -44,6 +47,7 @@ export function Sidebar({
   onToggleTheme,
   onOpenSettings,
   onOpenKiosk,
+  onCloseSidebar,
 }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -76,11 +80,20 @@ export function Sidebar({
 
   return (
     <aside className="w-72 sm:w-80 h-full flex flex-col bg-[var(--card)] border-r-2 border-[var(--stroke)] select-none">
-      {/* Header */}
+      {/* Header with Hamburger Menu matching reference image */}
       <div className="p-4 flex items-center justify-between border-b-2 border-[var(--stroke)]">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">🍈</span>
-          <span className="font-bold text-lg tracking-wide">チャット一覧</span>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={onCloseSidebar}
+            className="p-1 hover:bg-black/5 rounded-lg text-[var(--foreground)]"
+            title="サイドバー切り替え"
+          >
+            <Menu size={18} />
+          </button>
+          <span className="font-bold text-lg tracking-wide flex items-center gap-1.5">
+            <span>🍈</span>
+            <span>チャット一覧</span>
+          </span>
         </div>
       </div>
 
@@ -88,7 +101,7 @@ export function Sidebar({
       <div className="p-4">
         <WobblyButton
           onClick={onNewSession}
-          className="w-full justify-center !py-2.5 text-base"
+          className="w-full justify-center !py-2.5 text-base border-2 border-[var(--stroke)]"
           variant="secondary"
         >
           <Plus size={18} />
@@ -97,7 +110,7 @@ export function Sidebar({
       </div>
 
       {/* Session List */}
-      <div className="flex-1 overflow-y-auto px-3 space-y-2">
+      <div className="flex-1 overflow-y-auto px-3 space-y-1.5">
         {sessions.map((s) => {
           const isActive = s.id === activeSessionId;
           const isEditing = editingId === s.id;
@@ -107,10 +120,10 @@ export function Sidebar({
               key={s.id}
               onClick={() => onSelectSession(s.id)}
               className={[
-                'group flex items-center justify-between px-3.5 py-2.5 rounded-xl cursor-pointer transition-all',
+                'group flex items-center justify-between px-3.5 py-2.5 rounded-2xl cursor-pointer transition-all',
                 isActive
-                  ? 'bg-[var(--aesthetic-white)] rough-outline rough-shadow-sm font-semibold text-[var(--accent)]'
-                  : 'hover:bg-black/5 text-[var(--foreground)]',
+                  ? 'bg-[#edd9c5] text-[#3b271d] font-semibold rough-outline-thin rough-shadow-sm'
+                  : 'hover:bg-black/5 text-[var(--foreground)] opacity-85',
               ].join(' ')}
             >
               {isEditing ? (
@@ -140,7 +153,7 @@ export function Sidebar({
               ) : (
                 <>
                   <span className="truncate text-sm flex-1 mr-2">{s.name}</span>
-                  <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+                  <div className={`flex items-center gap-1 transition-opacity ${isActive ? 'opacity-90' : 'opacity-0 group-hover:opacity-100'}`}>
                     <button
                       onClick={(e) => handleStartRename(e, s)}
                       className="p-1 hover:text-[var(--accent)] hover:scale-110"
@@ -246,7 +259,8 @@ export function Sidebar({
           className="flex-1 py-2 px-3 rounded-xl border-2 border-[var(--stroke)] bg-[var(--card)] hover:bg-[var(--background)] flex items-center justify-center gap-1.5 text-xs font-semibold rough-shadow-sm"
         >
           <Settings size={14} />
-          設定とヘルプ
+          <HelpCircle size={14} className="opacity-80" />
+          <span>設定とヘルプ</span>
         </button>
         <button
           onClick={onOpenKiosk}
@@ -254,7 +268,7 @@ export function Sidebar({
           title="展示キオスクモード"
         >
           <MonitorPlay size={14} />
-          展示
+          <span>展示</span>
         </button>
       </div>
     </aside>

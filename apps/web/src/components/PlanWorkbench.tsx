@@ -18,6 +18,7 @@ interface PlanWorkbenchProps {
   onReject: () => void;
   onRequestRevision: (feedback: string) => void;
   onUpdatePlanMarkdown: (markdown: string) => void;
+  onUpdateTasks?: (tasks: PlanTask[]) => void;
 }
 
 export function PlanWorkbench({
@@ -26,6 +27,7 @@ export function PlanWorkbench({
   onReject,
   onRequestRevision,
   onUpdatePlanMarkdown,
+  onUpdateTasks,
 }: PlanWorkbenchProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(plan?.rawMarkdown || '');
@@ -47,7 +49,6 @@ export function PlanWorkbench({
   }
 
   const handleToggleTask = (taskId: string) => {
-    // Interactive local task toggle
     const updatedTasks = plan.tasks.map((t) =>
       t.id === taskId
         ? {
@@ -59,7 +60,11 @@ export function PlanWorkbench({
           }
         : t
     );
-    plan.tasks = updatedTasks;
+    if (onUpdateTasks) {
+      onUpdateTasks(updatedTasks);
+    } else {
+      plan.tasks = updatedTasks;
+    }
   };
 
   const handleSaveEdit = () => {
