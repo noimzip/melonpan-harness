@@ -65,6 +65,7 @@ export class ToolingRulesSection implements PromptSection {
       '1. Initial File Creation: Use write_file(path, content) ONLY ONCE to establish a new file.',
       '2. Modifications, Tuning, Refinements, & Bug Fixes: You are STRICTLY FORBIDDEN from regenerating or rewriting an entire existing file using write_file. You MUST use edit_file(path, search, replace) with minimal, targeted search/replace blocks.',
       '3. Subagent Delegation: Subagents execute in isolated clean-room sessions. NEVER paste full code files into task_prompt. Instead, pass a concise task_prompt and specify target files via file_path (e.g. file_path: "index.html" or "plan.md") or files array so the runner injects them cleanly.',
+      '4. Research & Inspection Efficiency: Do NOT repeatedly read or grep the same file. Use read_file with start_line/end_line or grep_search once to find exact target locations. edit_file already returns the applied diff preview—do NOT immediately re-read the file just to verify changes. Once code audits or refinements are complete, call complete_task promptly.',
     ].join('\n');
   }
 }
@@ -77,11 +78,22 @@ export class ModeSection implements PromptSection {
   readonly priority = 30;
 
   render(ctx: PromptBuildContext): string {
+    if (ctx.mode === 'goal') {
+      return [
+        'OPERATIONAL MODE: [GOAL AUTONOMOUS PURSUIT MODE]',
+        '- High-autonomy, thorough goal pursuit mode.',
+        '- Specialized subagents are FULLY ENABLED: You can dispatch clean-room subagents ("researcher", "code-reviewer") via dispatch_subagent.',
+        '- Phase 1 (Execute): Implement requested deliverables according to active skill guidelines.',
+        '- Phase 2 (Test & Audit): Run verification commands, dispatch "code-reviewer" to audit quality, and fix issues via edit_file.',
+        '- Iterate relentlessly until the goal is completely achieved, then call complete_task.',
+      ].join('\n');
+    }
+
     if (ctx.mode === 'plan') {
       return [
         'OPERATIONAL MODE: [PLAN MODE]',
         '- Your goal is strictly to analyze requirements and produce a thorough implementation plan.',
-        '- Use read_file / list_files / grep_search or dispatch_subagent("researcher", task_prompt) to investigate architecture and specifications.',
+        '- Use read_file / list_files / grep_search to investigate architecture and specifications.',
         '- Use write_file("plan.md", content) to draft the structured technical plan.',
         '- Once plan.md is saved, call complete_task(summary) with the plan summary. Do NOT create implementation deliverables in plan mode.',
       ].join('\n');
@@ -89,18 +101,18 @@ export class ModeSection implements PromptSection {
 
     if (ctx.mode === 'auto') {
       return [
-        'OPERATIONAL MODE: [AUTO MODE: Plan -> Implement -> Multi-Perspective Audit]',
-        '- Phase 1 (Plan): Dispatch "researcher" if needed, then write a concise technical design to "plan.md".',
-        '- Phase 2 (Act): Implement the requested deliverables according to the plan and active skill guidelines.',
-        '- Phase 3 (Audit): Call dispatch_subagent("code-reviewer", "Audit implementation for quality, performance, and security", file_path) without pasting raw code into task_prompt.',
-        '- Phase 4 (Refine): If any warnings or issues are found, use edit_file to fix them, then call complete_task.',
+        'OPERATIONAL MODE: [AUTO MODE: Act -> Test -> Audit]',
+        '- Phase 1 (Act): Implement the requested deliverables directly without drafting a separate plan.md.',
+        '- Phase 2 (Test & Audit): Run verification tests/commands directly, inspect quality, and refine using edit_file.',
+        '- Phase 3 (Complete): Once verified and playable, call complete_task.',
       ].join('\n');
     }
 
     return [
-      'OPERATIONAL MODE: [ACT MODE]',
-      '- Implement the requested deliverables using write_file (initial creation) and edit_file (refinements).',
-      '- You can dispatch "researcher" for technical discovery, "coder" for scoped sub-tasks, or "code-reviewer" (specifying file_path) to audit deliverables before finalizing.',
+      'OPERATIONAL MODE: [STANDARD ACT & AUDIT MODE]',
+      '- Direct Implementation (Plan phase removed): Implement the requested deliverables directly using write_file and edit_file without drafting plan.md.',
+      '- Standalone Autonomy (Subagents disabled): Carry out all tasks directly as the primary engineer. Do NOT invoke dispatch_subagent.',
+      '- Test & Audit (Preserved): Run automated tests or execute code via run_command to verify your solution.',
       '- When verified and complete, call complete_task(summary).',
     ].join('\n');
   }

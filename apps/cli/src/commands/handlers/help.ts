@@ -10,6 +10,7 @@ export const helpCommand: CommandDefinition = {
       '  • /model [name]       : モデルの表示・検索・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq)',
       '  • /boost [name]       : /model と同等。各種APIから取得できたモデルを表示・検索・切り替え',
       '  • /effort [level]     : 推論レベルの変更 (minimal, low, medium, high)',
+      '  • /goal [objective]   : フル自律目標達成モード（サブエージェント解禁・徹底テスト・監査）',
       '  • /plan [prompt]      : Plan Mode トグル (引数なし) または指定プロンプトで即時実行',
       '  • /permissions [mode] : ツール実行権限モードの確認・切り替え (auto / ask / strict)',
       '  • /agents [name]      : 利用可能なサブエージェント一覧と許可ツール詳細の表示',

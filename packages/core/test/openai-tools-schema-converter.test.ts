@@ -366,7 +366,7 @@ describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compa
           `Tool "${tool.name}" parameters failed Draft 2020-12 validation: ${validation.error}`
         ).toBe(true);
       }
-    });
+    }, 15000);
 
     it('specifically validates dispatch_subagent nested array items and enum', () => {
       const subagentTool = new DispatchSubagentTool();

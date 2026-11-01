@@ -188,7 +188,7 @@ export const App: React.FC<AppProps> = ({
     | 'error'
     | 'awaiting_permission'
   >('idle');
-  const [mode, setMode] = useState<'auto' | 'plan' | 'act'>(initialMode);
+  const [mode, setMode] = useState<'auto' | 'plan' | 'act' | 'goal'>(initialMode);
   const [model, setModel] = useState<string>(defaultModel);
   const [provider, setProvider] = useState<string>(defaultProvider);
   const [thinkingLevel, setThinkingLevel] = useState<string>(initialEffort);
@@ -288,6 +288,7 @@ export const App: React.FC<AppProps> = ({
     maxContextTokens: 128_000,
     savedTokens: 0,
   });
+  const baseSessionUsageRef = useRef<SessionUsage>(sessionUsage);
 
   // Long-lived Core refs & File System (#32, #33, #35, #39)
   const fsRef = useRef<IFileSystem>(
@@ -302,7 +303,7 @@ export const App: React.FC<AppProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initialize or obtain Core instance
-  const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act'): MelonpanCore => {
+  const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act' | 'goal'): MelonpanCore => {
     const currentProvider = isSimulate
       ? undefined
       : createProviderInstance(provider, model, apiKey);
@@ -338,7 +339,7 @@ export const App: React.FC<AppProps> = ({
   // Run the core agent loop for a given prompt and mode (#5, #9, #35, #37, #39)
   const executeAgent = async (
     promptToRun: string,
-    currentRunMode: 'auto' | 'plan' | 'act'
+    currentRunMode: 'auto' | 'plan' | 'act' | 'goal'
   ) => {
     if (isRunningRef.current) return;
     isRunningRef.current = true;
@@ -348,6 +349,7 @@ export const App: React.FC<AppProps> = ({
     setCurrentActivity('Initializing Melonpan agent...');
     setStreamingThought('');
     setStreamingText('');
+    baseSessionUsageRef.current = sessionUsage;
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
@@ -450,12 +452,30 @@ export const App: React.FC<AppProps> = ({
 
           case 'USAGE':
             if (event.payload) {
-              setSessionUsage((prev) => ({
-                ...prev,
-                cachedPromptTokens: event.payload.cachedPromptTokens ?? prev.cachedPromptTokens,
-                contextWindowTokens: event.payload.contextWindowTokens ?? prev.contextWindowTokens,
-                maxContextTokens: event.payload.maxContextWindowTokens ?? prev.maxContextTokens,
-              }));
+              const base = baseSessionUsageRef.current;
+              setSessionUsage({
+                ...base,
+                promptTokens: base.promptTokens + (event.payload.promptTokens || 0),
+                completionTokens: base.completionTokens + (event.payload.completionTokens || 0),
+                totalTokens: base.totalTokens + (event.payload.totalTokens || 0),
+                cachedPromptTokens:
+                  (base.cachedPromptTokens || 0) + (event.payload.cachedPromptTokens || 0),
+                billedPromptTokens:
+                  (base.billedPromptTokens || 0) +
+                  (event.payload.billedPromptTokens ??
+                    Math.max(
+                      0,
+                      (event.payload.promptTokens || 0) -
+                        (event.payload.cachedPromptTokens || 0)
+                    )),
+                rawPromptTokens:
+                  (base.rawPromptTokens || 0) +
+                  (event.payload.rawPromptTokens ??
+                    event.payload.promptTokens ??
+                    0),
+                contextWindowTokens: event.payload.contextWindowTokens ?? base.contextWindowTokens,
+                maxContextTokens: event.payload.maxContextWindowTokens ?? base.maxContextTokens,
+              });
             }
             break;
 
@@ -474,19 +494,36 @@ export const App: React.FC<AppProps> = ({
 
             // Accumulate token usage if provided (#36)
             if (event.payload.usage) {
-              setSessionUsage((prev) => ({
-                promptTokens: prev.promptTokens + (event.payload.usage.promptTokens || 0),
+              const base = baseSessionUsageRef.current;
+              const newUsage: SessionUsage = {
+                ...base,
+                promptTokens: base.promptTokens + (event.payload.usage.promptTokens || 0),
+                billedPromptTokens:
+                  (base.billedPromptTokens || 0) +
+                  (event.payload.usage.billedPromptTokens ??
+                    Math.max(
+                      0,
+                      (event.payload.usage.promptTokens || 0) -
+                        (event.payload.usage.cachedPromptTokens || 0)
+                    )),
+                rawPromptTokens:
+                  (base.rawPromptTokens || 0) +
+                  (event.payload.usage.rawPromptTokens ??
+                    event.payload.usage.promptTokens ??
+                    0),
                 completionTokens:
-                  prev.completionTokens + (event.payload.usage.completionTokens || 0),
-                totalTokens: prev.totalTokens + (event.payload.usage.totalTokens || 0),
+                  base.completionTokens + (event.payload.usage.completionTokens || 0),
+                totalTokens: base.totalTokens + (event.payload.usage.totalTokens || 0),
                 cachedPromptTokens:
-                  (prev.cachedPromptTokens || 0) + (event.payload.usage.cachedPromptTokens || 0),
+                  (base.cachedPromptTokens || 0) + (event.payload.usage.cachedPromptTokens || 0),
                 contextWindowTokens:
-                  event.payload.usage.contextWindowTokens ?? prev.contextWindowTokens,
+                  event.payload.usage.contextWindowTokens ?? base.contextWindowTokens,
                 maxContextTokens:
-                  event.payload.usage.maxContextWindowTokens ?? prev.maxContextTokens,
-                savedTokens: prev.savedTokens,
-              }));
+                  event.payload.usage.maxContextWindowTokens ?? base.maxContextTokens,
+                savedTokens: base.savedTokens,
+              };
+              setSessionUsage(newUsage);
+              baseSessionUsageRef.current = newUsage;
             }
 
             // #9: Only flush to disk if NOT in plan mode before approval!
@@ -555,14 +592,16 @@ export const App: React.FC<AppProps> = ({
     setStreamingThought('');
     setStreamingText('');
     setPendingPermission(undefined);
-    setSessionUsage({
+    const clearedUsage: SessionUsage = {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
       contextWindowTokens: 0,
       maxContextTokens: 128_000,
       savedTokens: 0,
-    });
+    };
+    setSessionUsage(clearedUsage);
+    baseSessionUsageRef.current = clearedUsage;
     setCurrentActivity('Ready');
     setStatus('idle');
   };

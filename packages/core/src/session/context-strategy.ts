@@ -15,10 +15,12 @@ export interface PruneChatHistoryOptions {
   writeThresholdChars?: number;
   /** edit_file の search / replace マスク閾値文字数 (Issue #11, デフォルト: 300) */
   editThresholdChars?: number;
-  /** read_file / grep_search / run_command 等の関数レスポンス出力マスク閾値文字数 (Issue #26, デフォルト: 800) */
+  /** read_file / grep_search / run_command 等の関数レスポンス出力マスク閾値文字数 (Issue #26, デフォルト: 400) */
   outputThresholdChars?: number;
   /** 直近何件のメッセージを生のまま保持するか (デフォルト: 0 = すべて対象) */
   preserveRecentMessages?: number;
+  /** 過去ターンのモデル思考プロセス (thought) をマスクするか (デフォルト: true) */
+  prunePastThoughts?: boolean;
 }
 
 /**
@@ -54,9 +56,17 @@ export function createDetailedTokenUsage(params: {
   cacheCreationPromptTokens?: number;
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
+  rawPromptTokens?: number;
 }): TokenUsage {
-  const promptTokens = params.billedPromptTokens;
-  const completionTokens = params.billedCompletionTokens;
+  const cachedPromptTokens = params.cachedPromptTokens ?? 0;
+  const rawPromptTokens =
+    params.rawPromptTokens ??
+    (params.billedPromptTokens + cachedPromptTokens);
+  const billedPromptTokens = params.billedPromptTokens;
+  const billedCompletionTokens = params.billedCompletionTokens;
+  const billedTotalTokens = billedPromptTokens + billedCompletionTokens;
+  const promptTokens = rawPromptTokens;
+  const completionTokens = billedCompletionTokens;
   const totalTokens = promptTokens + completionTokens;
   const maxContext = params.maxContextWindowTokens ?? 128000;
   const currentContext = params.contextWindowTokens ?? promptTokens;
@@ -66,10 +76,11 @@ export function createDetailedTokenUsage(params: {
     promptTokens,
     completionTokens,
     totalTokens,
-    billedPromptTokens: promptTokens,
-    billedCompletionTokens: completionTokens,
-    billedTotalTokens: totalTokens,
-    cachedPromptTokens: params.cachedPromptTokens ?? 0,
+    rawPromptTokens,
+    billedPromptTokens,
+    billedCompletionTokens,
+    billedTotalTokens,
+    cachedPromptTokens,
     cacheCreationPromptTokens: params.cacheCreationPromptTokens,
     contextWindowTokens: currentContext,
     contextWindowUtilization: utilization,
@@ -100,16 +111,197 @@ export function pruneChatHistory(
     : (thresholdOrOptions.editThresholdChars ?? 300);
   const outputThreshold = isNumberArg
     ? undefined
-    : (thresholdOrOptions.outputThresholdChars ?? 800);
+    : (thresholdOrOptions.outputThresholdChars ?? 400);
   const preserveRecent = isNumberArg
     ? 0
     : (thresholdOrOptions.preserveRecentMessages ?? 0);
+  const prunePastThoughts = isNumberArg
+    ? false
+    : (thresholdOrOptions.prunePastThoughts ?? true);
 
   const limitIndex = Math.max(0, history.length - preserveRecent);
 
+  // 最新モデルターンのインデックスを取得（直前ターンのThought / Thought SignatureはAPI要件のため保持）
+  let lastModelIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]?.role === 'model' || history[i]?.role === 'assistant') {
+      lastModelIdx = i;
+      break;
+    }
+  }
+
   for (let idx = 0; idx < limitIndex; idx++) {
     const item = history[idx];
-    if (!item?.parts || !Array.isArray(item.parts)) continue;
+    if (!item) continue;
+
+    // A. OpenAI互換形式 (LLMMessage: { role, content, tool_calls, ... }) の処理
+    if (!item.parts || !Array.isArray(item.parts)) {
+      // 1. role === 'tool' のツール出力マスク (#26)
+      const isLatestProtectedTurn =
+        preserveRecent > 0 && idx >= history.length - preserveRecent;
+      if (
+        outputThreshold !== undefined &&
+        item.role === 'tool' &&
+        !isLatestProtectedTurn &&
+        typeof item.content === 'string' &&
+        item.content.length >= outputThreshold &&
+        !item.content.startsWith('<Tool output pruned:')
+      ) {
+        const originalLen = item.content.length;
+        const preview = item.content.slice(0, 160).replace(/\n/g, ' ');
+        const replacement = `<Tool output pruned: ${originalLen} chars. Preview: ${preview}...>`;
+        item.content = replacement;
+        prunedCallsCount++;
+        savedCharsCount += originalLen - replacement.length;
+      }
+
+      // 2. role === 'assistant' のツール引数マスク (write_file / edit_file)
+      if (item.role === 'assistant') {
+        // 過去ターンのThoughtマスク
+        if (
+          prunePastThoughts &&
+          idx < lastModelIdx &&
+          typeof item.thought === 'string' &&
+          item.thought.length > 40 &&
+          !item.thought.startsWith('<Thought preserved')
+        ) {
+          const originalLen = item.thought.length;
+          const replacement = `<Thought preserved: ${originalLen} chars>`;
+          item.thought = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+
+        if (Array.isArray(item.tool_calls)) {
+          for (const tc of item.tool_calls) {
+            const fnName = tc?.function?.name || tc?.name;
+            if (fnName === 'write_file') {
+              if (typeof tc.function?.arguments === 'string') {
+                try {
+                  const parsed = JSON.parse(tc.function.arguments);
+                  if (
+                    typeof parsed.content === 'string' &&
+                    parsed.content.length >= writeThreshold &&
+                    !parsed.content.startsWith('<Content preserved in VFS:')
+                  ) {
+                    const originalLen = parsed.content.length;
+                    parsed.content = `<Content preserved in VFS: ${originalLen} chars>`;
+                    const newArgs = JSON.stringify(parsed);
+                    savedCharsCount += tc.function.arguments.length - newArgs.length;
+                    tc.function.arguments = newArgs;
+                    prunedCallsCount++;
+                  }
+                } catch {
+                  // JSON parse failure, keep original
+                }
+              } else if (tc.function?.arguments && typeof tc.function.arguments === 'object') {
+                const content = tc.function.arguments.content;
+                if (
+                  typeof content === 'string' &&
+                  content.length >= writeThreshold &&
+                  !content.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = content.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.content = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+              }
+            } else if (fnName === 'edit_file') {
+              const effectiveEditThreshold = isNumberArg ? Math.max(600, editThreshold) : editThreshold;
+              if (typeof tc.function?.arguments === 'string') {
+                try {
+                  const parsed = JSON.parse(tc.function.arguments);
+                  let changed = false;
+                  if (
+                    typeof parsed.replace === 'string' &&
+                    parsed.replace.length >= effectiveEditThreshold &&
+                    !parsed.replace.startsWith('<Content preserved in VFS:')
+                  ) {
+                    parsed.replace = `<Content preserved in VFS: ${parsed.replace.length} chars>`;
+                    changed = true;
+                  }
+                  if (
+                    typeof parsed.search === 'string' &&
+                    parsed.search.length >= effectiveEditThreshold &&
+                    !parsed.search.startsWith('<Content preserved in VFS:')
+                  ) {
+                    parsed.search = `<Content preserved in VFS: ${parsed.search.length} chars>`;
+                    changed = true;
+                  }
+                  if (changed) {
+                    const newArgs = JSON.stringify(parsed);
+                    savedCharsCount += tc.function.arguments.length - newArgs.length;
+                    tc.function.arguments = newArgs;
+                    prunedCallsCount++;
+                  }
+                } catch {
+                  // keep original
+                }
+              } else if (tc.function?.arguments && typeof tc.function.arguments === 'object') {
+                const replaceText = tc.function.arguments.replace;
+                if (
+                  typeof replaceText === 'string' &&
+                  replaceText.length >= effectiveEditThreshold &&
+                  !replaceText.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = replaceText.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.replace = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+                const searchText = tc.function.arguments.search;
+                if (
+                  typeof searchText === 'string' &&
+                  searchText.length >= effectiveEditThreshold &&
+                  !searchText.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = searchText.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.search = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+              }
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    // B. Gemini形式 ({ role, parts: [...] }) の処理
+
+    // 0. 過去ターンのThought (思考プロセス) マスク処理
+    // 最新モデルターン (lastModelIdx) より前の過去ターンの thought: true / 思考テキストをマスク
+    if (
+      prunePastThoughts &&
+      (item.role === 'model' || item.role === 'assistant') &&
+      idx < lastModelIdx
+    ) {
+      for (const part of item.parts) {
+        const isThoughtPart =
+          part?.thought === true ||
+          (Boolean(part?.thoughtSignature || part?.thought_signature) &&
+            !part?.functionCall &&
+            typeof part?.text === 'string');
+
+        if (
+          isThoughtPart &&
+          typeof part?.text === 'string' &&
+          part.text.length > 40 &&
+          !part.text.startsWith('<Thought preserved')
+        ) {
+          const originalLen = part.text.length;
+          const replacement = `<Thought preserved: ${originalLen} chars>`;
+          part.text = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+      }
+    }
 
     for (const part of item.parts) {
       // 1. write_file の content マスク
@@ -161,7 +353,10 @@ export function pruneChatHistory(
       }
 
       // 3. read_file / grep_search / run_command 等の巨大 functionResponse 出力マスク (#26)
-      if (outputThreshold !== undefined && part?.functionResponse) {
+      // preserveRecent が有効な場合、直近のツール実行結果はモデルが参照して次のアクションを決定するために保護する
+      const isLatestProtectedTurn =
+        preserveRecent > 0 && idx >= history.length - preserveRecent;
+      if (outputThreshold !== undefined && part?.functionResponse && !isLatestProtectedTurn) {
         const resObj = part.functionResponse.response;
         const rawContent =
           typeof resObj === 'string'
@@ -209,8 +404,9 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
     this.options = {
       writeThresholdChars: options.writeThresholdChars ?? 200,
       editThresholdChars: options.editThresholdChars ?? 300,
-      outputThresholdChars: options.outputThresholdChars ?? 600,
+      outputThresholdChars: options.outputThresholdChars ?? 400,
       preserveRecentMessages: options.preserveRecentMessages ?? 0,
+      prunePastThoughts: options.prunePastThoughts ?? true,
     };
   }
 
@@ -235,7 +431,7 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
 }
 
 export interface LlmSummaryCompactionOptions {
-  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.8) */
+  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.3) */
   triggerUtilization?: number;
   /** 最大コンテキストトークン数 (デフォルト: 128000) */
   maxContextTokens?: number;
@@ -259,7 +455,7 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
   private model: string;
 
   constructor(options: LlmSummaryCompactionOptions = {}) {
-    this.triggerUtilization = options.triggerUtilization ?? 0.8;
+    this.triggerUtilization = options.triggerUtilization ?? 0.3;
     this.maxContextTokens = options.maxContextTokens ?? 128000;
     this.keepRecentMessages = options.keepRecentMessages ?? 2;
     this.provider = options.provider;
@@ -304,6 +500,17 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
     ) {
       cutoff--;
     }
+
+    if (cutoff <= 0) {
+      return {
+        compacted: false,
+        beforeTokens,
+        afterTokens: beforeTokens,
+        savedTokens: 0,
+        reductionRatio: 0,
+      };
+    }
+
     const olderMessages = history.slice(0, cutoff);
     const recentMessages = history.slice(cutoff);
 

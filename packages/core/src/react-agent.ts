@@ -14,6 +14,7 @@ import {
 } from './session/context-strategy.js';
 import {
   AgentEvent,
+  AgentMode,
   ICommandExecutor,
   IContextStrategy,
   IFileSystem,
@@ -32,6 +33,7 @@ import {
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
 import { ContextCacheManager } from './cache/context-cache-manager.js';
+import { createRepetitiveCallGuardMiddleware } from './safety/index.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
 
@@ -41,7 +43,7 @@ export interface ReactAgentOptions {
   thinkingLevel?: string;
   maxTurns?: number;
   simulate?: boolean;
-  mode?: 'plan' | 'act' | 'auto';
+  mode?: 'plan' | 'act' | 'auto' | 'goal' | AgentMode;
   agentsDir?: string;
   /** カスタムツール一覧または追加ツールプラグイン (#50) */
   tools?: ITool[];
@@ -93,7 +95,7 @@ export class ReactAgent {
   private thinkingLevel: string;
   private maxTurns: number;
   private simulate: boolean;
-  private mode: 'plan' | 'act' | 'auto';
+  private mode: AgentMode;
   private toolRegistry: ToolRegistry;
   private promptComposer: IPromptComposer;
   private subagentRunner: ISubagentSpawner;
@@ -135,7 +137,9 @@ export class ReactAgent {
           }
         }
       }
-      this.toolRegistry = new ToolRegistry(baseTools, options.middlewares || []);
+      const middlewares = options.middlewares ? [...options.middlewares] : [];
+      middlewares.push(createRepetitiveCallGuardMiddleware());
+      this.toolRegistry = new ToolRegistry(baseTools, middlewares);
     }
 
     this.promptComposer = options.promptComposer ?? new PromptComposer();
@@ -172,7 +176,7 @@ export class ReactAgent {
     return this.promptComposer;
   }
 
-  setMode(mode: 'plan' | 'act' | 'auto'): void {
+  setMode(mode: 'plan' | 'act' | 'auto' | 'goal' | AgentMode): void {
     this.mode = mode;
   }
 
@@ -201,6 +205,23 @@ export class ReactAgent {
       return vfs.getSnapshot();
     }
     return {};
+  }
+
+  /**
+   * モードに応じた有効な FunctionCalling 定義一覧を取得
+   * 通常モードではサブエージェント(dispatch_subagent)を除外し、/goal モード時のみ解禁
+   */
+  private getAvailableFunctionDeclarations(): any[] {
+    const decls = this.toolRegistry.toFunctionDeclarations();
+    // サブエージェントは /goal モード（または plan モード / レガシー auto モード）時のみ解禁
+    // 標準実装モード (act) では除外する
+    if (this.mode === 'act') {
+      return decls.filter((d) => d.name !== 'dispatch_subagent');
+    }
+    if (this.mode !== 'goal' && this.mode !== 'plan' && this.mode !== 'auto') {
+      return decls.filter((d) => d.name !== 'dispatch_subagent');
+    }
+    return decls;
   }
 
   /**
@@ -317,7 +338,7 @@ export class ReactAgent {
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
-      const stableTools = this.cacheManager.stabilizeTools(this.toolRegistry.toFunctionDeclarations());
+      const stableTools = this.cacheManager.stabilizeTools(this.getAvailableFunctionDeclarations());
       let cachedContentName = await this.cacheManager.getOrCreateGeminiCache({
         ai,
         model: this.model,
@@ -415,9 +436,10 @@ export class ReactAgent {
               durationMs: Date.now() - startTime,
               aborted: true,
               usage: createDetailedTokenUsage({
-                billedPromptTokens: totalPromptTokens,
+                billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                 billedCompletionTokens: totalCompletionTokens,
                 cachedPromptTokens: totalCachedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
                 contextWindowTokens: lastPromptTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -431,17 +453,21 @@ export class ReactAgent {
 
         // Context Pruning & Strategy 適用 (#11, #26)
         const chatHistory = (chat as any).history;
-        pruneChatHistory(chatHistory, {
-          writeThresholdChars: 200,
-          editThresholdChars: 300,
-          outputThresholdChars: 800,
-        });
+        if (this.contextStrategies.length === 0) {
+          pruneChatHistory(chatHistory, {
+            writeThresholdChars: 200,
+            editThresholdChars: 300,
+            outputThresholdChars: 400,
+            preserveRecentMessages: 2,
+            prunePastThoughts: true,
+          });
+        }
 
         for (const strategy of this.contextStrategies) {
           const compRes = await strategy.apply(chatHistory, {
             maxContextTokens: this.maxContextTokens,
           });
-          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+          if (compRes.compacted) {
             yield {
               type: 'CONTEXT_COMPACTED',
               payload: {
@@ -449,8 +475,13 @@ export class ReactAgent {
                 beforeTokens: compRes.beforeTokens,
                 afterTokens: compRes.afterTokens,
                 savedTokens: compRes.savedTokens,
+                savedCharsCount: compRes.savedCharsCount,
                 reductionRatio: compRes.reductionRatio,
-                summary: compRes.summary,
+                summary:
+                  compRes.summary ||
+                  (strategy.id === 'tool-output-pruning'
+                    ? `Pruned ${compRes.savedCharsCount || 0} characters from context history`
+                    : undefined),
               },
               timestamp: Date.now(),
             };
@@ -509,10 +540,14 @@ export class ReactAgent {
           totalCachedPromptTokens += turnCached;
         }
 
+        const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
         yield {
           type: 'USAGE',
           payload: {
             promptTokens: totalPromptTokens,
+            billedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             completionTokens: totalCompletionTokens,
             totalTokens: totalPromptTokens + totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
@@ -589,6 +624,7 @@ export class ReactAgent {
             const execPromise = this.toolRegistry
               .execute(callName, callArgs, {
                 fs: vfs,
+                mode: this.mode,
                 commandExecutor: this.commandExecutor,
                 webProvider: this.webProvider,
                 subagentSpawner: this.subagentRunner,
@@ -629,8 +665,9 @@ export class ReactAgent {
             // サブエージェントのトークン消費量を親累計に合算
             const subUsage = execRes.metadata?.usage as any;
             if (subUsage) {
-              totalPromptTokens += subUsage.promptTokens || 0;
+              totalPromptTokens += subUsage.promptTokens || subUsage.rawPromptTokens || 0;
               totalCompletionTokens += subUsage.completionTokens || 0;
+              totalCachedPromptTokens += subUsage.cachedPromptTokens || 0;
             }
 
             yield {
@@ -672,9 +709,10 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
-                  billedPromptTokens: totalPromptTokens,
+                  billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
                   contextWindowTokens:
                     lastPromptTokens || estimateMessagesTokens((chat as any).history, systemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
@@ -701,9 +739,10 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
-            billedPromptTokens: totalPromptTokens,
+            billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             contextWindowTokens: lastPromptTokens,
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -778,17 +817,21 @@ export class ReactAgent {
         turns++;
 
         // Context Pruning & Compaction Strategies (#11, #26)
-        pruneChatHistory(messages, {
-          writeThresholdChars: 200,
-          editThresholdChars: 300,
-          outputThresholdChars: 800,
-        });
+        if (this.contextStrategies.length === 0) {
+          pruneChatHistory(messages, {
+            writeThresholdChars: 200,
+            editThresholdChars: 300,
+            outputThresholdChars: 400,
+            preserveRecentMessages: 2,
+            prunePastThoughts: true,
+          });
+        }
 
         for (const strategy of this.contextStrategies) {
           const compRes = await strategy.apply(messages, {
             maxContextTokens: this.maxContextTokens,
           });
-          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+          if (compRes.compacted) {
             yield {
               type: 'CONTEXT_COMPACTED',
               payload: {
@@ -796,8 +839,13 @@ export class ReactAgent {
                 beforeTokens: compRes.beforeTokens,
                 afterTokens: compRes.afterTokens,
                 savedTokens: compRes.savedTokens,
+                savedCharsCount: compRes.savedCharsCount,
                 reductionRatio: compRes.reductionRatio,
-                summary: compRes.summary,
+                summary:
+                  compRes.summary ||
+                  (strategy.id === 'tool-output-pruning'
+                    ? `Pruned ${compRes.savedCharsCount || 0} characters from context history`
+                    : undefined),
               },
               timestamp: Date.now(),
             };
@@ -814,7 +862,7 @@ export class ReactAgent {
             model: this.model,
             systemInstruction: activeSystemInstruction,
             messages,
-            tools: this.toolRegistry.toFunctionDeclarations(),
+            tools: this.getAvailableFunctionDeclarations(),
             thinkingLevel: this.thinkingLevel,
           },
           signal
@@ -878,9 +926,10 @@ export class ReactAgent {
               durationMs: Date.now() - startTime,
               aborted: true,
               usage: createDetailedTokenUsage({
-                billedPromptTokens: totalPromptTokens,
+                billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                 billedCompletionTokens: totalCompletionTokens,
                 cachedPromptTokens: totalCachedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
                 contextWindowTokens: lastContextTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -952,6 +1001,7 @@ export class ReactAgent {
             const execPromise = this.toolRegistry
               .execute(call.name, call.args || {}, {
                 fs: vfs,
+                mode: this.mode,
                 commandExecutor: this.commandExecutor,
                 webProvider: this.webProvider,
                 subagentSpawner: this.subagentRunner,
@@ -1003,8 +1053,9 @@ export class ReactAgent {
 
             const subUsage = execRes.metadata?.usage as any;
             if (subUsage) {
-              totalPromptTokens += subUsage.promptTokens || 0;
+              totalPromptTokens += subUsage.promptTokens || subUsage.rawPromptTokens || 0;
               totalCompletionTokens += subUsage.completionTokens || 0;
+              totalCachedPromptTokens += subUsage.cachedPromptTokens || 0;
             }
 
             yield {
@@ -1039,10 +1090,14 @@ export class ReactAgent {
 
           messages.push({ role: 'user', parts: responseParts });
 
+          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
           yield {
             type: 'USAGE',
             payload: {
               promptTokens: totalPromptTokens,
+              billedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               completionTokens: totalCompletionTokens,
               totalTokens: totalPromptTokens + totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
@@ -1063,9 +1118,10 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
-                  billedPromptTokens: totalPromptTokens,
+                  billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
                   contextWindowTokens:
                     lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
@@ -1085,10 +1141,14 @@ export class ReactAgent {
             ],
           });
 
+          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
           yield {
             type: 'USAGE',
             payload: {
               promptTokens: totalPromptTokens,
+              billedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               completionTokens: totalCompletionTokens,
               totalTokens: totalPromptTokens + totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
@@ -1110,9 +1170,10 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
-            billedPromptTokens: totalPromptTokens,
+            billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             contextWindowTokens: lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -1130,9 +1191,10 @@ export class ReactAgent {
             durationMs: Date.now() - startTime,
             aborted: true,
             usage: createDetailedTokenUsage({
-              billedPromptTokens: totalPromptTokens,
+              billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
               billedCompletionTokens: totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               contextWindowTokens: lastContextTokens,
               maxContextWindowTokens: this.maxContextTokens,
             }),
@@ -1198,6 +1260,7 @@ export class ReactAgent {
       const execPromise = self.toolRegistry
         .execute(name, args, {
           fs: vfs,
+          mode: self.mode,
           commandExecutor: self.commandExecutor,
           webProvider: self.webProvider,
           subagentSpawner: self.subagentRunner,

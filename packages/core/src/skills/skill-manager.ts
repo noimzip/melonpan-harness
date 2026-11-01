@@ -76,30 +76,34 @@ export class FileSystemSkillLoader implements ISkillLoader {
 
     // 1. IFileSystem が注入されている場合はそちらから探索可能
     if (this.vfs) {
-      const dirPrefix = customDir || this.skillsDir || 'skills';
-      const files = await this.vfs.listFiles(dirPrefix, { pattern: '**/SKILL.md' });
-      for (const filePath of files) {
-        const content = await this.vfs.readFile(filePath);
-        if (!content) continue;
-        const segments = filePath.replace(/\\/g, '/').split('/');
-        const dirName = segments.length >= 2 ? segments[segments.length - 2]! : segments[0]!;
-        const skillDir = segments.slice(0, -1).join('/');
-        try {
-          const parsed = SkillParser.parse(content, dirName);
-          this.bodyCache.set(parsed.frontmatter.name, parsed.body);
-          results.push({
-            name: parsed.frontmatter.name,
-            description: parsed.frontmatter.description,
-            skillDir,
-            filePath,
-            frontmatter: parsed.frontmatter,
-          });
-        } catch {
-          // 無効なSKILL.mdはスキップ
+      try {
+        const dirPrefix = customDir || this.skillsDir || 'skills';
+        const files = await this.vfs.listFiles(dirPrefix, { pattern: '**/SKILL.md' });
+        for (const filePath of files) {
+          const content = await this.vfs.readFile(filePath);
+          if (!content) continue;
+          const segments = filePath.replace(/\\/g, '/').split('/');
+          const dirName = segments.length >= 2 ? segments[segments.length - 2]! : segments[0]!;
+          const skillDir = segments.slice(0, -1).join('/');
+          try {
+            const parsed = SkillParser.parse(content, dirName);
+            this.bodyCache.set(parsed.frontmatter.name, parsed.body);
+            results.push({
+              name: parsed.frontmatter.name,
+              description: parsed.frontmatter.description,
+              skillDir,
+              filePath,
+              frontmatter: parsed.frontmatter,
+            });
+          } catch {
+            // 無効なSKILL.mdはスキップ
+          }
         }
-      }
-      if (results.length > 0) {
-        return results;
+        if (results.length > 0) {
+          return results;
+        }
+      } catch {
+        // vfs からの読み取りでパストラバーサルやENOENTが発生した場合はネイティブディスク探索（2）へ安全にフォールバック
       }
     }
 

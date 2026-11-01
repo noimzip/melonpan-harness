@@ -10,7 +10,7 @@ export interface HeaderProps {
     | 'completed'
     | 'error'
     | 'awaiting_permission';
-  mode: 'plan' | 'act' | 'auto';
+  mode: 'plan' | 'act' | 'auto' | 'goal';
   model?: string;
   provider?: string;
   thinkingLevel?: string;
@@ -78,9 +78,11 @@ export const Header: React.FC<HeaderProps> = ({
       case 'plan':
         return chalk.bgMagenta.black(' MODE: PLAN ');
       case 'act':
-        return chalk.bgCyan.black(' MODE: ACT ');
+        return chalk.bgCyan.black(' MODE: ACT (Act -> Test & Audit) ');
       case 'auto':
-        return chalk.bgHex('#00f0ff').black(' MODE: AUTO (Plan -> Act -> Audit) ');
+        return chalk.bgHex('#00f0ff').black(' MODE: AUTO (Act -> Test & Audit) ');
+      case 'goal':
+        return chalk.bgHex('#ff007f').white(' MODE: GOAL (Autonomous + Subagents) ');
     }
   };
 

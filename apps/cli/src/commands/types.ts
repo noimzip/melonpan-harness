@@ -4,6 +4,8 @@ export interface SessionUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  billedPromptTokens?: number;
+  rawPromptTokens?: number;
   cachedPromptTokens?: number;
   contextWindowTokens?: number;
   maxContextTokens?: number;
@@ -27,9 +29,9 @@ export interface CommandContext {
   refreshModels?: () => Promise<void>;
 
   // Mode & Execution
-  mode: 'plan' | 'act' | 'auto';
-  setMode: (mode: 'plan' | 'act' | 'auto') => void;
-  executePrompt: (prompt: string, overrideMode?: 'plan' | 'act' | 'auto') => void;
+  mode: 'plan' | 'act' | 'auto' | 'goal';
+  setMode: (mode: 'plan' | 'act' | 'auto' | 'goal') => void;
+  executePrompt: (prompt: string, overrideMode?: 'plan' | 'act' | 'auto' | 'goal') => void;
 
   // Session & UI
   clearSession: () => void;

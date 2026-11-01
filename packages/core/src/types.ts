@@ -205,6 +205,7 @@ export interface ISubagentSpawner {
 
 export interface ToolExecutionContext {
   fs: IFileSystem;
+  mode?: AgentMode;
   commandExecutor?: ICommandExecutor;
   webProvider?: IWebProvider;
   subagentSpawner?: ISubagentSpawner;
@@ -250,8 +251,10 @@ export type ToolMiddleware = (
 // 7. Prompt Composer Port (#51)
 // ----------------------------------------------------
 
+export type AgentMode = 'act' | 'plan' | 'auto' | 'goal' | string;
+
 export interface PromptBuildContext {
-  mode: 'plan' | 'act' | 'auto' | string;
+  mode: AgentMode;
   activeSkill?: LoadedSkill;
   availableSkills?: SkillMetadata[];
   availableTools?: ITool[];
@@ -286,6 +289,8 @@ export interface TokenUsage {
   billedPromptTokens?: number;
   billedCompletionTokens?: number;
   billedTotalTokens?: number;
+  /** 生プロンプト累計入力トークン (Raw Prompt Tokens before cache deduction) */
+  rawPromptTokens?: number;
   /** キャッシュヒットした入力トークン (Prompt Cache Read Tokens / Cached Content Tokens) */
   cachedPromptTokens?: number;
   /** キャッシュ作成・書き込みトークン */
@@ -386,6 +391,8 @@ export interface LLMStreamChunk {
     totalTokens: number;
     cachedPromptTokens?: number;
     cacheCreationPromptTokens?: number;
+    rawPromptTokens?: number;
+    billedPromptTokens?: number;
   };
 }
 
@@ -524,6 +531,7 @@ export interface ContextCompactedPayload {
   beforeTokens: number;
   afterTokens: number;
   savedTokens: number;
+  savedCharsCount?: number;
   reductionRatio: number;
   summary?: string;
 }
@@ -533,6 +541,7 @@ export interface UsagePayload {
   completionTokens: number;
   totalTokens: number;
   cachedPromptTokens?: number;
+  rawPromptTokens?: number;
   cacheCreationPromptTokens?: number;
   billedPromptTokens?: number;
   turn?: number;
@@ -635,7 +644,7 @@ export type ClientCommand =
   | {
       type: 'RUN_PROMPT';
       prompt: string;
-      mode?: 'plan' | 'act' | 'auto';
+      mode?: 'plan' | 'act' | 'auto' | 'goal';
       sessionId?: string;
     }
   | {
@@ -680,12 +689,14 @@ export interface ActiveSubagentState {
 export interface SessionStateSnapshot {
   sessionId: string;
   status: 'idle' | 'running' | 'waiting_permission' | 'confirming_plan' | 'completed' | 'error';
-  mode: 'plan' | 'act' | 'auto' | string;
+  mode: 'plan' | 'act' | 'auto' | 'goal' | string;
   model: string;
   thinkingLevel: string;
   lastSeq: number;
   turns: number;
   files: Record<string, string>;
+  workspaceDir?: string;
+  latestCommit?: string | null;
   pendingPermission?: PermissionRequestedPayload;
   pendingPlan?: PlanCreatedPayload;
   usage: TokenUsage;
@@ -697,11 +708,13 @@ export interface SerializedSessionData {
   sessionId: string;
   createdAt: number;
   updatedAt: number;
-  mode: 'plan' | 'act' | 'auto' | string;
+  mode: 'plan' | 'act' | 'auto' | 'goal' | string;
   model: string;
   thinkingLevel: string;
   messages: LLMMessage[];
   files: Record<string, string>;
+  workspaceDir?: string;
+  latestCommit?: string | null;
   usage: TokenUsage;
   events?: AgentEvent[];
 }
@@ -812,7 +825,7 @@ export type ThinkingLevelOption = (typeof THINKING_LEVELS)[number];
 
 export interface RunExecutionOptions {
   signal?: AbortSignal;
-  mode?: 'plan' | 'act' | 'auto';
+  mode?: 'plan' | 'act' | 'auto' | 'goal';
   sessionId?: string;
 }
 
@@ -824,7 +837,9 @@ export interface MelonpanCoreOptions {
   agentsDir?: string; // デフォルト: パッケージ内の agents/ ディレクトリ
   maxTurns?: number; // デフォルト: 300
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
-  mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
+  mode?: 'plan' | 'act' | 'auto' | 'goal'; // デフォルト: 'act'
+  /** セッション専用物理ディレクトリまたはワークスペースルート */
+  workspaceDir?: string;
   /** 仮想ファイルシステムまたは任意のIFileSystemアダプター */
   vfs?: IFileSystem;
   /** スキルマネージャーインスタンス */
