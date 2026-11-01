@@ -177,7 +177,7 @@ export const App: React.FC<AppProps> = ({
   initialApiKey,
   outDir = process.cwd(),
   simulate,
-  maxTurns = 100,
+  maxTurns = 300,
   fsMode = 'vfs',
 }) => {
   const [status, setStatus] = useState<
@@ -448,6 +448,17 @@ export const App: React.FC<AppProps> = ({
             }));
             break;
 
+          case 'USAGE':
+            if (event.payload) {
+              setSessionUsage((prev) => ({
+                ...prev,
+                cachedPromptTokens: event.payload.cachedPromptTokens ?? prev.cachedPromptTokens,
+                contextWindowTokens: event.payload.contextWindowTokens ?? prev.contextWindowTokens,
+                maxContextTokens: event.payload.maxContextWindowTokens ?? prev.maxContextTokens,
+              }));
+            }
+            break;
+
           case 'COMPLETE':
             setVirtualFiles(event.payload.files);
             setStreamingThought('');
@@ -468,6 +479,8 @@ export const App: React.FC<AppProps> = ({
                 completionTokens:
                   prev.completionTokens + (event.payload.usage.completionTokens || 0),
                 totalTokens: prev.totalTokens + (event.payload.usage.totalTokens || 0),
+                cachedPromptTokens:
+                  (prev.cachedPromptTokens || 0) + (event.payload.usage.cachedPromptTokens || 0),
                 contextWindowTokens:
                   event.payload.usage.contextWindowTokens ?? prev.contextWindowTokens,
                 maxContextTokens:

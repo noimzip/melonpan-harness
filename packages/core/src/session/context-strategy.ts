@@ -50,6 +50,8 @@ export function estimateMessagesTokens(messages: any[], systemInstruction?: stri
 export function createDetailedTokenUsage(params: {
   billedPromptTokens: number;
   billedCompletionTokens: number;
+  cachedPromptTokens?: number;
+  cacheCreationPromptTokens?: number;
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
 }): TokenUsage {
@@ -67,6 +69,8 @@ export function createDetailedTokenUsage(params: {
     billedPromptTokens: promptTokens,
     billedCompletionTokens: completionTokens,
     billedTotalTokens: totalTokens,
+    cachedPromptTokens: params.cachedPromptTokens ?? 0,
+    cacheCreationPromptTokens: params.cacheCreationPromptTokens,
     contextWindowTokens: currentContext,
     contextWindowUtilization: utilization,
     maxContextWindowTokens: maxContext,

@@ -1,4 +1,5 @@
 import type { FunctionDeclaration } from '@google/genai';
+export type { FunctionDeclaration };
 
 /**
  * @melonpan/core 共通型定義 & モジュラーインターフェース契約 (Core-M1 〜 Core-M4)
@@ -285,6 +286,10 @@ export interface TokenUsage {
   billedPromptTokens?: number;
   billedCompletionTokens?: number;
   billedTotalTokens?: number;
+  /** キャッシュヒットした入力トークン (Prompt Cache Read Tokens / Cached Content Tokens) */
+  cachedPromptTokens?: number;
+  /** キャッシュ作成・書き込みトークン */
+  cacheCreationPromptTokens?: number;
   /** 現在ターンのコンテキストウィンドウ使用サイズ (#17: Current Context Window Tokens) */
   contextWindowTokens?: number;
   /** コンテキストウィンドウ最大容量に対する使用率 (0.0 - 1.0) */
@@ -338,11 +343,15 @@ export interface LLMMessagePart {
   thought_signature?: string;
   functionCall?: LLMToolCall;
   functionResponse?: LLMToolResponse;
+  cacheControl?: { type: string };
+  cache_control?: { type: string };
 }
 
 export interface LLMMessage {
-  role: 'user' | 'model' | 'system' | 'tool';
+  role: 'user' | 'model' | 'assistant' | 'system' | 'tool';
   parts: LLMMessagePart[];
+  cacheControl?: { type: string };
+  cache_control?: { type: string };
 }
 
 export interface LLMChatRequest {
@@ -353,6 +362,8 @@ export interface LLMChatRequest {
   thinkingLevel?: string;
   temperature?: number;
   maxOutputTokens?: number;
+  cachedContent?: string;
+  enablePromptCaching?: boolean;
 }
 
 export type LLMStreamChunkType =
@@ -373,6 +384,8 @@ export interface LLMStreamChunk {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cachedPromptTokens?: number;
+    cacheCreationPromptTokens?: number;
   };
 }
 
@@ -403,6 +416,7 @@ export type AgentEventType =
   | 'TOOL_RESULT'          // ツール実行結果 (Observation)
   | 'FILE_CHANGED'         // FS上のファイル変更 (write, edit, delete)
   | 'CONTEXT_COMPACTED'    // コンテキスト圧縮・プルーニング完了 (#26)
+  | 'USAGE'                // ターン毎・累計トークン消費量とキャッシュメトリクス
   | 'COMPLETE'             // タスク完了宣言と全成果物VFS
   | 'ERROR';               // エラー
 
@@ -514,6 +528,18 @@ export interface ContextCompactedPayload {
   summary?: string;
 }
 
+export interface UsagePayload {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedPromptTokens?: number;
+  cacheCreationPromptTokens?: number;
+  billedPromptTokens?: number;
+  turn?: number;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
+}
+
 export interface CompletePayload {
   summary: string;
   files: Record<string, string>;
@@ -576,6 +602,7 @@ export type FileChangedEvent = AgentEvent<FileChangedPayload> & { type: 'FILE_CH
 export type ContextCompactedEvent = AgentEvent<ContextCompactedPayload> & {
   type: 'CONTEXT_COMPACTED';
 };
+export type UsageEvent = AgentEvent<UsagePayload> & { type: 'USAGE' };
 export type CompleteEvent = AgentEvent<CompletePayload> & { type: 'COMPLETE' };
 export type ErrorEvent = AgentEvent<ErrorPayload> & { type: 'ERROR' };
 
@@ -596,6 +623,7 @@ export type MelonpanEvent =
   | ToolResultEvent
   | FileChangedEvent
   | ContextCompactedEvent
+  | UsageEvent
   | CompleteEvent
   | ErrorEvent;
 
@@ -794,7 +822,7 @@ export interface MelonpanCoreOptions {
   thinkingLevel?: ThinkingLevelOption | string; // デフォルト: 'high'
   skillsDir?: string; // デフォルト: パッケージ内の skills/ ディレクトリ
   agentsDir?: string; // デフォルト: パッケージ内の agents/ ディレクトリ
-  maxTurns?: number; // デフォルト: 100
+  maxTurns?: number; // デフォルト: 300
   simulate?: boolean; // テスト・オフライン用の確定型ReActシミュレーション
   mode?: 'plan' | 'act' | 'auto'; // デフォルト: 'act'
   /** 仮想ファイルシステムまたは任意のIFileSystemアダプター */
@@ -821,6 +849,8 @@ export interface MelonpanCoreOptions {
   sessionStore?: ISessionStore;
   /** LLMプロバイダーまたはプロバイダーID (#27) */
   provider?: ILLMProvider;
+  /** コンテキストキャッシュマネージャー */
+  cacheManager?: any;
   /** リアルタイムデルタストリーミングを有効にするか (#27) */
   enableStreaming?: boolean;
   /** 最大コンテキストウィンドウサイズ (デフォルト: 128000) */

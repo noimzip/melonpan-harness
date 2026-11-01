@@ -71,6 +71,7 @@ export class AgentSession implements IAgentRuntime {
 
   private billedPromptTokens: number = 0;
   private billedCompletionTokens: number = 0;
+  private cachedPromptTokens: number = 0;
   private currentContextTokens: number = 0;
 
   private onRunPrompt?: AgentSessionOptions['onRunPrompt'];
@@ -243,11 +244,31 @@ export class AgentSession implements IAgentRuntime {
         break;
       }
 
+      case 'USAGE': {
+        const p = event.payload as any;
+        if (p?.promptTokens !== undefined) {
+          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.promptTokens);
+        }
+        if (p?.completionTokens !== undefined) {
+          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.completionTokens);
+        }
+        if (p?.contextWindowTokens !== undefined) {
+          this.currentContextTokens = p.contextWindowTokens;
+        }
+        if (p?.cachedPromptTokens !== undefined) {
+          this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.cachedPromptTokens);
+        }
+        break;
+      }
+
       case 'COMPLETE': {
         const p = event.payload as any;
         if (p?.usage) {
-          this.billedPromptTokens += p.usage.promptTokens || 0;
-          this.billedCompletionTokens += p.usage.completionTokens || 0;
+          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.usage.promptTokens || 0);
+          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.usage.completionTokens || 0);
+          if (p.usage.cachedPromptTokens !== undefined) {
+            this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.usage.cachedPromptTokens);
+          }
           if (p.usage.contextWindowTokens !== undefined) {
             this.currentContextTokens = p.usage.contextWindowTokens;
           }
@@ -276,6 +297,7 @@ export class AgentSession implements IAgentRuntime {
     return createDetailedTokenUsage({
       billedPromptTokens: this.billedPromptTokens,
       billedCompletionTokens: this.billedCompletionTokens,
+      cachedPromptTokens: this.cachedPromptTokens,
       contextWindowTokens: contextTokens,
       maxContextWindowTokens: this.maxContextTokens,
     });

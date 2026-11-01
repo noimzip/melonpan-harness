@@ -101,6 +101,7 @@ export class MelonpanCore implements IAgentRuntime {
       provider: options.provider,
       enableStreaming: options.enableStreaming,
       maxContextTokens: options.maxContextTokens,
+      cacheManager: options.cacheManager,
     });
   }
 
@@ -278,5 +279,6 @@ export * from './prompts/index.js';
 export * from './runtime/index.js';
 export * from './permissions/index.js';
 export * from './session/index.js';
+export * from './cache/index.js';
 export * from './providers/index.js';
 export * from './react-agent.js';

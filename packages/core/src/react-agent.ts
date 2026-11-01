@@ -29,6 +29,7 @@ import {
   ToolMiddleware,
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
+import { ContextCacheManager } from './cache/context-cache-manager.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
 
@@ -64,6 +65,8 @@ export interface ReactAgentOptions {
   enableStreaming?: boolean;
   /** 最大コンテキストトークン上限 (#17, #26) */
   maxContextTokens?: number;
+  /** コンテキストキャッシュマネージャー */
+  cacheManager?: ContextCacheManager;
 }
 
 export interface ReactAgentExecuteOptions {
@@ -99,6 +102,7 @@ export class ReactAgent {
   private provider?: ILLMProvider;
   private enableStreaming: boolean;
   private maxContextTokens: number;
+  private cacheManager: ContextCacheManager;
 
   constructor(options: ReactAgentOptions = {}) {
     const envApiKey =
@@ -108,11 +112,12 @@ export class ReactAgent {
     this.apiKey = options.apiKey || envApiKey || '';
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
-    this.maxTurns = options.maxTurns ?? 100;
+    this.maxTurns = options.maxTurns ?? 300;
     this.simulate = options.simulate ?? (!this.apiKey && !options.provider);
     this.mode = options.mode || 'act';
     this.enableStreaming = options.enableStreaming ?? Boolean(options.provider);
     this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.cacheManager = options.cacheManager || new ContextCacheManager();
 
     if (options.toolRegistry) {
       this.toolRegistry = options.toolRegistry;
@@ -306,10 +311,21 @@ export class ReactAgent {
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
-      const config: Record<string, any> = {
+      const stableTools = this.cacheManager.stabilizeTools(this.toolRegistry.toFunctionDeclarations());
+      let cachedContentName = await this.cacheManager.getOrCreateGeminiCache({
+        ai,
+        model: this.model,
         systemInstruction,
-        tools: this.toolRegistry.toGeminiTools(),
-      };
+        tools: stableTools,
+      });
+
+      const config: Record<string, any> = {};
+      if (cachedContentName) {
+        config.cachedContent = cachedContentName;
+      } else {
+        config.systemInstruction = systemInstruction;
+        config.tools = this.toolRegistry.toGeminiTools();
+      }
 
       const thinkingLevelUpper = (this.thinkingLevel || 'high').toUpperCase();
       const validLevels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
@@ -376,6 +392,7 @@ export class ReactAgent {
       let currentMessage: any = prompt;
       let totalPromptTokens = 0;
       let totalCompletionTokens = 0;
+      let totalCachedPromptTokens = 0;
       let lastPromptTokens = 0;
 
       while (turns < this.maxTurns) {
@@ -394,6 +411,7 @@ export class ReactAgent {
               usage: createDetailedTokenUsage({
                 billedPromptTokens: totalPromptTokens,
                 billedCompletionTokens: totalCompletionTokens,
+                cachedPromptTokens: totalCachedPromptTokens,
                 contextWindowTokens: lastPromptTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -473,13 +491,31 @@ export class ReactAgent {
 
         // トークン使用量の集計 (usageMetadata) (#17)
         const usageMeta = (response as any).usageMetadata;
+        let turnCached = 0;
         if (usageMeta) {
-          const turnPrompt = usageMeta.promptTokenCount || 0;
-          const turnCompletion = usageMeta.candidatesTokenCount || 0;
+          const extracted = this.cacheManager.extractGeminiUsage(usageMeta);
+          const turnPrompt = extracted.promptTokens;
+          const turnCompletion = extracted.completionTokens;
+          turnCached = extracted.cachedPromptTokens;
           lastPromptTokens = turnPrompt;
           totalPromptTokens += turnPrompt;
           totalCompletionTokens += turnCompletion;
+          totalCachedPromptTokens += turnCached;
         }
+
+        yield {
+          type: 'USAGE',
+          payload: {
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            totalTokens: totalPromptTokens + totalCompletionTokens,
+            cachedPromptTokens: totalCachedPromptTokens,
+            turn: turns,
+            contextWindowTokens: lastPromptTokens,
+            maxContextWindowTokens: this.maxContextTokens,
+          },
+          timestamp: Date.now(),
+        };
 
         // Issue #4: candidates?.[0]?.content?.parts から part.thought === true を抽出
         const { thoughts, texts } = extractGeminiResponseParts(response);
@@ -632,6 +668,7 @@ export class ReactAgent {
                 usage: createDetailedTokenUsage({
                   billedPromptTokens: totalPromptTokens,
                   billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
                   contextWindowTokens:
                     lastPromptTokens || estimateMessagesTokens((chat as any).history, systemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
@@ -660,6 +697,7 @@ export class ReactAgent {
           usage: createDetailedTokenUsage({
             billedPromptTokens: totalPromptTokens,
             billedCompletionTokens: totalCompletionTokens,
+            cachedPromptTokens: totalCachedPromptTokens,
             contextWindowTokens: lastPromptTokens,
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -704,6 +742,7 @@ export class ReactAgent {
     let turns = 0;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
+    let totalCachedPromptTokens = 0;
     let lastContextTokens = 0;
 
     try {
@@ -720,6 +759,7 @@ export class ReactAgent {
               usage: createDetailedTokenUsage({
                 billedPromptTokens: totalPromptTokens,
                 billedCompletionTokens: totalCompletionTokens,
+                cachedPromptTokens: totalCachedPromptTokens,
                 contextWindowTokens: lastContextTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -816,6 +856,9 @@ export class ReactAgent {
             lastContextTokens = chunk.usage.promptTokens;
             totalPromptTokens += chunk.usage.promptTokens;
             totalCompletionTokens += chunk.usage.completionTokens;
+            if (chunk.usage.cachedPromptTokens) {
+              totalCachedPromptTokens += chunk.usage.cachedPromptTokens;
+            }
           }
         }
 
@@ -831,6 +874,7 @@ export class ReactAgent {
               usage: createDetailedTokenUsage({
                 billedPromptTokens: totalPromptTokens,
                 billedCompletionTokens: totalCompletionTokens,
+                cachedPromptTokens: totalCachedPromptTokens,
                 contextWindowTokens: lastContextTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -989,6 +1033,21 @@ export class ReactAgent {
 
           messages.push({ role: 'user', parts: responseParts });
 
+          yield {
+            type: 'USAGE',
+            payload: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+              totalTokens: totalPromptTokens + totalCompletionTokens,
+              cachedPromptTokens: totalCachedPromptTokens,
+              turn: turns,
+              contextWindowTokens:
+                lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+              maxContextWindowTokens: this.maxContextTokens,
+            },
+            timestamp: Date.now(),
+          };
+
           if (isComplete) {
             yield {
               type: 'COMPLETE',
@@ -1000,8 +1059,9 @@ export class ReactAgent {
                 usage: createDetailedTokenUsage({
                   billedPromptTokens: totalPromptTokens,
                   billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
                   contextWindowTokens:
-                    lastContextTokens || estimateMessagesTokens(messages, systemInstruction),
+                    lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
                 }),
               },
@@ -1018,6 +1078,21 @@ export class ReactAgent {
               },
             ],
           });
+
+          yield {
+            type: 'USAGE',
+            payload: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+              totalTokens: totalPromptTokens + totalCompletionTokens,
+              cachedPromptTokens: totalCachedPromptTokens,
+              turn: turns,
+              contextWindowTokens:
+                lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+              maxContextWindowTokens: this.maxContextTokens,
+            },
+            timestamp: Date.now(),
+          };
         }
       }
 
@@ -1031,7 +1106,8 @@ export class ReactAgent {
           usage: createDetailedTokenUsage({
             billedPromptTokens: totalPromptTokens,
             billedCompletionTokens: totalCompletionTokens,
-            contextWindowTokens: lastContextTokens || estimateMessagesTokens(messages, systemInstruction),
+            cachedPromptTokens: totalCachedPromptTokens,
+            contextWindowTokens: lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
             maxContextWindowTokens: this.maxContextTokens,
           }),
         },
@@ -1050,6 +1126,7 @@ export class ReactAgent {
             usage: createDetailedTokenUsage({
               billedPromptTokens: totalPromptTokens,
               billedCompletionTokens: totalCompletionTokens,
+              cachedPromptTokens: totalCachedPromptTokens,
               contextWindowTokens: lastContextTokens,
               maxContextWindowTokens: this.maxContextTokens,
             }),
@@ -1257,6 +1334,20 @@ export class ReactAgent {
       };
 
       yield {
+        type: 'USAGE',
+        payload: {
+          promptTokens: 1250,
+          completionTokens: 450,
+          totalTokens: 1700,
+          cachedPromptTokens: 380,
+          turn: 2,
+          contextWindowTokens: 780,
+          maxContextWindowTokens: this.maxContextTokens,
+        },
+        timestamp: Date.now(),
+      };
+
+      yield {
         type: 'COMPLETE',
         payload: {
           summary: planSummary,
@@ -1266,6 +1357,7 @@ export class ReactAgent {
           usage: createDetailedTokenUsage({
             billedPromptTokens: 1250,
             billedCompletionTokens: 450,
+            cachedPromptTokens: 380,
             contextWindowTokens: 780,
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -1572,6 +1664,18 @@ export class ReactAgent {
 
     const simPromptTokens = 450 + turnsCount * 380;
     const simCompletionTokens = 300 + turnsCount * 220;
+    const simCachedTokens = Math.max(0, turnsCount > 1 ? (turnsCount - 1) * 320 : 0);
+    yield {
+      type: 'USAGE',
+      payload: {
+        promptTokens: simPromptTokens,
+        completionTokens: simCompletionTokens,
+        totalTokens: simPromptTokens + simCompletionTokens,
+        cachedPromptTokens: simCachedTokens,
+        turn: turnsCount,
+      },
+      timestamp: Date.now(),
+    };
     yield {
       type: 'COMPLETE',
       payload: {
@@ -1582,6 +1686,7 @@ export class ReactAgent {
         usage: createDetailedTokenUsage({
           billedPromptTokens: simPromptTokens,
           billedCompletionTokens: simCompletionTokens,
+          cachedPromptTokens: simCachedTokens,
           contextWindowTokens: 450 + 380,
           maxContextWindowTokens: this.maxContextTokens,
         }),

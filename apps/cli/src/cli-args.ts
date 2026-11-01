@@ -18,7 +18,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
   let initialApiKey: string | undefined = undefined;
   let outDir = process.cwd();
   let simulate: boolean | undefined = undefined;
-  let maxTurns = 100;
+  let maxTurns = 300;
   let fsMode: 'vfs' | 'disk' = 'vfs';
   let provider: string | undefined = undefined;
   const promptWords: string[] = [];

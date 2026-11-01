@@ -82,5 +82,21 @@ describe('TUI-M3: Multi-Turn Conversation View, Context Gauge & Compaction UI', 
       expect(loggedThoughts.some((t) => t.includes('18,500 / 128,000 tokens'))).toBe(true);
       expect(loggedThoughts.some((t) => t.includes('6,200 tokens freed'))).toBe(true);
     });
+
+    it('/cost reports cached tokens and hit rate when caching is active', async () => {
+      ctx.sessionUsage = {
+        promptTokens: 20000,
+        completionTokens: 2000,
+        totalTokens: 22000,
+        cachedPromptTokens: 15000,
+        contextWindowTokens: 5000,
+        maxContextTokens: 128000,
+      };
+      await extendedCommandRegistry.executeCommand('/cost', ctx);
+
+      expect(loggedThoughts.some((t) => t.includes('Cached (Hit)    : 15,000 tokens (75% hit rate'))).toBe(true);
+      expect(loggedThoughts.some((t) => t.includes('Fresh (Uncached): 5,000 tokens'))).toBe(true);
+    });
   });
 });
+

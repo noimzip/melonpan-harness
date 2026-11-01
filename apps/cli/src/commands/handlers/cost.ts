@@ -28,6 +28,7 @@ export const costCommand: CommandDefinition = {
       promptTokens,
       completionTokens,
       totalTokens,
+      cachedPromptTokens = 0,
       contextWindowTokens = 0,
       maxContextTokens = 128_000,
       savedTokens = 0,
@@ -38,19 +39,27 @@ export const costCommand: CommandDefinition = {
       outputPerMillion: 0.4,
     };
 
-    const inputCostUsd = (promptTokens / 1_000_000) * pricing.inputPerMillion;
+    // キャッシュヒット分はプロバイダー規約に応じて約75%〜90%割引 (Geminiは1/4料金)
+    const cachedInputRate = pricing.inputPerMillion * 0.25;
+    const freshPromptTokens = Math.max(0, promptTokens - cachedPromptTokens);
+    const inputCostUsd =
+      (freshPromptTokens / 1_000_000) * pricing.inputPerMillion +
+      (cachedPromptTokens / 1_000_000) * cachedInputRate;
     const outputCostUsd = (completionTokens / 1_000_000) * pricing.outputPerMillion;
     const totalCostUsd = inputCostUsd + outputCostUsd;
     const totalCostJpy = totalCostUsd * USD_TO_JPY_RATE;
 
+    const cachePercent = promptTokens > 0 ? Math.round((cachedPromptTokens / promptTokens) * 100) : 0;
     const ctxPercent = maxContextTokens > 0
       ? Math.min(100, Math.round((contextWindowTokens / maxContextTokens) * 100))
       : 0;
 
     const lines = [
-      '💰 1. Session Billed Usage (全ターン累計課金対象):',
+      '💰 1. Session Billed Usage (全ターン累計課金対象・キャッシュ最適化適用):',
       `  • Active Model      : ${ctx.model}`,
       `  • Input Tokens      : ${promptTokens.toLocaleString()} tokens ($${pricing.inputPerMillion.toFixed(3)} / 1M)`,
+      `    └ Cached (Hit)    : ${cachedPromptTokens.toLocaleString()} tokens (${cachePercent}% hit rate, $${cachedInputRate.toFixed(4)} / 1M)`,
+      `    └ Fresh (Uncached): ${freshPromptTokens.toLocaleString()} tokens`,
       `  • Output Tokens     : ${completionTokens.toLocaleString()} tokens ($${pricing.outputPerMillion.toFixed(3)} / 1M)`,
       `  • Total Tokens      : ${totalTokens.toLocaleString()} tokens`,
       `  • Estimated Cost    : $${totalCostUsd.toFixed(5)} USD (約 ¥${totalCostJpy.toFixed(2)} JPY)`,

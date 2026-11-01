@@ -90,7 +90,7 @@ melonpan-harness/
 ### B. ReAct Autonomous Loop (`packages/core/src/react-agent.ts`)
 - Powered by Google Gemini API (`@google/genai`) Function Calling.
 - Execution lifecycle follows `Thought` $\rightarrow$ `Action` (tool call) $\rightarrow$ `Observation` (tool result) $\rightarrow$ `Next Thought`.
-- **Max Turns**: Default `maxTurns = 100` to allow complex multi-step generation and debugging without premature cutoff.
+- **Max Turns**: Default `maxTurns = 300` to allow complex multi-step generation and debugging without premature cutoff.
 - **Streaming Event Architecture**: Emits typed `AgentEvent` objects via an `AsyncGenerator`:
   `SKILL_INDEXED` $\rightarrow$ `SKILL_LOADED` $\rightarrow$ `PLAN_STARTED` / `PLAN_CREATED` $\rightarrow$ `CONTEXT_PRUNED` $\rightarrow$ `THOUGHT` $\rightarrow$ `TOOL_CALL` $\rightarrow$ `FILE_CHANGED` $\rightarrow$ `TOOL_RESULT` $\rightarrow$ `USAGE` $\rightarrow$ `COMPLETE`.
 

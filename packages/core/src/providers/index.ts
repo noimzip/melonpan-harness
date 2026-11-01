@@ -13,6 +13,7 @@ import {
   normalizeJsonSchema,
   normalizeJsonSchemaType,
 } from '../tools/schema-converter.js';
+import { ContextCacheManager } from '../cache/context-cache-manager.js';
 
 
 /**
@@ -130,6 +131,8 @@ export function extractGeminiFunctionCalls(
 export interface GeminiProviderOptions {
   apiKey?: string;
   useStreamingApi?: boolean;
+  cacheManager?: ContextCacheManager;
+  enableContextCache?: boolean;
 }
 
 /**
@@ -137,11 +140,14 @@ export interface GeminiProviderOptions {
  * - `candidates?.[0]?.content?.parts` から `part.thought === true` を正確に抽出 (#4)
  * - `THOUGHT_DELTA`, `TEXT_DELTA`, `TOOL_CALL_DELTA` チャンクの送出と `AbortSignal` 対応 (#27)
  * - Gemini 3 / 2.5 思考モードにおける `thought_signature` / `thoughtSignature` の保持・再送
+ * - Gemini Context Caching (`ai.caches.create`) とトークン節約 (#17)
  */
 export class GeminiProvider implements ILLMProvider {
   readonly id = 'gemini';
   private apiKey: string;
   private useStreamingApi: boolean;
+  private cacheManager: ContextCacheManager;
+  private enableContextCache: boolean;
 
   constructor(options: GeminiProviderOptions = {}) {
     const envApiKey =
@@ -150,6 +156,8 @@ export class GeminiProvider implements ILLMProvider {
         : '';
     this.apiKey = options.apiKey || envApiKey || '';
     this.useStreamingApi = options.useStreamingApi ?? false;
+    this.cacheManager = options.cacheManager || new ContextCacheManager();
+    this.enableContextCache = options.enableContextCache ?? true;
   }
 
   async *streamChat(
@@ -163,12 +171,33 @@ export class GeminiProvider implements ILLMProvider {
     const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
     const config: Record<string, any> = {};
-    if (request.systemInstruction) {
-      config.systemInstruction = request.systemInstruction;
+
+    const stableTools = this.cacheManager.stabilizeTools(request.tools);
+    let cachedContentName = request.cachedContent;
+    if (
+      !cachedContentName &&
+      this.enableContextCache &&
+      (request.systemInstruction || (stableTools && stableTools.length > 0))
+    ) {
+      cachedContentName = await this.cacheManager.getOrCreateGeminiCache({
+        ai,
+        model: request.model,
+        systemInstruction: request.systemInstruction,
+        tools: stableTools,
+      });
     }
-    if (request.tools && request.tools.length > 0) {
-      config.tools = [{ functionDeclarations: request.tools }];
+
+    if (cachedContentName) {
+      config.cachedContent = cachedContentName;
+    } else {
+      if (request.systemInstruction) {
+        config.systemInstruction = request.systemInstruction;
+      }
+      if (stableTools && stableTools.length > 0) {
+        config.tools = [{ functionDeclarations: stableTools }];
+      }
     }
+
     if (request.temperature !== undefined) {
       config.temperature = request.temperature;
     }
@@ -239,6 +268,7 @@ export class GeminiProvider implements ILLMProvider {
 
       let promptTokens = 0;
       let completionTokens = 0;
+      let cachedPromptTokens = 0;
       let turnThoughtSignature: string | undefined = undefined;
       const turnToolCalls: LLMToolCall[] = [];
 
@@ -249,8 +279,10 @@ export class GeminiProvider implements ILLMProvider {
 
         const usageMeta = (chunk as any).usageMetadata;
         if (usageMeta) {
-          promptTokens = usageMeta.promptTokenCount || promptTokens;
-          completionTokens = usageMeta.candidatesTokenCount || completionTokens;
+          const extracted = this.cacheManager.extractGeminiUsage(usageMeta);
+          promptTokens = extracted.promptTokens || promptTokens;
+          completionTokens = extracted.completionTokens || completionTokens;
+          cachedPromptTokens = extracted.cachedPromptTokens || cachedPromptTokens;
         }
 
         const { thoughts, texts, thoughtSignatures } = extractGeminiResponseParts(chunk);
@@ -326,6 +358,7 @@ export class GeminiProvider implements ILLMProvider {
           promptTokens,
           completionTokens,
           totalTokens: promptTokens + completionTokens,
+          cachedPromptTokens,
         },
       };
       yield {
@@ -399,14 +432,17 @@ export class GeminiProvider implements ILLMProvider {
     }
 
     const usageMeta = (response as any).usageMetadata;
-    const promptTokens = usageMeta?.promptTokenCount || 0;
-    const completionTokens = usageMeta?.candidatesTokenCount || 0;
+    const extracted = this.cacheManager.extractGeminiUsage(usageMeta);
+    const promptTokens = extracted.promptTokens;
+    const completionTokens = extracted.completionTokens;
+    const cachedPromptTokens = extracted.cachedPromptTokens;
     yield {
       type: 'usage',
       usage: {
         promptTokens,
         completionTokens,
         totalTokens: promptTokens + completionTokens,
+        cachedPromptTokens,
       },
     };
     yield {
@@ -428,6 +464,8 @@ export interface OpenAICompatibleProviderOptions {
   apiKey?: string;
   headers?: Record<string, string>;
   fetchImpl?: typeof fetch;
+  cacheManager?: ContextCacheManager;
+  enablePromptCaching?: boolean;
 }
 
 /**
@@ -439,6 +477,8 @@ export class OpenAICompatibleProvider implements ILLMProvider {
   private apiKey: string;
   private extraHeaders: Record<string, string>;
   private fetchImpl: typeof fetch;
+  private cacheManager: ContextCacheManager;
+  private enablePromptCaching: boolean;
 
   constructor(options: OpenAICompatibleProviderOptions = {}) {
     this.id = options.id || 'openai-compat';
@@ -450,6 +490,8 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     this.apiKey = options.apiKey ?? envKey;
     this.extraHeaders = options.headers || {};
     this.fetchImpl = options.fetchImpl || fetch;
+    this.cacheManager = options.cacheManager || new ContextCacheManager();
+    this.enablePromptCaching = options.enablePromptCaching ?? true;
   }
 
   private convertMessages(request: LLMChatRequest): any[] {
@@ -534,10 +576,15 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     };
 
     if (request.tools && request.tools.length > 0) {
-      const formatted = this.formatTools(request.tools);
+      const stableTools = this.cacheManager.stabilizeTools(request.tools);
+      const formatted = this.formatTools(stableTools || []);
       if (formatted.length > 0) {
         body.tools = formatted;
       }
+    }
+
+    if (this.enablePromptCaching) {
+      this.cacheManager.applyPromptCacheControl(body);
     }
 
 
@@ -567,6 +614,8 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       let buffer = '';
       let promptTokens = 0;
       let completionTokens = 0;
+      let cachedPromptTokens = 0;
+      let cacheCreationPromptTokens = 0;
       const toolCallsMap: Map<number, { id: string; name: string; argsRaw: string }> = new Map();
 
       while (true) {
@@ -588,8 +637,11 @@ export class OpenAICompatibleProvider implements ILLMProvider {
           try {
             const eventData: any = JSON.parse(payloadStr);
             if (eventData?.usage) {
-              promptTokens = eventData.usage.prompt_tokens ?? promptTokens;
-              completionTokens = eventData.usage.completion_tokens ?? completionTokens;
+              const extracted = this.cacheManager.extractOpenAIUsage(eventData.usage);
+              promptTokens = extracted.promptTokens || promptTokens;
+              completionTokens = extracted.completionTokens || completionTokens;
+              cachedPromptTokens = extracted.cachedPromptTokens || cachedPromptTokens;
+              cacheCreationPromptTokens = extracted.cacheCreationPromptTokens || cacheCreationPromptTokens;
             }
             const delta = eventData?.choices?.[0]?.delta;
             if (!delta) continue;
@@ -650,6 +702,8 @@ export class OpenAICompatibleProvider implements ILLMProvider {
           promptTokens: finalPrompt,
           completionTokens: finalComp,
           totalTokens: finalPrompt + finalComp,
+          cachedPromptTokens,
+          cacheCreationPromptTokens,
         },
       };
       yield { type: 'done' };
@@ -692,14 +746,18 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       }
     }
 
-    const promptTokens = data?.usage?.prompt_tokens ?? estimateMessagesTokens(request.messages, request.systemInstruction);
-    const completionTokens = data?.usage?.completion_tokens ?? 100;
+    const extracted = this.cacheManager.extractOpenAIUsage(data?.usage);
+    const finalPrompt =
+      extracted.promptTokens || estimateMessagesTokens(request.messages, request.systemInstruction);
+    const finalComp = extracted.completionTokens || 100;
     yield {
       type: 'usage',
       usage: {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
+        promptTokens: finalPrompt,
+        completionTokens: finalComp,
+        totalTokens: finalPrompt + finalComp,
+        cachedPromptTokens: extracted.cachedPromptTokens,
+        cacheCreationPromptTokens: extracted.cacheCreationPromptTokens,
       },
     };
     yield { type: 'done' };
