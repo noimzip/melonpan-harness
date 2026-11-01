@@ -131,18 +131,30 @@ export function SandboxViewer({ htmlContent, onFixError }: SandboxViewerProps) {
         </div>
       )}
 
-      {/* Sandboxed iframe container */}
+      {/* Sandboxed iframe container or Empty State */}
       <div className="flex-1 w-full h-full p-3 flex items-center justify-center bg-[var(--background)]/40 overflow-hidden">
-        <div className="w-full h-full rounded-2xl overflow-hidden rough-outline shadow-inner bg-[#fffdf9] relative">
-          <iframe
-            key={key}
-            ref={iframeRef}
-            srcDoc={injectedHtml}
-            sandbox="allow-scripts allow-modals allow-same-origin"
-            className="w-full h-full border-none block"
-            title="Canvas 2D Sandbox"
-          />
-        </div>
+        {htmlContent.trim() ? (
+          <div className="w-full h-full rounded-2xl overflow-hidden rough-outline shadow-inner bg-[#fffdf9] relative">
+            <iframe
+              key={key}
+              ref={iframeRef}
+              srcDoc={injectedHtml}
+              sandbox="allow-scripts allow-modals allow-same-origin"
+              className="w-full h-full border-none block"
+              title="Canvas 2D Sandbox"
+            />
+          </div>
+        ) : (
+          <div className="text-center py-12 px-6 flex flex-col items-center gap-3 opacity-60">
+            <div className="w-16 h-16 rounded-full bg-[var(--card)] border-2 border-[var(--stroke)] flex items-center justify-center text-2xl rough-shadow-sm">
+              🍈
+            </div>
+            <p className="font-bold text-sm">プレビューするHTML5ゲームがまだありません</p>
+            <p className="text-xs max-w-sm">
+              チャットでエージェントにゲームのアイデアや要件を伝えると、ここに生成されたCanvasゲームがリアルタイムで描画されます。
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

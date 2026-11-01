@@ -102,13 +102,28 @@ export interface Session {
   metrics: ContextMetrics;
 }
 
+export type ProviderType =
+  | 'gemini'
+  | 'openai'
+  | 'anthropic'
+  | 'openrouter'
+  | 'orcarouter'
+  | 'groq'
+  | 'bridge';
+
 export interface ProviderConfig {
-  provider: 'simulation' | 'gemini' | 'openai' | 'openrouter' | 'groq' | 'ollama' | 'bridge';
+  provider: ProviderType;
   model: string;
   apiKey: string;
   baseUrl: string;
   thinkingEffort: 'minimal' | 'low' | 'medium' | 'high';
   bridgeUrl: string;
+}
+
+export interface CommandSuggestion {
+  text: string;
+  display: string;
+  description: string;
 }
 
 export interface PermissionPolicyConfig {

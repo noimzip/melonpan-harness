@@ -4,11 +4,8 @@ import {
   X,
   Key,
   Cpu,
-  BrainCircuit,
-  Sliders,
   Check,
   Globe,
-  Sparkles,
 } from 'lucide-react';
 import { ProviderConfig } from '../types';
 import { WobblyButton } from './WobblyButton';
@@ -48,7 +45,7 @@ export function SettingsModal({
         <div className="flex items-center justify-between border-b-2 border-[var(--stroke)] pb-3">
           <div className="flex items-center gap-2">
             <Settings size={18} className="text-[var(--accent)]" />
-            <h3 className="font-bold text-base">プロバイダー & LLM設定</h3>
+            <h3 className="font-bold text-base">プロバイダー & APIキー設定</h3>
           </div>
           <button onClick={onClose} className="p-1 hover:bg-black/5 rounded-lg">
             <X size={16} />
@@ -64,10 +61,11 @@ export function SettingsModal({
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
               {[
-                { id: 'simulation', label: '🍈 Simulation (オフライン)' },
                 { id: 'gemini', label: '⚡ Google Gemini' },
                 { id: 'openai', label: '🤖 OpenAI Compatible' },
+                { id: 'anthropic', label: '🧠 Anthropic Claude' },
                 { id: 'openrouter', label: '🔀 OpenRouter' },
+                { id: 'orcarouter', label: '🐋 OrcaRouter' },
                 { id: 'groq', label: '⚡ Groq (Llama)' },
                 { id: 'bridge', label: '🔌 Local Node.js Bridge' },
               ].map((item) => (
@@ -93,20 +91,8 @@ export function SettingsModal({
             </div>
           </div>
 
-          {/* Model Name */}
-          <div className="space-y-1">
-            <label className="font-bold opacity-80">モデル名 (Model Identifier)</label>
-            <input
-              type="text"
-              value={local.model}
-              onChange={(e) => setLocal((prev) => ({ ...prev, model: e.target.value }))}
-              placeholder="gemini-2.5-flash, gpt-4o, etc."
-              className="w-full bg-[var(--background)] border border-[var(--stroke)]/40 rounded-xl px-3 py-2 outline-none font-mono text-xs"
-            />
-          </div>
-
           {/* API Key */}
-          {local.provider !== 'simulation' && local.provider !== 'bridge' && (
+          {local.provider !== 'bridge' && (
             <div className="space-y-1 animate-in fade-in">
               <label className="font-bold flex items-center gap-1 opacity-80">
                 <Key size={13} />
@@ -138,31 +124,6 @@ export function SettingsModal({
               />
             </div>
           )}
-
-          {/* Thinking Effort */}
-          <div className="space-y-1.5">
-            <label className="font-bold flex items-center gap-1.5 opacity-80">
-              <BrainCircuit size={14} />
-              思考深度 (Thinking Effort for Gemini 2.5/3 Flash & Pro)
-            </label>
-            <div className="grid grid-cols-4 gap-1 bg-[var(--background)] p-1 rounded-xl border border-[var(--stroke)]/30">
-              {(['minimal', 'low', 'medium', 'high'] as const).map((eff) => (
-                <button
-                  key={eff}
-                  type="button"
-                  onClick={() => setLocal((prev) => ({ ...prev, thinkingEffort: eff }))}
-                  className={[
-                    'py-1 rounded-lg text-xs font-medium capitalize transition-all',
-                    local.thinkingEffort === eff
-                      ? 'bg-[var(--accent)] text-white shadow-sm'
-                      : 'opacity-70 hover:opacity-100',
-                  ].join(' ')}
-                >
-                  {eff}
-                </button>
-              ))}
-            </div>
-          </div>
 
           {/* Footer Action */}
           <div className="flex justify-end gap-2 pt-2 border-t border-[var(--stroke)]/20">

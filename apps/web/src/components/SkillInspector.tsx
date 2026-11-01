@@ -10,37 +10,16 @@ import {
 } from 'lucide-react';
 import { SkillInfo } from '../types';
 
+import { GAME_GENERATOR_SKILL_MD } from '../services/embedded-skills';
+
 const DEFAULT_SKILLS: SkillInfo[] = [
   {
-    name: 'canvas-game',
-    description: 'HTML5 Canvas 2D ゲームを単一ファイルで安全に構築するスキル。requestAnimationFrame、衝突判定、レスポンシブ対応を含む。',
+    name: 'game-generator',
+    description:
+      'Generates high-quality, playable, single-file HTML5 Canvas 2D arcade games with modern neon visuals, responsive touch controls, and audio/particle effects (agentskills.io standard).',
     enabled: true,
-    metadata: { triggers: 'game, canvas, 2d, html5, ゲーム, ブロック崩し, シューティング' },
-    body: `# Canvas 2D Game Development Skill
-- Use requestAnimationFrame for fluid 60fps game loops.
-- Implement clear separation of update() and draw().
-- Ensure responsive canvas sizing and touch/mouse control handling.
-- Never rely on external unbundled CDN assets.`,
-  },
-  {
-    name: 'retro-audio',
-    description: 'Web Audio APIオシレーターによる外部音源ファイル不要のレトロSE・BGM動的生成スキル。',
-    enabled: true,
-    metadata: { triggers: 'sound, audio, bgm, se, サウンド, 効果音, 音楽' },
-    body: `# Retro Sound Synthesis with Web Audio API
-- Instantiate AudioContext upon first user interaction gesture.
-- Synthesize square/sawtooth/triangle oscillator sounds for jumps, hits, and coins.
-- Use GainNode decay envelopes to avoid audio pop clicks.`,
-  },
-  {
-    name: 'code-audit',
-    description: '生成コードの安全性を検証し、無限ループやメモリリーク、XSS脆弱性を未然に防ぐ品質監査スキル。',
-    enabled: true,
-    metadata: { triggers: 'audit, review, security, 監査, レビュー, セキュリティ' },
-    body: `# Code Quality and Safety Audit
-- Check event listener disposal on restart.
-- Disallow dangerous eval and innerHTML injections.
-- Validate canvas boundary constraints and division by zero.`,
+    metadata: { version: '1.0.0', target: 'canvas-2d', license: 'MIT' },
+    body: GAME_GENERATOR_SKILL_MD,
   },
 ];
 

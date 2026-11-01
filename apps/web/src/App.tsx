@@ -41,6 +41,9 @@ import { PermissionModal } from './components/PermissionModal';
 import { SettingsModal } from './components/SettingsModal';
 import { KioskOverlay } from './components/KioskOverlay';
 
+import { webCommandRegistry, WebCommandContext } from './services/command-registry';
+import { getStoredApiKeys, saveStoredApiKey } from './services/provider-factory';
+
 type RightTab = 'sandbox' | 'vfs' | 'plan' | 'subagents' | 'skills' | 'context' | 'gallery';
 
 export function App() {
@@ -58,13 +61,16 @@ export function App() {
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
   const [isAgentRunning, setIsAgentRunning] = useState(false);
 
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
-    provider: 'simulation',
-    model: 'gemini-3.5-flash-lite',
-    apiKey: '',
-    baseUrl: '',
-    thinkingEffort: 'medium',
-    bridgeUrl: 'http://localhost:3001/api/agent',
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig>(() => {
+    const stored = getStoredApiKeys();
+    return {
+      provider: 'gemini',
+      model: 'gemini-3.8-flash',
+      apiKey: stored.gemini || '',
+      baseUrl: '',
+      thinkingEffort: 'medium',
+      bridgeUrl: 'http://localhost:3001/api/agent',
+    };
   });
 
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicyConfig>({
@@ -135,13 +141,59 @@ export function App() {
     }
   };
 
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, overrideMode?: 'plan' | 'act' | 'auto') => {
     if (!text.trim() || isAgentRunning) return;
 
-    // Check if user entered /compact command
-    if (text.trim() === '/compact') {
-      handleManualCompact();
-      return;
+    const trimmed = text.trim();
+
+    // Slash command interception
+    if (trimmed.startsWith('/') && !overrideMode) {
+      // Append user command message to chat
+      const userMsg: Message = {
+        id: `usr_${Date.now()}`,
+        role: 'user',
+        content: text,
+        timestamp: Date.now(),
+      };
+
+      updateActiveSession((prev) => ({
+        ...prev,
+        messages: [...prev.messages, userMsg],
+        updatedAt: Date.now(),
+      }));
+
+      const commandCtx: WebCommandContext = {
+        session: activeSession,
+        providerConfig,
+        permissionPolicy,
+        setProviderConfig,
+        setPermissionPolicy,
+        updateActiveSession,
+        executePrompt: (prompt, mode) => {
+          handleSendMessage(prompt, mode);
+        },
+        logMessage: (content, thought) => {
+          updateActiveSession((prev) => ({
+            ...prev,
+            messages: [
+              ...prev.messages,
+              {
+                id: `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                role: 'assistant',
+                content,
+                thought,
+                timestamp: Date.now(),
+              },
+            ],
+            updatedAt: Date.now(),
+          }));
+        },
+      };
+
+      const isHandled = await webCommandRegistry.executeCommand(trimmed, commandCtx);
+      if (isHandled) {
+        return;
+      }
     }
 
     const userMsg: Message = {
@@ -151,8 +203,16 @@ export function App() {
       timestamp: Date.now(),
     };
 
+    const targetSession = {
+      ...activeSession,
+      mode: overrideMode || activeSession.mode,
+      messages: [...activeSession.messages, userMsg],
+      updatedAt: Date.now(),
+    };
+
     updateActiveSession((prev) => ({
       ...prev,
+      mode: overrideMode || prev.mode,
       messages: [...prev.messages, userMsg],
       updatedAt: Date.now(),
     }));
@@ -190,7 +250,15 @@ export function App() {
           const idx = prev.subagents.findIndex((s) => s.id === subagent.id);
           if (idx >= 0) {
             const nextSubs = [...prev.subagents];
-            nextSubs[idx] = subagent;
+            nextSubs[idx] = {
+              ...nextSubs[idx],
+              ...subagent,
+              taskPrompt: subagent.taskPrompt || nextSubs[idx].taskPrompt,
+              thoughts:
+                subagent.thoughts && subagent.thoughts.length > 0
+                  ? subagent.thoughts
+                  : nextSubs[idx].thoughts,
+            };
             return { ...prev, subagents: nextSubs };
           } else {
             return { ...prev, subagents: [...prev.subagents, subagent] };
@@ -209,7 +277,7 @@ export function App() {
     };
 
     try {
-      await agentRuntime.executeTurn(text, activeSession, providerConfig, callbacks);
+      await agentRuntime.executeTurn(text, targetSession, providerConfig, callbacks);
     } finally {
       setIsAgentRunning(false);
     }
@@ -247,28 +315,34 @@ export function App() {
   };
 
   const handleManualCompact = () => {
-    updateActiveSession((prev) => ({
-      ...prev,
-      metrics: {
-        ...prev.metrics,
-        currentContextTokens: Math.max(1200, Math.round(prev.metrics.currentContextTokens * 0.45)),
-        prunedChars: prev.metrics.prunedChars + 8400,
-        compactionCount: prev.metrics.compactionCount + 1,
-        compactionLogs: [
-          `[${new Date().toLocaleTimeString()}] 手動 /compact 実行: コンテキスト要約により 8,400 文字を削減`,
-          ...prev.metrics.compactionLogs,
-        ],
+    const commandCtx: WebCommandContext = {
+      session: activeSession,
+      providerConfig,
+      permissionPolicy,
+      setProviderConfig,
+      setPermissionPolicy,
+      updateActiveSession,
+      executePrompt: (prompt, mode) => {
+        handleSendMessage(prompt, mode);
       },
-      messages: [
-        ...prev.messages,
-        {
-          id: `compact_${Date.now()}`,
-          role: 'system',
-          content: '✨ コンテキストを要約・圧縮しました。過去の重要なゲーム設計メモを保持しつつ、Context Windowをリフレッシュしました。',
-          timestamp: Date.now(),
-        },
-      ],
-    }));
+      logMessage: (content, thought) => {
+        updateActiveSession((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            {
+              id: `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              role: 'assistant',
+              content,
+              thought,
+              timestamp: Date.now(),
+            },
+          ],
+          updatedAt: Date.now(),
+        }));
+      },
+    };
+    webCommandRegistry.executeCommand('/compact', commandCtx);
   };
 
   const currentHtml = activeSession.files['index.html'] || '';
@@ -288,8 +362,6 @@ export function App() {
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}
-          sessionMode={activeSession.mode}
-          onChangeMode={handleChangeMode}
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
           onOpenSettings={() => setIsSettingsOpen(true)}
@@ -357,10 +429,57 @@ export function App() {
               onSendMessage={handleSendMessage}
               onCancelTask={handleCancelTask}
               providerConfig={providerConfig}
-              onSelectProvider={(p) =>
-                setProviderConfig((prev) => ({ ...prev, provider: p }))
+              onSelectModel={(model) =>
+                setProviderConfig((prev) => ({ ...prev, model }))
               }
-              onOpenPresetModal={() => setIsKioskOpen(true)}
+              onSelectThinkingEffort={(effort) =>
+                setProviderConfig((prev) => ({ ...prev, thinkingEffort: effort }))
+              }
+              sessionMode={
+                permissionPolicy.command === 'deny'
+                  ? 'strict'
+                  : permissionPolicy.write === 'allow' && permissionPolicy.command === 'allow'
+                  ? 'auto'
+                  : 'ask'
+              }
+              onChangeMode={(mode) => {
+                if (mode === 'auto') {
+                  setPermissionPolicy({
+                    read: 'allow',
+                    write: 'allow',
+                    command: 'allow',
+                    web: 'allow',
+                  });
+                } else if (mode === 'strict') {
+                  setPermissionPolicy({
+                    read: 'allow',
+                    write: 'ask',
+                    command: 'deny',
+                    web: 'allow',
+                  });
+                } else {
+                  setPermissionPolicy({
+                    read: 'allow',
+                    write: 'ask',
+                    command: 'ask',
+                    web: 'allow',
+                  });
+                }
+              }}
+              onAttachFiles={(files) => {
+                // Load attached files directly into session VFS
+                updateActiveSession((prev) => {
+                  const newFiles = { ...prev.files };
+                  for (const f of files) {
+                    newFiles[f.name] = f.content;
+                  }
+                  return {
+                    ...prev,
+                    files: newFiles,
+                    activeFile: files[0]?.name || prev.activeFile,
+                  };
+                });
+              }}
             />
           }
           right={
@@ -444,7 +563,12 @@ export function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         config={providerConfig}
-        onSaveConfig={setProviderConfig}
+        onSaveConfig={(newConfig) => {
+          setProviderConfig(newConfig);
+          if (newConfig.apiKey) {
+            saveStoredApiKey(newConfig.provider, newConfig.apiKey);
+          }
+        }}
       />
 
       {/* Kiosk Mode & Presets Overlay */}

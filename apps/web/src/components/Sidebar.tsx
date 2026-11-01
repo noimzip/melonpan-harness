@@ -25,8 +25,6 @@ interface SidebarProps {
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, newName: string) => void;
-  sessionMode: 'auto' | 'plan' | 'act';
-  onChangeMode: (mode: 'auto' | 'plan' | 'act') => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   onOpenSettings: () => void;
@@ -41,8 +39,6 @@ export function Sidebar({
   onNewSession,
   onDeleteSession,
   onRenameSession,
-  sessionMode,
-  onChangeMode,
   theme,
   onToggleTheme,
   onOpenSettings,
@@ -176,49 +172,6 @@ export function Sidebar({
             </div>
           );
         })}
-      </div>
-
-      {/* Mode Selector Card */}
-      <div className="p-3 border-t-2 border-[var(--stroke)] bg-[var(--background)]/40">
-        <div className="text-xs font-semibold mb-2 flex items-center gap-1.5 opacity-80">
-          <Layers size={14} />
-          実行モード選択
-        </div>
-        <div className="grid grid-cols-3 gap-1 bg-[var(--card)] p-1 rounded-xl rough-outline-thin">
-          <button
-            onClick={() => onChangeMode('auto')}
-            className={[
-              'py-1.5 text-xs rounded-lg font-medium transition-colors',
-              sessionMode === 'auto'
-                ? 'bg-[var(--accent)] text-white shadow-sm'
-                : 'hover:bg-black/5 opacity-70',
-            ].join(' ')}
-          >
-            通常
-          </button>
-          <button
-            onClick={() => onChangeMode('plan')}
-            className={[
-              'py-1.5 text-xs rounded-lg font-medium transition-colors',
-              sessionMode === 'plan'
-                ? 'bg-[var(--accent)] text-white shadow-sm'
-                : 'hover:bg-black/5 opacity-70',
-            ].join(' ')}
-          >
-            Plan Mode
-          </button>
-          <button
-            onClick={() => onChangeMode('act')}
-            className={[
-              'py-1.5 text-xs rounded-lg font-medium transition-colors',
-              sessionMode === 'act'
-                ? 'bg-[var(--accent)] text-white shadow-sm'
-                : 'hover:bg-black/5 opacity-70',
-            ].join(' ')}
-          >
-            Act Only
-          </button>
-        </div>
       </div>
 
       {/* Theme Toggle Card */}

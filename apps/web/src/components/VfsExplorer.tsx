@@ -48,31 +48,37 @@ export function VfsExplorer({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {fileNames.map((fileName) => {
-            const isActive = fileName === activeFile;
-            const hasDiff = Boolean(diffHistory[fileName]);
+          {fileNames.length === 0 ? (
+            <div className="text-center py-6 text-xs text-[var(--foreground)] opacity-50 font-sans">
+              (ファイルなし)
+            </div>
+          ) : (
+            fileNames.map((fileName) => {
+              const isActive = fileName === activeFile;
+              const hasDiff = Boolean(diffHistory[fileName]);
 
-            return (
-              <button
-                key={fileName}
-                onClick={() => onSelectFile(fileName)}
-                className={[
-                  'w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-mono transition-all text-left',
-                  isActive
-                    ? 'bg-[var(--accent)] text-white shadow-sm'
-                    : 'hover:bg-black/5 text-[var(--foreground)]',
-                ].join(' ')}
-              >
-                <div className="flex items-center gap-1.5 truncate">
-                  {fileName.endsWith('.html') ? <FileCode size={13} /> : <FileText size={13} />}
-                  <span className="truncate">{fileName}</span>
-                </div>
-                {hasDiff && (
-                  <span className="w-2 h-2 rounded-full bg-[var(--warm-accent)]" title="最近変更あり" />
-                )}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={fileName}
+                  onClick={() => onSelectFile(fileName)}
+                  className={[
+                    'w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-mono transition-all text-left',
+                    isActive
+                      ? 'bg-[var(--accent)] text-white shadow-sm'
+                      : 'hover:bg-black/5 text-[var(--foreground)]',
+                  ].join(' ')}
+                >
+                  <div className="flex items-center gap-1.5 truncate">
+                    {fileName.endsWith('.html') ? <FileCode size={13} /> : <FileText size={13} />}
+                    <span className="truncate">{fileName}</span>
+                  </div>
+                  {hasDiff && (
+                    <span className="w-2 h-2 rounded-full bg-[var(--warm-accent)]" title="最近変更あり" />
+                  )}
+                </button>
+              );
+            })
+          )}
         </div>
       </div>
 
@@ -123,7 +129,13 @@ export function VfsExplorer({
 
         {/* Content View */}
         <div className="flex-1 overflow-auto p-3 font-mono text-xs bg-[#221a18] text-[#e0d5c5]">
-          {viewMode === 'code' ? (
+          {fileNames.length === 0 ? (
+            <div className="text-center py-16 text-[#8a7566] font-sans">
+              <div className="text-2xl mb-2">📁</div>
+              <p className="font-semibold text-sm">VFSにファイルが存在しません</p>
+              <p className="text-xs opacity-75 mt-1">エージェントがファイル（index.html等）を書き込むと、ここにツリーとコードが表示されます。</p>
+            </div>
+          ) : viewMode === 'code' ? (
             <div className="space-y-0.5 select-text">
               {lines.map((line, idx) => (
                 <div key={idx} className="flex hover:bg-white/5 leading-relaxed">
