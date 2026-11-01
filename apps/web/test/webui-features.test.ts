@@ -14,7 +14,7 @@ import {
   createProviderInstance,
 } from '../src/services/provider-factory';
 import { Session, Message, PlanState, SubagentTrace, ProviderConfig } from '../src/types';
-import { SimulatedProvider } from '@melonpan/core';
+import { SimulatedProvider, MelonpanCore } from '@melonpan/core';
 import JSZip from 'jszip';
 
 describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
@@ -720,6 +720,70 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(session.metrics.billedOutputTokens).toBe(400);
       expect(session.metrics.cachedTokens).toBe(180);
       expect(session.metrics.totalTokens).toBe(1900);
+    });
+
+    it('prioritizes billedPromptTokens over promptTokens in USAGE events for accurate cached token discount billing', async () => {
+      const runtime = new AgentRuntime();
+      const session = createInitialSession('純請求トークンテスト');
+      session.metrics = {
+        ...session.metrics,
+        billedInputTokens: 1000,
+        billedOutputTokens: 200,
+        cachedTokens: 100,
+        totalTokens: 1200,
+      };
+
+      const runSpy = vi.spyOn(MelonpanCore.prototype, 'run').mockImplementation(async function* () {
+        yield {
+          type: 'USAGE',
+          payload: {
+            promptTokens: 1000,
+            billedPromptTokens: 250, // Discounted cached rate
+            completionTokens: 150,
+            totalTokens: 1150,
+            cachedPromptTokens: 750,
+            contextWindowTokens: 1000,
+          },
+          timestamp: Date.now(),
+        } as any;
+        yield {
+          type: 'COMPLETE',
+          payload: { summary: '完了' },
+          timestamp: Date.now(),
+        } as any;
+      });
+
+      await runtime.executeTurn(
+        'テスト',
+        session,
+        {
+          provider: 'gemini',
+          model: 'gemini-3.8-flash',
+          apiKey: 'test-key',
+          baseUrl: '',
+          thinkingEffort: 'medium',
+          bridgeUrl: '',
+        },
+        {
+          onMessageUpdate: () => {},
+          onToolCallUpdate: () => {},
+          onFileChange: () => {},
+          onPlanUpdate: () => {},
+          onSubagentUpdate: () => {},
+          onPermissionRequest: (req) => req.resolve('allow_once'),
+          onMetricsUpdate: (updater) => {
+            session.metrics = updater(session.metrics);
+          },
+        }
+      );
+
+      runSpy.mockRestore();
+
+      // Billed input should be base (1000) + billedPromptTokens (250) = 1250, NOT 1000 + promptTokens (1000) = 2000
+      expect(session.metrics.billedInputTokens).toBe(1250);
+      expect(session.metrics.billedOutputTokens).toBe(350);
+      expect(session.metrics.cachedTokens).toBe(850);
+      expect(session.metrics.totalTokens).toBe(2350);
     });
   });
 });
