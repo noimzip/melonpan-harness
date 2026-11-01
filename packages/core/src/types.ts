@@ -388,6 +388,8 @@ export interface LLMStreamChunk {
     totalTokens: number;
     cachedPromptTokens?: number;
     cacheCreationPromptTokens?: number;
+    rawPromptTokens?: number;
+    billedPromptTokens?: number;
   };
 }
 

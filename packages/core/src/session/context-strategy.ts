@@ -124,7 +124,7 @@ export function pruneChatHistory(
   // 最新モデルターンのインデックスを取得（直前ターンのThought / Thought SignatureはAPI要件のため保持）
   let lastModelIdx = -1;
   for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i]?.role === 'model') {
+    if (history[i]?.role === 'model' || history[i]?.role === 'assistant') {
       lastModelIdx = i;
       break;
     }
@@ -136,7 +136,11 @@ export function pruneChatHistory(
 
     // 0. 過去ターンのThought (思考プロセス) マスク処理
     // 最新モデルターン (lastModelIdx) より前の過去ターンの thought: true / 思考テキストをマスク
-    if (prunePastThoughts && item.role === 'model' && idx < lastModelIdx) {
+    if (
+      prunePastThoughts &&
+      (item.role === 'model' || item.role === 'assistant') &&
+      idx < lastModelIdx
+    ) {
       for (const part of item.parts) {
         const isThoughtPart =
           part?.thought === true ||
@@ -147,7 +151,7 @@ export function pruneChatHistory(
         if (
           isThoughtPart &&
           typeof part?.text === 'string' &&
-          part.text.length > 0 &&
+          part.text.length > 40 &&
           !part.text.startsWith('<Thought preserved')
         ) {
           const originalLen = part.text.length;
@@ -353,6 +357,17 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
     ) {
       cutoff--;
     }
+
+    if (cutoff <= 0) {
+      return {
+        compacted: false,
+        beforeTokens,
+        afterTokens: beforeTokens,
+        savedTokens: 0,
+        reductionRatio: 0,
+      };
+    }
+
     const olderMessages = history.slice(0, cutoff);
     const recentMessages = history.slice(cutoff);
 

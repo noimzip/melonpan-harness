@@ -5,6 +5,7 @@ import {
   LlmSummaryCompactionStrategy,
   createDetailedTokenUsage,
   ReactAgent,
+  SubagentRunner,
   ToolRegistry,
   createBuiltinTools,
   VirtualFS,
@@ -163,6 +164,61 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       expect(res.prunedCallsCount).toBe(0);
       expect(history[0].parts[0].text).toBe(origText);
     });
+
+    it('strips thought text from older assistant messages (role: assistant) while preserving latest assistant turn', () => {
+      const history: any[] = [
+        {
+          role: 'user',
+          parts: [{ text: 'Prompt 1' }],
+        },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              text: 'Thinking deeply about architecture... '.repeat(10),
+              thought: true,
+              thoughtSignature: 'sig_a1',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [{ text: 'Prompt 2' }],
+        },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              text: 'Latest assistant thought process.',
+              thought: true,
+              thoughtSignature: 'sig_a2',
+            },
+          ],
+        },
+      ];
+
+      const res = pruneChatHistory(history, { prunePastThoughts: true });
+      expect(res.prunedCallsCount).toBe(1);
+      expect(history[1].parts[0].text).toContain('<Thought preserved:');
+      expect(history[3].parts[0].text).toBe('Latest assistant thought process.');
+    });
+
+    it('does not mask short thoughts (<= 40 chars) to avoid bloating token count', () => {
+      const history: any[] = [
+        {
+          role: 'model',
+          parts: [{ text: 'Brief thought', thought: true }],
+        },
+        {
+          role: 'model',
+          parts: [{ text: 'Latest turn thought', thought: true }],
+        },
+      ];
+
+      const res = pruneChatHistory(history, { prunePastThoughts: true });
+      expect(res.prunedCallsCount).toBe(0);
+      expect(history[0].parts[0].text).toBe('Brief thought');
+    });
   });
 
   describe('2. Lower outputThresholdChars in ToolOutputPruningStrategy', () => {
@@ -257,6 +313,23 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       expect(res.compacted).toBe(false);
       expect(res.savedTokens).toBe(0);
     });
+
+    it('gracefully returns compacted: false when cutoff <= 0 without corrupting or bloating messages', async () => {
+      const strategy = new LlmSummaryCompactionStrategy({
+        maxContextTokens: 100,
+        keepRecentMessages: 10, // More than total message count
+      });
+
+      const messages: any[] = [
+        { role: 'user', parts: [{ text: 'User prompt' }] },
+        { role: 'model', parts: [{ text: 'Model response' }] },
+      ];
+
+      const res = await strategy.apply(messages, { force: true });
+      expect(res.compacted).toBe(false);
+      expect(res.savedTokens).toBe(0);
+      expect(messages.length).toBe(2);
+    });
   });
 
   describe('4. dispatch_subagent Blind File Injection Avoidance', () => {
@@ -294,6 +367,111 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
 
       expect(capturedContext).toBeUndefined();
       expect(capturedFilePath).toBeUndefined();
+    });
+
+    it('does not inject index.html into code-reviewer when task prompt has generic words like game or canvas', async () => {
+      const vfs = new VirtualFS();
+      vfs.writeFile('index.html', '<!DOCTYPE html><html><body>Canvas Game 10000 lines</body></html>');
+
+      let capturedContext: string | undefined = undefined;
+      let capturedFilePath: string | undefined = undefined;
+
+      const mockSpawner = {
+        run: vi.fn(async (_agentType: string, _taskPrompt: string, opts: any) => {
+          capturedContext = opts?.fileContext;
+          capturedFilePath = opts?.filePath;
+          return 'Reviewed general principles';
+        }),
+        getLastUsage: vi.fn(() => ({ promptTokens: 100, completionTokens: 50 })),
+      };
+
+      const registry = new ToolRegistry(createBuiltinTools());
+
+      await registry.execute(
+        'dispatch_subagent',
+        {
+          agent_type: 'code-reviewer',
+          task_prompt: 'Review best practices for audio synthesizers in arcade games',
+        },
+        {
+          fs: vfs,
+          subagentSpawner: mockSpawner as any,
+          emit: () => {},
+        }
+      );
+
+      expect(capturedContext).toBeUndefined();
+      expect(capturedFilePath).toBeUndefined();
+    });
+
+    it('injects index.html into researcher when index.html is explicitly requested in task prompt', async () => {
+      const vfs = new VirtualFS();
+      vfs.writeFile('index.html', '<!DOCTYPE html><html><body>Target Game Code</body></html>');
+
+      let capturedContext: string | undefined = undefined;
+      let capturedFilePath: string | undefined = undefined;
+
+      const mockSpawner = {
+        run: vi.fn(async (_agentType: string, _taskPrompt: string, opts: any) => {
+          capturedContext = opts?.fileContext;
+          capturedFilePath = opts?.filePath;
+          return 'Researched code in index.html';
+        }),
+        getLastUsage: vi.fn(() => ({ promptTokens: 100, completionTokens: 50 })),
+      };
+
+      const registry = new ToolRegistry(createBuiltinTools());
+
+      await registry.execute(
+        'dispatch_subagent',
+        {
+          agent_type: 'researcher',
+          task_prompt: 'Investigate physics collision functions in index.html',
+        },
+        {
+          fs: vfs,
+          subagentSpawner: mockSpawner as any,
+          emit: () => {},
+        }
+      );
+
+      expect(capturedFilePath).toBe('index.html');
+      expect(capturedContext).toContain('Target Game Code');
+    });
+
+    it('injects index.html into code-reviewer when specifically asked to audit existing code', async () => {
+      const vfs = new VirtualFS();
+      vfs.writeFile('index.html', '<!DOCTYPE html><html><body>Audit Me</body></html>');
+
+      let capturedContext: string | undefined = undefined;
+      let capturedFilePath: string | undefined = undefined;
+
+      const mockSpawner = {
+        run: vi.fn(async (_agentType: string, _taskPrompt: string, opts: any) => {
+          capturedContext = opts?.fileContext;
+          capturedFilePath = opts?.filePath;
+          return 'Audit completed';
+        }),
+        getLastUsage: vi.fn(() => ({ promptTokens: 100, completionTokens: 50 })),
+      };
+
+      const registry = new ToolRegistry(createBuiltinTools());
+
+      await registry.execute(
+        'dispatch_subagent',
+        {
+          agent_type: 'code-reviewer',
+          task_prompt: 'Audit the existing code for 60fps performance and memory leaks',
+        },
+        {
+          fs: vfs,
+          subagentSpawner: mockSpawner as any,
+          emit: () => {},
+        }
+      );
+
+      expect(capturedFilePath).toBe('index.html');
+      expect(capturedContext).toContain('Audit Me');
     });
 
     it('injects requested file when file_path is explicitly provided', async () => {
@@ -351,6 +529,47 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       expect(usage.completionTokens).toBe(800);
       expect(usage.totalTokens).toBe(10800); // Raw + completion
       expect(usage.billedTotalTokens).toBe(3300); // Billed prompt (2500) + completion (800)
+    });
+
+    it('SubagentRunner populates cachedPromptTokens, billedPromptTokens, and rawPromptTokens in lastUsage', async () => {
+      const runner = new SubagentRunner({ simulate: true });
+      await runner.run('researcher', 'Quick physics query');
+      const usage = runner.getLastUsage();
+
+      expect(usage).toBeDefined();
+      expect(usage?.promptTokens).toBeGreaterThan(0);
+      expect(usage?.rawPromptTokens).toBe(usage?.promptTokens);
+      expect(usage?.billedPromptTokens).toBe(usage?.promptTokens);
+      expect(usage?.cachedPromptTokens).toBe(0);
+
+      // Now with a provider that emits cached tokens
+      const mockProvider: ILLMProvider = {
+        id: 'mock-subagent-provider',
+        async *streamChat() {
+          yield { type: 'text_delta', delta: 'Findings: optimal speed is 5.' };
+          yield {
+            type: 'usage',
+            usage: {
+              promptTokens: 1200,
+              rawPromptTokens: 1200,
+              completionTokens: 80,
+              cachedPromptTokens: 1000,
+              totalTokens: 1280,
+            },
+          };
+        },
+      };
+
+      const providerRunner = new SubagentRunner({ provider: mockProvider });
+      await providerRunner.run('researcher', 'Analyze cache efficiency');
+      const provUsage = providerRunner.getLastUsage();
+
+      expect(provUsage).toBeDefined();
+      expect(provUsage?.promptTokens).toBe(1200);
+      expect(provUsage?.rawPromptTokens).toBe(1200);
+      expect(provUsage?.cachedPromptTokens).toBe(1000);
+      expect(provUsage?.billedPromptTokens).toBe(200); // 1200 - 1000
+      expect(provUsage?.completionTokens).toBe(80);
     });
   });
 

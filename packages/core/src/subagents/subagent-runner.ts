@@ -417,6 +417,9 @@ export class SubagentRunner implements ISubagentSpawner {
       const simPromptTokens = Math.max(80, Math.min(350, Math.round(promptLen / 4)));
       this.lastUsage = {
         promptTokens: simPromptTokens,
+        rawPromptTokens: simPromptTokens,
+        billedPromptTokens: simPromptTokens,
+        cachedPromptTokens: 0,
         completionTokens: 160,
         totalTokens: simPromptTokens + 160,
       };
@@ -444,6 +447,7 @@ export class SubagentRunner implements ISubagentSpawner {
     if (this.provider) {
       let totalPrompt = 0;
       let totalCompletion = 0;
+      let totalCached = 0;
       let turns = 0;
       let finalOutput = '';
       const messages: any[] = [{ role: 'user', parts: [{ text: message }] }];
@@ -488,8 +492,11 @@ export class SubagentRunner implements ISubagentSpawner {
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
             toolCalls.push(chunk.toolCall);
           } else if (chunk.type === 'usage' && chunk.usage) {
-            totalPrompt += chunk.usage.promptTokens;
-            totalCompletion += chunk.usage.completionTokens;
+            totalPrompt += chunk.usage.promptTokens || chunk.usage.rawPromptTokens || 0;
+            totalCompletion += chunk.usage.completionTokens || 0;
+            if (chunk.usage.cachedPromptTokens) {
+              totalCached += chunk.usage.cachedPromptTokens;
+            }
           }
         }
 
@@ -578,6 +585,9 @@ export class SubagentRunner implements ISubagentSpawner {
 
       this.lastUsage = {
         promptTokens: totalPrompt || 100,
+        rawPromptTokens: totalPrompt || 100,
+        billedPromptTokens: Math.max(0, (totalPrompt || 100) - totalCached),
+        cachedPromptTokens: totalCached,
         completionTokens: totalCompletion || 120,
         totalTokens: (totalPrompt || 100) + (totalCompletion || 120),
       };
@@ -607,6 +617,7 @@ export class SubagentRunner implements ISubagentSpawner {
     let turns = 0;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
+    let totalCachedPromptTokens = 0;
     let finalReport = '';
 
     while (turns < this.maxTurns) {
@@ -653,6 +664,11 @@ export class SubagentRunner implements ISubagentSpawner {
       if (usageMeta) {
         totalPromptTokens += usageMeta.promptTokenCount || 0;
         totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
+        totalCachedPromptTokens +=
+          usageMeta.cachedContentTokenCount ||
+          usageMeta.totalCachedTokens ||
+          usageMeta.total_cached_tokens ||
+          0;
       }
 
       // 思考パートの抽出 (#4)
@@ -736,6 +752,9 @@ export class SubagentRunner implements ISubagentSpawner {
     if (totalPromptTokens > 0 || totalCompletionTokens > 0) {
       this.lastUsage = {
         promptTokens: totalPromptTokens,
+        rawPromptTokens: totalPromptTokens,
+        billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
+        cachedPromptTokens: totalCachedPromptTokens,
         completionTokens: totalCompletionTokens,
         totalTokens: totalPromptTokens + totalCompletionTokens,
       };
