@@ -9,14 +9,15 @@ import {
   SubagentRunner,
   LLMMessage,
   LLMStreamChunk,
+  ILLMProvider,
   ToolRegistry,
   VirtualFS,
 } from '../src/index.js';
 
 let mockGenerateContent = vi.fn();
 let mockGenerateContentStream = vi.fn();
-let mockChatsCreate = vi.fn(() => ({
-  history: [],
+let mockChatsCreate = vi.fn((..._args: any[]) => ({
+  history: [] as any[],
   sendMessage: vi.fn(),
 }));
 
@@ -464,16 +465,16 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
       // A mock LLMProvider that simulates a 2-turn conversation:
       // Turn 1: Model issues a tool call (activate_skill) with thoughtSignature
       // Turn 2: Model completes the task
-      const mockProvider = {
+      const mockProvider: ILLMProvider = {
         id: 'gemini-test-provider',
-        async *streamChat(request: any) {
+        async *streamChat(request: any): AsyncGenerator<LLMStreamChunk, void, unknown> {
           capturedRequestsMessages.push(JSON.parse(JSON.stringify(request.messages)));
           turn++;
 
           if (turn === 1) {
-            yield { type: 'thought_delta', delta: 'I should activate code-review skill.' };
+            yield { type: 'thought_delta' as const, delta: 'I should activate code-review skill.' };
             yield {
-              type: 'tool_call_delta',
+              type: 'tool_call_delta' as const,
               delta: '{"name":"code-review"}',
               toolCall: {
                 id: 'call_act_turn1',
@@ -484,7 +485,7 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
               },
             };
             yield {
-              type: 'tool_call',
+              type: 'tool_call' as const,
               toolCall: {
                 id: 'call_act_turn1',
                 name: 'activate_skill',
@@ -493,20 +494,20 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
                 thought_signature: 'enc_thought_sig_turn1_token',
               },
             };
-            yield { type: 'usage', usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 } };
-            yield { type: 'done' };
+            yield { type: 'usage' as const, usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 } };
+            yield { type: 'done' as const };
           } else {
-            yield { type: 'text_delta', delta: 'Task completed after skill activation.' };
+            yield { type: 'text_delta' as const, delta: 'Task completed after skill activation.' };
             yield {
-              type: 'tool_call',
+              type: 'tool_call' as const,
               toolCall: {
                 id: 'call_complete',
                 name: 'complete_task',
                 args: { summary: 'All done.' },
               },
             };
-            yield { type: 'usage', usage: { promptTokens: 80, completionTokens: 20, totalTokens: 100 } };
-            yield { type: 'done' };
+            yield { type: 'usage' as const, usage: { promptTokens: 80, completionTokens: 20, totalTokens: 100 } };
+            yield { type: 'done' as const };
           }
         },
       };
@@ -561,14 +562,14 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
       let capturedSubagentHistory: any[] = [];
       let turn = 0;
 
-      const mockSubProvider = {
+      const mockSubProvider: ILLMProvider = {
         id: 'subagent-test-provider',
-        async *streamChat(request: any) {
+        async *streamChat(request: any): AsyncGenerator<LLMStreamChunk, void, unknown> {
           capturedSubagentHistory = JSON.parse(JSON.stringify(request.messages));
           turn++;
           if (turn === 1) {
             yield {
-              type: 'tool_call',
+              type: 'tool_call' as const,
               toolCall: {
                 id: 'sub_call_1',
                 name: 'read_file',
@@ -578,14 +579,17 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
               },
             };
           } else {
-            yield { type: 'text_delta', delta: 'Subagent completed inspection.' };
+            yield { type: 'text_delta' as const, delta: 'Subagent completed inspection.' };
           }
         },
       };
 
+      const fs = new VirtualFS();
+      fs.writeFile('src/main.ts', 'export const app = 1;');
+
       const runner = new SubagentRunner({
         provider: mockSubProvider,
-        fs: new VirtualFS({ 'src/main.ts': 'export const app = 1;' }),
+        fs,
         toolRegistry: new ToolRegistry(),
       });
 
@@ -789,11 +793,12 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
         sendMessage: mockChatSendMessage,
       });
 
-      const fs = new VirtualFS({ 'package.json': '{"name":"test"}' });
+      const fs = new VirtualFS();
+      fs.writeFile('package.json', '{"name":"test"}');
       const registry = new ToolRegistry();
       const agent = new ReactAgent({
         apiKey: 'test-api-key',
-        tools: registry,
+        toolRegistry: registry,
       });
 
       const events: any[] = [];
@@ -864,7 +869,8 @@ describe('Thought Signature Preservation in functionCall parts (Gemini 2.5 / 3 T
         sendMessage: mockSubSendMessage,
       });
 
-      const fs = new VirtualFS({ 'index.ts': 'export const x = 1;' });
+      const fs = new VirtualFS();
+      fs.writeFile('index.ts', 'export const x = 1;');
       const registry = new ToolRegistry();
       const runner = new SubagentRunner({
         apiKey: 'test-api-key',
