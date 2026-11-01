@@ -5,6 +5,7 @@ dist/
 generated-game.html
 index.html
 **/index.html
+!apps/web/index.html
 plan.md
 **/plan.md
 .env
