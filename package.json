@@ -5,13 +5,14 @@
   "description": "Melonpan agent harness monorepo",
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @melonpan/core run build && pnpm --filter @melonpan/cli run build",
-    "typecheck": "pnpm --filter @melonpan/core run typecheck && pnpm --filter @melonpan/cli exec tsc --noEmit",
+    "build": "pnpm --filter @melonpan/core run build && pnpm --filter @melonpan/cli run build && pnpm --filter @melonpan/web run build",
+    "typecheck": "pnpm --filter @melonpan/core run typecheck && pnpm --filter @melonpan/cli exec tsc --noEmit && pnpm --filter @melonpan/web exec tsc --noEmit",
     "test": "pnpm -r run test",
     "test:cli": "tsx packages/core/examples/cli-test.ts",
     "demo": "tsx packages/core/examples/cli-subagent-test.ts --mode=auto",
     "demo:plan": "tsx packages/core/examples/cli-subagent-test.ts --mode=plan",
-    "tui": "pnpm --filter @melonpan/cli run start"
+    "tui": "pnpm --filter @melonpan/cli run start",
+    "web": "pnpm --filter @melonpan/web dev"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

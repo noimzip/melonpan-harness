@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-hand: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+:root {
+  --aesthetic-white: #fffaf1;
+  --oatmilk-sand: #f7f2ea;
+  --walnut-brown: #3b271d;
+  --curry-powder: #af734a;
+  --warm-accent: #c47c4a;
+  --warm-accent-hover: #9c6239;
+  --warm-success: #3c7d58;
+  --warm-error: #b5473a;
+  --error-bg: #fef0ee;
+  --warm-badge: #e8ded1;
+
+  --background: var(--aesthetic-white);
+  --foreground: var(--walnut-brown);
+  --card: var(--oatmilk-sand);
+  --accent: var(--curry-powder);
+  --stroke: var(--walnut-brown);
+  --rough-shadow: 2px 4px 0 rgba(59, 39, 29, 0.22);
+  --card-border: var(--walnut-brown);
+
+  --font-hand: 'Zen Kurenaido', 'Kiwi Maru', 'Yomogi', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+[data-theme="dark"] {
+  --aesthetic-white: #3a312d;
+  --oatmilk-sand: #352b27;
+  --walnut-brown: #e0d5c5;
+  --curry-powder: #b58b68;
+  --warm-accent: #c6946e;
+  --warm-accent-hover: #d8aa83;
+  --warm-success: #70a986;
+  --warm-error: #d7a093;
+  --error-bg: #4a332e;
+  --warm-badge: #463b36;
+
+  --background: #2d2421;
+  --foreground: #e0d5c5;
+  --card: #352b27;
+  --accent: #b58b68;
+  --stroke: #e0d5c5;
+  --rough-shadow: 2px 4px 0 rgba(0, 0, 0, 0.4);
+  --card-border: #e0d5c5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-hand);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── SVG line-boil filter ─── */
+.line-boil {
+  filter: url(#hand-drawn-line-boil);
+}
+
+/* ─── hand-drawn outlines & shapes ─── */
+.rough-outline {
+  border: 2px solid var(--stroke);
+}
+
+.rough-outline-thin {
+  border: 1.5px solid var(--stroke);
+}
+
+.rough-outline-thick {
+  border: 2.5px solid var(--stroke);
+}
+
+.rough-shadow {
+  box-shadow: var(--rough-shadow);
+}
+
+.rough-shadow-sm {
+  box-shadow: 1px 2px 0 rgba(59, 39, 29, 0.18);
+}
+
+/* Organic hand-drawn wobbles */
+.loose-shape {
+  border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+}
+
+.loose-shape-alt {
+  border-radius: 60% 40% 30% 70% / 50% 60% 40% 60%;
+}
+
+.loose-shape-card {
+  border-radius: 18px 24px 20px 22px / 22px 18px 24px 20px;
+}
+
+.loose-shape-header {
+  border-radius: 20px 16px 22px 18px / 16px 22px 18px 20px;
+}
+
+.loose-shape-input {
+  border-radius: 28px 30px 26px 32px / 32px 28px 30px 26px;
+}
+
+.loose-shape-pill {
+  border-radius: 24px 20px 22px 24px / 22px 24px 20px 22px;
+}
+
+.loose-shape-tab {
+  border-radius: 16px 14px 6px 6px / 14px 16px 6px 6px;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 12px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Code block styles */
+code, pre {
+  font-family: var(--font-mono);
+}
+
+/* Interactive transitions */
+button, a {
+  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}

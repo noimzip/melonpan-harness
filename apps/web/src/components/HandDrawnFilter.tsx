@@ -1,0 +1,42 @@
+export function HandDrawnFilter() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="0"
+      height="0"
+      style={{ position: 'absolute', pointerEvents: 'none', zIndex: -1 }}
+    >
+      <defs>
+        <filter
+          id="hand-drawn-line-boil"
+          x="-10%"
+          y="-10%"
+          width="120%"
+          height="120%"
+        >
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.6"
+            numOctaves="1"
+            seed="2"
+            result="noise"
+          >
+            <animate
+              attributeName="baseFrequency"
+              dur="8s"
+              values="0.58;0.64;0.59;0.58"
+              repeatCount="indefinite"
+            />
+          </feTurbulence>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="noise"
+            scale="1.0"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
