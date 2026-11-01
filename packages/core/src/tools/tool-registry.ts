@@ -5,6 +5,8 @@ import {
   ToolExecutionResult,
   ToolMiddleware,
 } from '../types.js';
+import { formatOpenAITools } from './schema-converter.js';
+
 
 /**
  * プラガブル・ツールレジストリ (Issue #50, #23)
@@ -130,6 +132,14 @@ export class ToolRegistry {
     if (declarations.length === 0) return [];
     return [{ functionDeclarations: declarations }];
   }
+
+  /**
+   * OpenAI 互換 (JSON Schema 準拠) の Tool[] を出力する
+   */
+  toOpenAITools(): any[] {
+    return formatOpenAITools(this.toFunctionDeclarations());
+  }
+
 
   /**
    * 指定されたツールをミドルウェアパイプライン経由で実行する

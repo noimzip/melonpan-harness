@@ -6,6 +6,13 @@ import {
   LLMStreamChunk,
 } from '../types.js';
 import { estimateMessagesTokens } from '../session/context-strategy.js';
+import {
+  formatOpenAITools,
+  formatToolParameters,
+  normalizeJsonSchema,
+  normalizeJsonSchemaType,
+} from '../tools/schema-converter.js';
+
 
 /**
  * `@google/genai` レスポンスの `candidates[0].content.parts` から
@@ -301,6 +308,20 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     return out;
   }
 
+  /**
+   * OpenAI 互換 API 向けにツール定義をフォーマット・正規化する (静的メソッド)
+   */
+  static formatTools(tools: any[]): any[] {
+    return formatOpenAITools(tools);
+  }
+
+  /**
+   * OpenAI 互換 API 向けにツール定義をフォーマット・正規化する (インスタンスメソッド)
+   */
+  formatTools(tools: any[]): any[] {
+    return OpenAICompatibleProvider.formatTools(tools);
+  }
+
   async *streamChat(
     request: LLMChatRequest,
     signal?: AbortSignal
@@ -315,15 +336,9 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     };
 
     if (request.tools && request.tools.length > 0) {
-      body.tools = request.tools.map((fn) => ({
-        type: 'function',
-        function: {
-          name: fn.name,
-          description: fn.description,
-          parameters: fn.parameters,
-        },
-      }));
+      body.tools = this.formatTools(request.tools);
     }
+
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -700,4 +715,11 @@ export class ProviderRegistry {
 }
 
 export * from './discovery.js';
+export {
+  formatOpenAITools,
+  formatToolParameters,
+  normalizeJsonSchema,
+  normalizeJsonSchemaType,
+} from '../tools/schema-converter.js';
+
 
