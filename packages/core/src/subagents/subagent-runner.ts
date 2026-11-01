@@ -496,7 +496,18 @@ export class SubagentRunner implements ISubagentSpawner {
 
         messages.push({
           role: 'model',
-          parts: toolCalls.map((tc) => ({ functionCall: tc })),
+          parts: toolCalls.map((tc) => {
+            const sig = tc.thoughtSignature || tc.thought_signature;
+            return {
+              functionCall: {
+                id: tc.id,
+                name: tc.name,
+                args: tc.args || {},
+                ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+              },
+              ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+            };
+          }),
         });
 
         const toolResponseParts: any[] = [];

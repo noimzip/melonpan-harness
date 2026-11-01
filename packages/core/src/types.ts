@@ -317,6 +317,12 @@ export interface LLMToolCall {
   id?: string;
   name: string;
   args: Record<string, any>;
+  /**
+   * Gemini 3 / 2.5 思考モードにおける推論整合性保持用署名 (thought_signature)
+   * マルチターンでの functionCall 送信時に再送必須
+   */
+  thoughtSignature?: string;
+  thought_signature?: string;
 }
 
 export interface LLMToolResponse {
@@ -328,6 +334,8 @@ export interface LLMToolResponse {
 export interface LLMMessagePart {
   text?: string;
   thought?: boolean;
+  thoughtSignature?: string;
+  thought_signature?: string;
   functionCall?: LLMToolCall;
   functionResponse?: LLMToolResponse;
 }

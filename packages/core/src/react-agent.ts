@@ -323,12 +323,36 @@ export class ReactAgent {
         };
       }
 
+      const normalizedHistory =
+        execOptions.history && execOptions.history.length > 0
+          ? execOptions.history.map((m) => ({
+              role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
+              parts: m.parts?.map((p: any) => {
+                const sig =
+                  p?.thoughtSignature ||
+                  p?.thought_signature ||
+                  p?.functionCall?.thoughtSignature ||
+                  p?.functionCall?.thought_signature;
+                return {
+                  ...p,
+                  ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                  ...(p?.functionCall
+                    ? {
+                        functionCall: {
+                          ...p.functionCall,
+                          ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                        },
+                      }
+                    : {}),
+                };
+              }),
+            }))
+          : undefined;
+
       const chat = ai.chats.create({
         model: this.model,
         config,
-        ...(execOptions.history && execOptions.history.length > 0
-          ? { history: execOptions.history as any }
-          : {}),
+        ...(normalizedHistory ? { history: normalizedHistory as any } : {}),
       });
 
       let turns = 0;
@@ -777,7 +801,16 @@ export class ReactAgent {
         if (turnThoughtAcc) modelParts.push({ text: turnThoughtAcc, thought: true });
         if (turnTextAcc) modelParts.push({ text: turnTextAcc });
         for (const tc of turnToolCalls) {
-          modelParts.push({ functionCall: tc });
+          const sig = tc.thoughtSignature || tc.thought_signature;
+          modelParts.push({
+            functionCall: {
+              id: tc.id,
+              name: tc.name,
+              args: tc.args || {},
+              ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+            },
+            ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+          });
         }
         messages.push({ role: 'model', parts: modelParts });
 

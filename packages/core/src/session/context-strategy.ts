@@ -285,7 +285,14 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
     }
 
     // 先頭の古いメッセージ群を抽出し、直近の keepRecentMessages 件を残す
-    const cutoff = Math.max(1, history.length - this.keepRecentMessages);
+    let cutoff = Math.max(1, history.length - this.keepRecentMessages);
+    // ツールレスポンス (functionResponse) のみの単独孤立を防止し、直前のモデルツール呼び出しとペアで保持
+    while (
+      cutoff > 0 &&
+      history[cutoff]?.parts?.some((p: any) => p.functionResponse)
+    ) {
+      cutoff--;
+    }
     const olderMessages = history.slice(0, cutoff);
     const recentMessages = history.slice(cutoff);
 

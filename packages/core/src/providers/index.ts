@@ -24,13 +24,19 @@ import {
 export function extractGeminiResponseParts(response: any): {
   thoughts: string[];
   texts: string[];
+  thoughtSignatures: string[];
 } {
   const thoughts: string[] = [];
   const texts: string[] = [];
+  const thoughtSignatures: string[] = [];
 
   const parts = response?.candidates?.[0]?.content?.parts;
   if (Array.isArray(parts) && parts.length > 0) {
     for (const part of parts) {
+      const sig = part?.thoughtSignature || part?.thought_signature;
+      if (typeof sig === 'string' && sig.length > 0) {
+        thoughtSignatures.push(sig);
+      }
       if (typeof part?.text === 'string' && part.text.length > 0) {
         if (part.thought === true) {
           thoughts.push(part.text);
@@ -43,7 +49,75 @@ export function extractGeminiResponseParts(response: any): {
     texts.push(response.text);
   }
 
-  return { thoughts, texts };
+  return { thoughts, texts, thoughtSignatures };
+}
+
+/**
+ * `@google/genai` レスポンスまたはチャンクから `functionCall` と
+ * 思考署名 (`thoughtSignature` / `thought_signature`) を抽出するヘルパー
+ */
+export function extractGeminiFunctionCalls(responseOrChunk: any): LLMToolCall[] {
+  const result: LLMToolCall[] = [];
+  const parts = responseOrChunk?.candidates?.[0]?.content?.parts;
+
+  let candidateSignature: string | undefined =
+    responseOrChunk?.candidates?.[0]?.thoughtSignature ||
+    responseOrChunk?.candidates?.[0]?.thought_signature;
+
+  if (Array.isArray(parts) && parts.length > 0) {
+    if (!candidateSignature) {
+      for (const p of parts) {
+        const sig = p?.thoughtSignature || p?.thought_signature;
+        if (typeof sig === 'string' && sig.length > 0) {
+          candidateSignature = sig;
+          break;
+        }
+      }
+    }
+
+    for (const part of parts) {
+      if (part?.functionCall) {
+        const fc = part.functionCall;
+        const signature =
+          part.thoughtSignature ||
+          part.thought_signature ||
+          fc.thoughtSignature ||
+          fc.thought_signature ||
+          candidateSignature;
+        result.push({
+          id: fc.id,
+          name: fc.name,
+          args: fc.args || {},
+          ...(signature
+            ? { thoughtSignature: signature, thought_signature: signature }
+            : {}),
+        });
+      }
+    }
+  }
+
+  if (result.length === 0) {
+    const fcs = (responseOrChunk as any)?.functionCalls;
+    if (Array.isArray(fcs)) {
+      for (const fc of fcs) {
+        const signature =
+          fc.thoughtSignature ||
+          fc.thought_signature ||
+          (fc as any)?.thought_signature ||
+          candidateSignature;
+        result.push({
+          id: fc.id,
+          name: fc.name,
+          args: fc.args || {},
+          ...(signature
+            ? { thoughtSignature: signature, thought_signature: signature }
+            : {}),
+        });
+      }
+    }
+  }
+
+  return result;
 }
 
 export interface GeminiProviderOptions {
@@ -55,6 +129,7 @@ export interface GeminiProviderOptions {
  * 1. GeminiProvider: `@google/genai` ベースのプラガブル LLM プロバイダー (Issues #27, #4)
  * - `candidates?.[0]?.content?.parts` から `part.thought === true` を正確に抽出 (#4)
  * - `THOUGHT_DELTA`, `TEXT_DELTA`, `TOOL_CALL_DELTA` チャンクの送出と `AbortSignal` 対応 (#27)
+ * - Gemini 3 / 2.5 思考モードにおける `thought_signature` / `thoughtSignature` の保持・再送
  */
 export class GeminiProvider implements ILLMProvider {
   readonly id = 'gemini';
@@ -109,7 +184,27 @@ export class GeminiProvider implements ILLMProvider {
 
     const contents = request.messages.map((m) => ({
       role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
-      parts: m.parts,
+      parts: m.parts.map((p) => {
+        const sig =
+          p.thoughtSignature ||
+          p.thought_signature ||
+          p.functionCall?.thoughtSignature ||
+          p.functionCall?.thought_signature;
+
+        const partObj: Record<string, any> = { ...p };
+        if (sig) {
+          partObj.thoughtSignature = sig;
+          partObj.thought_signature = sig;
+          if (partObj.functionCall) {
+            partObj.functionCall = {
+              ...partObj.functionCall,
+              thoughtSignature: sig,
+              thought_signature: sig,
+            };
+          }
+        }
+        return partObj;
+      }),
     }));
 
     if (this.useStreamingApi && typeof (ai.models as any).generateContentStream === 'function') {
@@ -141,20 +236,18 @@ export class GeminiProvider implements ILLMProvider {
           yield { type: 'text_delta', delta: txt };
         }
 
-        const fcs = (chunk as any).functionCalls;
-        if (Array.isArray(fcs)) {
-          for (const fc of fcs) {
-            const argsJson = JSON.stringify(fc.args || {});
-            yield {
-              type: 'tool_call_delta',
-              delta: argsJson,
-              toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-            };
-            yield {
-              type: 'tool_call',
-              toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-            };
-          }
+        const toolCalls = extractGeminiFunctionCalls(chunk);
+        for (const tc of toolCalls) {
+          const argsJson = JSON.stringify(tc.args || {});
+          yield {
+            type: 'tool_call_delta',
+            delta: argsJson,
+            toolCall: tc,
+          };
+          yield {
+            type: 'tool_call',
+            toolCall: tc,
+          };
         }
       }
 
@@ -189,20 +282,18 @@ export class GeminiProvider implements ILLMProvider {
       yield { type: 'text_delta', delta: normalText };
     }
 
-    const functionCalls = (response as any).functionCalls;
-    if (Array.isArray(functionCalls)) {
-      for (const fc of functionCalls) {
-        const argsJson = JSON.stringify(fc.args || {});
-        yield {
-          type: 'tool_call_delta',
-          delta: argsJson,
-          toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-        };
-        yield {
-          type: 'tool_call',
-          toolCall: { id: fc.id, name: fc.name, args: fc.args || {} },
-        };
-      }
+    const toolCalls = extractGeminiFunctionCalls(response);
+    for (const tc of toolCalls) {
+      const argsJson = JSON.stringify(tc.args || {});
+      yield {
+        type: 'tool_call_delta',
+        delta: argsJson,
+        toolCall: tc,
+      };
+      yield {
+        type: 'tool_call',
+        toolCall: tc,
+      };
     }
 
     const usageMeta = (response as any).usageMetadata;
