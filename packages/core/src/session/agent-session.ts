@@ -106,18 +106,63 @@ export class AgentSession implements IAgentRuntime {
     return this.permissionCoordinator;
   }
 
+  private normalizeSessionMessages(messages: LLMMessage[]): LLMMessage[] {
+    return messages.map((msg) => {
+      if (msg.role === 'model' && Array.isArray(msg.parts)) {
+        let msgSig: string | undefined = undefined;
+        for (const p of msg.parts) {
+          const s =
+            p.thoughtSignature ||
+            p.thought_signature ||
+            p.functionCall?.thoughtSignature ||
+            p.functionCall?.thought_signature;
+          if (typeof s === 'string' && s.length > 0) {
+            msgSig = s;
+            break;
+          }
+        }
+
+        return {
+          ...msg,
+          parts: msg.parts.map((part) => {
+            const sig =
+              part.thoughtSignature ||
+              part.thought_signature ||
+              part.functionCall?.thoughtSignature ||
+              part.functionCall?.thought_signature ||
+              msgSig;
+            return {
+              ...part,
+              ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+              ...(part.functionCall
+                ? {
+                    functionCall: {
+                      ...part.functionCall,
+                      ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                    },
+                  }
+                : {}),
+            };
+          }),
+        };
+      }
+      return msg;
+    });
+  }
+
   getMessages(): LLMMessage[] {
     return this.messages;
   }
 
   setMessages(messages: LLMMessage[]): void {
-    this.messages = [...messages];
+    this.messages = this.normalizeSessionMessages(messages);
     this.currentContextTokens = estimateMessagesTokens(this.messages);
     this.updatedAt = Date.now();
   }
 
   appendMessage(message: LLMMessage): void {
-    this.messages.push(message);
+    const [norm] = this.normalizeSessionMessages([message]);
+    this.messages.push(norm ?? message);
     this.currentContextTokens = estimateMessagesTokens(this.messages);
     this.updatedAt = Date.now();
   }
@@ -460,7 +505,7 @@ export class AgentSession implements IAgentRuntime {
     this.mode = loaded.mode;
     this.model = loaded.model;
     this.thinkingLevel = loaded.thinkingLevel;
-    this.messages = [...(loaded.messages || [])];
+    this.messages = this.normalizeSessionMessages(loaded.messages || []);
     this.billedPromptTokens = loaded.usage?.billedPromptTokens ?? loaded.usage?.promptTokens ?? 0;
     this.billedCompletionTokens =
       loaded.usage?.billedCompletionTokens ?? loaded.usage?.completionTokens ?? 0;

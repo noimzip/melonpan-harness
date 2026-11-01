@@ -457,6 +457,8 @@ export class SubagentRunner implements ISubagentSpawner {
         let turnText = '';
         const toolCalls: LLMToolCall[] = [];
 
+        let turnThoughtSignature: string | undefined = undefined;
+
         for await (const chunk of this.provider.streamChat(
           {
             model: this.model,
@@ -466,6 +468,15 @@ export class SubagentRunner implements ISubagentSpawner {
           },
           signal
         )) {
+          const chunkSig =
+            chunk.thoughtSignature ||
+            chunk.thought_signature ||
+            chunk.toolCall?.thoughtSignature ||
+            chunk.toolCall?.thought_signature;
+          if (typeof chunkSig === 'string' && chunkSig.length > 0) {
+            turnThoughtSignature = chunkSig;
+          }
+
           if (chunk.type === 'thought_delta' && chunk.delta) {
             emitHierarchical({
               type: 'THOUGHT_DELTA',
@@ -498,7 +509,7 @@ export class SubagentRunner implements ISubagentSpawner {
         messages.push({
           role: 'model',
           parts: toolCalls.map((tc) => {
-            const sig = tc.thoughtSignature || tc.thought_signature;
+            const sig = tc.thoughtSignature || tc.thought_signature || turnThoughtSignature;
             return {
               functionCall: {
                 id: tc.id,
@@ -607,6 +618,36 @@ export class SubagentRunner implements ISubagentSpawner {
       const response = await chat.sendMessage({
         message: currentMsg,
       });
+
+      if (Array.isArray((chat as any).history)) {
+        const candidateSig =
+          (response as any)?.candidates?.[0]?.thoughtSignature ||
+          (response as any)?.candidates?.[0]?.thought_signature;
+        for (const histMsg of (chat as any).history) {
+          if (histMsg.role === 'model' && Array.isArray(histMsg.parts)) {
+            let msgSig = candidateSig;
+            for (const p of histMsg.parts) {
+              const s = p.thoughtSignature || p.thought_signature;
+              if (typeof s === 'string' && s.length > 0) {
+                msgSig = s;
+                break;
+              }
+            }
+            if (msgSig) {
+              for (const p of histMsg.parts) {
+                if (p.functionCall || p.thought) {
+                  p.thoughtSignature = p.thoughtSignature || msgSig;
+                  p.thought_signature = p.thought_signature || msgSig;
+                  if (p.functionCall) {
+                    p.functionCall.thoughtSignature = p.functionCall.thoughtSignature || msgSig;
+                    p.functionCall.thought_signature = p.functionCall.thought_signature || msgSig;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
 
       const usageMeta = (response as any).usageMetadata;
       if (usageMeta) {

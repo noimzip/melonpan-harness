@@ -326,28 +326,44 @@ export class ReactAgent {
 
       const normalizedHistory =
         execOptions.history && execOptions.history.length > 0
-          ? execOptions.history.map((m) => ({
-              role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
-              parts: m.parts?.map((p: any) => {
-                const sig =
+          ? execOptions.history.map((m) => {
+              let msgSig: string | undefined = undefined;
+              for (const p of m.parts || []) {
+                const s =
                   p?.thoughtSignature ||
                   p?.thought_signature ||
                   p?.functionCall?.thoughtSignature ||
                   p?.functionCall?.thought_signature;
-                return {
-                  ...p,
-                  ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
-                  ...(p?.functionCall
-                    ? {
-                        functionCall: {
-                          ...p.functionCall,
-                          ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
-                        },
-                      }
-                    : {}),
-                };
-              }),
-            }))
+                if (typeof s === 'string' && s.length > 0) {
+                  msgSig = s;
+                  break;
+                }
+              }
+
+              return {
+                role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
+                parts: m.parts?.map((p: any) => {
+                  const sig =
+                    p?.thoughtSignature ||
+                    p?.thought_signature ||
+                    p?.functionCall?.thoughtSignature ||
+                    p?.functionCall?.thought_signature ||
+                    msgSig;
+                  return {
+                    ...p,
+                    ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                    ...(p?.functionCall
+                      ? {
+                          functionCall: {
+                            ...p.functionCall,
+                            ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                          },
+                        }
+                      : {}),
+                  };
+                }),
+              };
+            })
           : undefined;
 
       const chat = ai.chats.create({
@@ -420,6 +436,36 @@ export class ReactAgent {
         const response = await chat.sendMessage({
           message: currentMessage,
         });
+
+        if (Array.isArray((chat as any).history)) {
+          const candidateSig =
+            (response as any)?.candidates?.[0]?.thoughtSignature ||
+            (response as any)?.candidates?.[0]?.thought_signature;
+          for (const histMsg of (chat as any).history) {
+            if (histMsg.role === 'model' && Array.isArray(histMsg.parts)) {
+              let msgSig = candidateSig;
+              for (const p of histMsg.parts) {
+                const s = p.thoughtSignature || p.thought_signature;
+                if (typeof s === 'string' && s.length > 0) {
+                  msgSig = s;
+                  break;
+                }
+              }
+              if (msgSig) {
+                for (const p of histMsg.parts) {
+                  if (p.functionCall || p.thought) {
+                    p.thoughtSignature = p.thoughtSignature || msgSig;
+                    p.thought_signature = p.thought_signature || msgSig;
+                    if (p.functionCall) {
+                      p.functionCall.thoughtSignature = p.functionCall.thoughtSignature || msgSig;
+                      p.functionCall.thought_signature = p.functionCall.thought_signature || msgSig;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
 
         if (execOptions.history && Array.isArray((chat as any).history)) {
           execOptions.history.splice(0, execOptions.history.length, ...(chat as any).history);
@@ -714,6 +760,7 @@ export class ReactAgent {
 
         let turnThoughtAcc = '';
         let turnTextAcc = '';
+        let turnThoughtSignature: string | undefined = undefined;
         const turnToolCalls: LLMToolCall[] = [];
 
         for await (const chunk of provider.streamChat(
@@ -728,6 +775,15 @@ export class ReactAgent {
         )) {
           if (signal?.aborted) {
             break;
+          }
+
+          const chunkSig =
+            chunk.thoughtSignature ||
+            chunk.thought_signature ||
+            chunk.toolCall?.thoughtSignature ||
+            chunk.toolCall?.thought_signature;
+          if (typeof chunkSig === 'string' && chunkSig.length > 0) {
+            turnThoughtSignature = chunkSig;
           }
 
           if (chunk.type === 'thought_delta' && chunk.delta) {
@@ -799,10 +855,18 @@ export class ReactAgent {
         }
 
         const modelParts: any[] = [];
-        if (turnThoughtAcc) modelParts.push({ text: turnThoughtAcc, thought: true });
+        if (turnThoughtAcc) {
+          modelParts.push({
+            text: turnThoughtAcc,
+            thought: true,
+            ...(turnThoughtSignature
+              ? { thoughtSignature: turnThoughtSignature, thought_signature: turnThoughtSignature }
+              : {}),
+          });
+        }
         if (turnTextAcc) modelParts.push({ text: turnTextAcc });
         for (const tc of turnToolCalls) {
-          const sig = tc.thoughtSignature || tc.thought_signature;
+          const sig = tc.thoughtSignature || tc.thought_signature || turnThoughtSignature;
           modelParts.push({
             functionCall: {
               id: tc.id,
