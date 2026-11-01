@@ -4,9 +4,21 @@ import {
   MelonpanCore,
   AgentEvent,
   VirtualFS,
+  LocalDiskFS,
+  IFileSystem,
   SkillManager,
-  AVAILABLE_MODELS,
-  THINKING_LEVELS,
+  RuleBasedPermissionPolicy,
+  PermissionDecision,
+  PermissionRequestedPayload,
+  ILLMProvider,
+  GeminiProvider,
+  OpenAICompatibleProvider,
+  OpenRouterProvider,
+  OrcaRouterProvider,
+  GroqProvider,
+  fetchDiscoveredModels,
+  DiscoveredModel,
+  ProviderApiKeys,
 } from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
@@ -14,41 +26,124 @@ import { PlanViewer } from './components/plan-viewer.js';
 import { InputBar } from './components/input-bar.js';
 import { ModalPicker, PickerItem } from './components/modal-picker.js';
 import { CommandContext, SessionUsage } from './commands/types.js';
-import { commandRegistry } from './commands/registry.js';
+import { commandRegistry, extendedCommandRegistry } from './commands/registry.js';
+import { setDynamicDiscoveredModels } from './commands/handlers/model.js';
+
+
+function createProviderInstance(
+  providerId: string,
+  modelName: string,
+  apiKey?: string
+): ILLMProvider | undefined {
+  if (providerId === 'openrouter' || modelName.startsWith('openrouter/')) {
+    const key = (typeof process !== 'undefined' ? process.env?.OPENROUTER_API_KEY : '') || apiKey || '';
+    return new OpenRouterProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.OPENROUTER_BASE_URL : '') || 'https://openrouter.ai/api/v1',
+    });
+  }
+  if (providerId === 'orcarouter' || modelName.startsWith('orcarouter/')) {
+    const key = (typeof process !== 'undefined' ? process.env?.ORCAROUTER_API_KEY : '') || apiKey || '';
+    return new OrcaRouterProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.ORCAROUTER_BASE_URL : '') || 'https://api.orcarouter.ai/v1',
+    });
+  }
+  if (
+    providerId === 'groq' ||
+    modelName.startsWith('groq/') ||
+    modelName.startsWith('llama-') ||
+    modelName.startsWith('mixtral-')
+  ) {
+    const key = (typeof process !== 'undefined' ? process.env?.GROQ_API_KEY : '') || apiKey || '';
+    return new GroqProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.GROQ_BASE_URL : '') || 'https://api.groq.com/openai/v1',
+    });
+  }
+  if (
+    providerId === 'openai' ||
+    modelName.startsWith('gpt-') ||
+    modelName.startsWith('o1-') ||
+    modelName.startsWith('o3-') ||
+    modelName.startsWith('chatgpt-')
+  ) {
+    const key = (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '') || apiKey || '';
+    return new OpenAICompatibleProvider({
+      id: 'openai',
+      baseUrl: (typeof process !== 'undefined' ? process.env?.OPENAI_BASE_URL : '') || 'https://api.openai.com/v1',
+      apiKey: key,
+    });
+  }
+  if (providerId === 'anthropic' || modelName.startsWith('claude-')) {
+    const key = (typeof process !== 'undefined' ? process.env?.ANTHROPIC_API_KEY : '') || apiKey || '';
+    return new OpenAICompatibleProvider({
+      id: 'anthropic',
+      baseUrl: (typeof process !== 'undefined' ? process.env?.ANTHROPIC_BASE_URL : '') || 'https://api.anthropic.com/v1',
+      apiKey: key,
+    });
+  }
+  if (providerId === 'gemini' || modelName.startsWith('gemini') || modelName.startsWith('gemma')) {
+    const key = apiKey || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '';
+    return new GeminiProvider({
+      apiKey: key,
+      useStreamingApi: true,
+    });
+  }
+  return undefined;
+}
 
 export interface AppProps {
   initialPrompt?: string;
   initialMode?: 'auto' | 'plan' | 'act';
   model?: string;
+  provider?: string;
   initialEffort?: string;
   initialApiKey?: string;
   outDir?: string;
   simulate?: boolean;
   maxTurns?: number;
+  fsMode?: 'vfs' | 'disk';
 }
 
-const MODEL_ITEMS: PickerItem[] = [
-  {
-    id: 'gemma-4-31b-it',
-    label: 'gemma-4-31b-it',
-    description: 'Open weights 31B instruction-tuned model',
-  },
-  {
-    id: 'gemini-4-argon',
-    label: 'gemini-4-argon',
-    description: 'Next-generation frontier reasoning model',
-  },
-  {
-    id: 'gemini-3.8-flash',
-    label: 'gemini-3.8-flash',
-    description: 'Flagship high-speed multimodality & reasoning (default)',
-  },
-  {
-    id: 'gemini-3.5-flash-lite',
-    label: 'gemini-3.5-flash-lite',
-    description: 'Ultra-lightweight & fast response model',
-  },
-];
+const PROVIDER_GROUP_NAMES: Record<string, string> = {
+  gemini: 'Google Gemini',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
+  orcarouter: 'OrcaRouter',
+  groq: 'Groq',
+};
+
+export function formatDiscoveredToPickerItems(models: DiscoveredModel[]): PickerItem[] {
+  const byProvider: Record<string, DiscoveredModel[]> = {};
+  for (const m of models) {
+    if (!byProvider[m.provider]) {
+      byProvider[m.provider] = [];
+    }
+    byProvider[m.provider]!.push(m);
+  }
+
+  const items: PickerItem[] = [];
+  for (const [provider, list] of Object.entries(byProvider)) {
+    const free = list.filter((m) => Boolean(m.isFree));
+    const nonFree = list.filter((m) => !m.isFree);
+    const sorted = [...free, ...nonFree];
+
+    for (const m of sorted) {
+      items.push({
+        id: m.id,
+        label: m.id,
+        description: m.description || m.name,
+        group: PROVIDER_GROUP_NAMES[m.provider] || m.provider.toUpperCase(),
+        providerId: m.provider,
+        isFree: m.isFree,
+      });
+    }
+  }
+  return items;
+}
+
 
 const EFFORT_ITEMS: PickerItem[] = [
   {
@@ -77,21 +172,30 @@ export const App: React.FC<AppProps> = ({
   initialPrompt,
   initialMode = 'auto',
   model: defaultModel = 'gemini-3.8-flash',
+  provider: defaultProvider = 'gemini',
   initialEffort = 'high',
   initialApiKey,
   outDir = process.cwd(),
   simulate,
   maxTurns = 100,
+  fsMode = 'vfs',
 }) => {
   const [status, setStatus] = useState<
-    'idle' | 'running' | 'confirming' | 'completed' | 'error'
+    | 'idle'
+    | 'running'
+    | 'confirming'
+    | 'completed'
+    | 'error'
+    | 'awaiting_permission'
   >('idle');
   const [mode, setMode] = useState<'auto' | 'plan' | 'act'>(initialMode);
   const [model, setModel] = useState<string>(defaultModel);
+  const [provider, setProvider] = useState<string>(defaultProvider);
   const [thinkingLevel, setThinkingLevel] = useState<string>(initialEffort);
   const [activePicker, setActivePicker] = useState<'none' | 'model' | 'effort'>(
     'none'
   );
+  const [modelItems, setModelItems] = useState<PickerItem[]>([]);
 
   const initialKey =
     initialApiKey ||
@@ -100,6 +204,60 @@ export const App: React.FC<AppProps> = ({
   const [isSimulate, setIsSimulate] = useState<boolean>(
     simulate !== undefined ? simulate : !Boolean(initialKey)
   );
+
+  // 動的モデルディスカバリー: APIキー設定済みプロバイダーのみからモデルを取得
+  // 要件:
+  // 1. 各種APIから取得できたモデルをそのまま表示
+  // 2. APIキーが設定されるまではモデルリストに表示する必要はない
+  // 3. 無料のモデルには右端に free と記述し、各種モデルリストの最上位に表示して残りは既定の順番で表示
+  const loadDynamicModels = React.useCallback(async () => {
+    const env = typeof process !== 'undefined' ? process.env : {};
+    const keys: ProviderApiKeys = {};
+    const geminiKey = apiKey || env?.GEMINI_API_KEY;
+    if (geminiKey) keys.gemini = geminiKey;
+    if (env?.OPENAI_API_KEY) keys.openai = env?.OPENAI_API_KEY;
+    if (env?.ANTHROPIC_API_KEY) keys.anthropic = env?.ANTHROPIC_API_KEY;
+    if (env?.OPENROUTER_API_KEY) keys.openrouter = env?.OPENROUTER_API_KEY;
+    if (env?.ORCAROUTER_API_KEY) keys.orcarouter = env?.ORCAROUTER_API_KEY;
+    if (env?.GROQ_API_KEY) keys.groq = env?.GROQ_API_KEY;
+
+    if (Object.keys(keys).length === 0) {
+      setModelItems([]);
+      setDynamicDiscoveredModels([]);
+      return;
+    }
+
+    try {
+      const discovered = await fetchDiscoveredModels(keys, {
+        baseUrls: {
+          openrouter: env?.OPENROUTER_BASE_URL,
+          orcarouter: env?.ORCAROUTER_BASE_URL,
+          groq: env?.GROQ_BASE_URL,
+          openai: env?.OPENAI_BASE_URL,
+          anthropic: env?.ANTHROPIC_BASE_URL,
+        },
+      });
+      const items = formatDiscoveredToPickerItems(discovered);
+      setModelItems(items);
+      setDynamicDiscoveredModels(
+        items.map((it) => ({
+          id: it.id,
+          provider: it.providerId || 'custom',
+          label: it.label,
+          description: it.description || '',
+          isFree: it.isFree,
+        }))
+      );
+    } catch {
+      setModelItems([]);
+    }
+  }, [apiKey]);
+
+  // 動的モデルディスカバリー: APIキー設定済みプロバイダーのみからモデルを取得
+  useEffect(() => {
+    loadDynamicModels();
+  }, [loadDynamicModels, activePicker]);
+
 
   const [inputPrompt, setInputPrompt] = useState<string>('');
   const [activePrompt, setActivePrompt] = useState<string>('');
@@ -112,27 +270,75 @@ export const App: React.FC<AppProps> = ({
   const [turns, setTurns] = useState<number>(0);
   const [virtualFiles, setVirtualFiles] = useState<Record<string, string>>({});
 
-  // Cumulative token usage across the session
+  // Real-time token streaming states (#37)
+  const [streamingThought, setStreamingThought] = useState<string>('');
+  const [streamingText, setStreamingText] = useState<string>('');
+
+  // Interactive permission prompt state (#33)
+  const [pendingPermission, setPendingPermission] = useState<
+    PermissionRequestedPayload | undefined
+  >(undefined);
+
+  // Cumulative token usage across the session & Context Window (#36)
   const [sessionUsage, setSessionUsage] = useState<SessionUsage>({
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    contextWindowTokens: 0,
+    maxContextTokens: 128_000,
+    savedTokens: 0,
   });
 
-  const savedVfsRef = useRef<VirtualFS>(new VirtualFS());
-  const skillManagerRef = useRef<SkillManager>(new SkillManager());
+  // Long-lived Core refs & File System (#32, #33, #35, #39)
+  const fsRef = useRef<IFileSystem>(
+    fsMode === 'disk' ? new LocalDiskFS({ rootDir: outDir }) : new VirtualFS()
+  );
+  const skillManagerRef = useRef<SkillManager>(new SkillManager({ fs: fsRef.current }));
+  const permissionPolicyRef = useRef<RuleBasedPermissionPolicy>(
+    new RuleBasedPermissionPolicy()
+  );
+  const coreRef = useRef<MelonpanCore | null>(null);
   const isRunningRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Pre-load skills index on mount for early suggestions
+  // Initialize or obtain Core instance
+  const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act'): MelonpanCore => {
+    const currentProvider = isSimulate
+      ? undefined
+      : createProviderInstance(provider, model, apiKey);
+
+    if (!coreRef.current) {
+      coreRef.current = new MelonpanCore({
+        apiKey: apiKey || undefined,
+        model,
+        provider: currentProvider,
+        thinkingLevel,
+        mode: currentRunMode,
+        simulate: isSimulate,
+        maxTurns,
+        vfs: fsRef.current,
+        skillManager: skillManagerRef.current,
+        permissionPolicy: permissionPolicyRef.current,
+        enableStreaming: true,
+      });
+    } else {
+      coreRef.current.getAgent().setModel(model, thinkingLevel);
+      coreRef.current.getAgent().setMode(currentRunMode);
+      coreRef.current.getAgent().setProvider(currentProvider);
+      coreRef.current.getSession().setMode(currentRunMode);
+    }
+    return coreRef.current;
+  };
+
+  // Pre-load skills index on mount
   useEffect(() => {
     skillManagerRef.current.loadAllMetadata().catch(() => {});
   }, []);
 
-  // Run the core agent loop for a given prompt and mode
+  // Run the core agent loop for a given prompt and mode (#5, #9, #35, #37, #39)
   const executeAgent = async (
     promptToRun: string,
-    currentRunMode: 'auto' | 'plan' | 'act',
-    existingVfs?: VirtualFS | null
+    currentRunMode: 'auto' | 'plan' | 'act'
   ) => {
     if (isRunningRef.current) return;
     isRunningRef.current = true;
@@ -140,22 +346,22 @@ export const App: React.FC<AppProps> = ({
     setStatus('running');
     setActivePrompt(promptToRun);
     setCurrentActivity('Initializing Melonpan agent...');
+    setStreamingThought('');
+    setStreamingText('');
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    let hasError = false; // #5: Prevent stale closure bug
 
     try {
-      const core = new MelonpanCore({
-        apiKey: apiKey || undefined,
-        model,
-        thinkingLevel,
-        mode: currentRunMode,
-        simulate: isSimulate,
-        maxTurns,
-        vfs: existingVfs ?? savedVfsRef.current,
-        skillManager: skillManagerRef.current,
-      });
-
+      const core = getOrCreateCore(currentRunMode);
       let turnCounter = 0;
 
-      for await (const event of core.run(promptToRun)) {
+      for await (const event of core.run(promptToRun, {
+        mode: currentRunMode,
+        signal: abortController.signal,
+      })) {
         setEvents((prev) => [...prev, event]);
 
         switch (event.type) {
@@ -173,22 +379,48 @@ export const App: React.FC<AppProps> = ({
 
           case 'PLAN_CREATED':
             setPlanContent(event.payload.plan);
+            setIsPlanConfirmed(undefined);
             setCurrentActivity(`Plan specification generated`);
             break;
 
           case 'THOUGHT':
+            setStreamingThought('');
             setCurrentActivity(
               `Thinking: ${event.payload.thought.slice(0, 60)}...`
             );
             break;
 
+          case 'THOUGHT_DELTA': // #37: Token streaming
+            setStreamingThought((prev) => prev + event.payload.delta);
+            break;
+
+          case 'TEXT_DELTA': // #37: Token streaming
+            setStreamingText((prev) => prev + event.payload.delta);
+            break;
+
           case 'TOOL_CALL':
             turnCounter++;
-            setTurns(turnCounter);
+            setTurns((prev) => prev + 1);
+            setStreamingThought('');
             setCurrentActivity(`Action: ${event.payload.name}`);
             break;
 
-          case 'SUBAGENT_DISPATCHED':
+          case 'PERMISSION_REQUESTED': // #33: Interactive permission prompt
+            setStatus('awaiting_permission');
+            setPendingPermission(event.payload);
+            setCurrentActivity(
+              `Approval required for [${event.payload.toolName}]`
+            );
+            break;
+
+          case 'PERMISSION_RESOLVED':
+            setPendingPermission(undefined);
+            if (status === 'awaiting_permission') {
+              setStatus('running');
+            }
+            break;
+
+          case 'SUBAGENT_DISPATCHED': // #34: Live subagent tree
             setCurrentActivity(
               `Delegating to [${event.payload.agentType}] sub-agent...`
             );
@@ -206,89 +438,198 @@ export const App: React.FC<AppProps> = ({
             );
             break;
 
+          case 'CONTEXT_COMPACTED': // #35: Auto-compaction event
+            setCurrentActivity(
+              `Context compacted (${event.payload.savedTokens} tokens saved)`
+            );
+            setSessionUsage((prev) => ({
+              ...prev,
+              savedTokens: (prev.savedTokens || 0) + event.payload.savedTokens,
+            }));
+            break;
+
           case 'COMPLETE':
             setVirtualFiles(event.payload.files);
-            savedVfsRef.current = core.getVFS();
+            setStreamingThought('');
+            setStreamingText('');
 
-            // Accumulate token usage if provided
+            // If task was aborted, transition cleanly to idle without celebrating or flushing
+            if (event.payload.aborted || abortController.signal.aborted) {
+              setStatus('idle');
+              setCurrentActivity('Task execution cancelled by user.');
+              isRunningRef.current = false;
+              return;
+            }
+
+            // Accumulate token usage if provided (#36)
             if (event.payload.usage) {
               setSessionUsage((prev) => ({
-                promptTokens: prev.promptTokens + event.payload.usage.promptTokens,
+                promptTokens: prev.promptTokens + (event.payload.usage.promptTokens || 0),
                 completionTokens:
-                  prev.completionTokens + event.payload.usage.completionTokens,
-                totalTokens: prev.totalTokens + event.payload.usage.totalTokens,
+                  prev.completionTokens + (event.payload.usage.completionTokens || 0),
+                totalTokens: prev.totalTokens + (event.payload.usage.totalTokens || 0),
+                contextWindowTokens:
+                  event.payload.usage.contextWindowTokens ?? prev.contextWindowTokens,
+                maxContextTokens:
+                  event.payload.usage.maxContextWindowTokens ?? prev.maxContextTokens,
+                savedTokens: prev.savedTokens,
               }));
             }
 
-            // 実ディスク（カレントディレクトリ）へ成果物を自動書き出し
-            try {
-              await core.getVFS().flushToDisk(outDir);
-            } catch (diskErr: any) {
-              console.error('Failed to flush deliverables to disk:', diskErr);
+            // #9: Only flush to disk if NOT in plan mode before approval!
+            if (currentRunMode !== 'plan') {
+              try {
+                if (typeof (core.getFileSystem() as any).flushToDisk === 'function') {
+                  await (core.getFileSystem() as any).flushToDisk(outDir);
+                }
+              } catch (diskErr: any) {
+                setCurrentActivity(`Deliverables flush note: ${diskErr?.message || diskErr}`);
+              }
             }
 
             if (currentRunMode === 'plan') {
-              // Plan mode finished -> await user confirmation
               setStatus('confirming');
-              setCurrentActivity(
-                'Plan created and saved to disk. Waiting for confirmation...'
-              );
+              setCurrentActivity('Plan generated. Waiting for confirmation...');
               isRunningRef.current = false;
               return;
             } else {
               setStatus('completed');
               setCurrentActivity(
-                `Completed in ${event.payload.turns} turns (${event.payload.durationMs}ms) - saved to disk`
+                `Completed in ${event.payload.turns} turns (${event.payload.durationMs}ms)`
               );
             }
             break;
 
-          case 'ERROR':
+          case 'ERROR': // #5: Error handling
+            hasError = true;
             setStatus('error');
-            setCurrentActivity(`Error: ${event.payload.error}`);
+            setCurrentActivity(
+              `Error: ${event.payload.error?.message || event.payload.error}`
+            );
             break;
         }
       }
 
-      if (currentRunMode !== 'plan' && status !== 'error') {
+      // #5: Only transition to completed if there were no errors
+      if (currentRunMode !== 'plan' && !hasError && !abortController.signal.aborted) {
         setStatus('completed');
       }
     } catch (err: any) {
+      if (abortController.signal.aborted) {
+        setStatus('idle');
+        setCurrentActivity('Task execution cancelled by user.');
+        return;
+      }
+      hasError = true;
       setStatus('error');
       setCurrentActivity(`Runtime Error: ${err.message || String(err)}`);
     } finally {
       isRunningRef.current = false;
+      abortControllerRef.current = null;
     }
   };
 
-  // Reset conversation and session state
+  // Reset conversation and session state (#35)
   const handleClearSession = () => {
-    savedVfsRef.current = new VirtualFS();
+    fsRef.current =
+      fsMode === 'disk' ? new LocalDiskFS({ rootDir: outDir }) : new VirtualFS();
+    coreRef.current = null;
     setEvents([]);
     setPlanContent('');
     setIsPlanConfirmed(undefined);
     setTurns(0);
     setVirtualFiles({});
+    setStreamingThought('');
+    setStreamingText('');
+    setPendingPermission(undefined);
+    setSessionUsage({
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      contextWindowTokens: 0,
+      maxContextTokens: 128_000,
+      savedTokens: 0,
+    });
     setCurrentActivity('Ready');
     setStatus('idle');
+  };
+
+  // Task cancellation via Esc (#39)
+  const handleCancelTask = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setCurrentActivity('Cancelling task...');
+    }
+  };
+
+  // Permission decision resolution (#33)
+  const handlePermissionDecision = (decision: PermissionDecision) => {
+    if (!pendingPermission || !coreRef.current) return;
+    coreRef.current.resolvePermission(pendingPermission.requestId, decision);
+    setPendingPermission(undefined);
+    setStatus('running');
+  };
+
+  // Manual Context Compaction (#35)
+  const handleCompactSession = async (_instructions?: string) => {
+    const core = getOrCreateCore(mode);
+    const session = core.getSession();
+    const compacted = await session.compact({ force: true });
+    if (compacted) {
+      setEvents((prev) => [
+        ...prev,
+        {
+          type: 'CONTEXT_COMPACTED',
+          payload: compacted,
+          timestamp: Date.now(),
+        },
+      ]);
+      setSessionUsage((prev) => ({
+        ...prev,
+        contextWindowTokens: compacted.afterTokens,
+        savedTokens: (prev.savedTokens || 0) + compacted.savedTokens,
+      }));
+    }
   };
 
   // Command execution context shared with slash command handlers
   const commandContext: CommandContext = {
     model,
-    setModel,
+    setModel: (m) => {
+      setModel(m);
+      if (coreRef.current) {
+        coreRef.current.getAgent().setModel(m, thinkingLevel);
+      }
+    },
+    provider,
+    setProvider: (p) => {
+      setProvider(p);
+      if (coreRef.current) {
+        const inst = isSimulate ? undefined : createProviderInstance(p, model, apiKey);
+        coreRef.current.getAgent().setProvider(inst);
+      }
+    },
     effort: thinkingLevel,
-    setEffort: setThinkingLevel,
+    setEffort: (e) => {
+      setThinkingLevel(e);
+      if (coreRef.current) {
+        coreRef.current.getAgent().setModel(model, e);
+      }
+    },
     mode,
     setMode,
     executePrompt: (promptText, overrideMode) => {
       const runMode = overrideMode || mode;
-      setEvents([]);
-      setPlanContent('');
-      setIsPlanConfirmed(undefined);
-      setTurns(0);
-      setVirtualFiles({});
-      executeAgent(promptText, runMode, savedVfsRef.current);
+      // Multi-Turn conversation (#35): append user prompt, do not wipe past events!
+      setEvents((prev) => [
+        ...prev,
+        {
+          type: 'USER_PROMPT' as any,
+          payload: { prompt: promptText },
+          timestamp: Date.now(),
+        },
+      ]);
+      executeAgent(promptText, runMode);
     },
     clearSession: handleClearSession,
     logActivity: (msg) => setCurrentActivity(msg),
@@ -302,59 +643,86 @@ export const App: React.FC<AppProps> = ({
         },
       ]);
     },
-    openPicker: (type) => setActivePicker(type),
-    vfs: savedVfsRef.current,
+    openPicker: (type) => setActivePicker(type as any),
+    vfs: fsRef.current as any,
     skillManager: skillManagerRef.current,
+    core: coreRef.current || undefined,
+    fsMode,
     sessionUsage,
     apiKey,
     setApiKey,
     isSimulate,
     setSimulate: setIsSimulate,
+    refreshModels: loadDynamicModels,
+    permissionPolicy: permissionPolicyRef.current,
+    compactSession: handleCompactSession,
+    cancelTask: handleCancelTask,
   };
 
-  // Submit prompt or handle slash commands
+  // Submit prompt or handle slash commands (#35: continuous multi-turn)
   const handleSubmit = async (submittedText: string) => {
     const trimmed = submittedText.trim();
     if (!trimmed || isRunningRef.current) return;
+
+    // Reset previous rejected plan state on new user prompt submission (#8)
+    if (isPlanConfirmed === false) {
+      setPlanContent('');
+      setIsPlanConfirmed(undefined);
+    }
 
     setInputPrompt('');
 
     // Check if user submitted a slash command
     if (trimmed.startsWith('/')) {
-      const handled = await commandRegistry.executeCommand(trimmed, commandContext);
+      const handled = await extendedCommandRegistry.executeCommand(
+        trimmed,
+        commandContext
+      );
       if (handled) {
         return;
       }
     }
 
-    // Standard task prompt execution
-    setEvents([]);
-    setPlanContent('');
-    setIsPlanConfirmed(undefined);
-    setTurns(0);
-    setVirtualFiles({});
+    // Append multi-turn user prompt event (#35)
+    setEvents((prev) => [
+      ...prev,
+      {
+        type: 'USER_PROMPT' as any,
+        payload: { prompt: trimmed },
+        timestamp: Date.now(),
+      },
+    ]);
 
-    executeAgent(trimmed, mode, savedVfsRef.current);
+    executeAgent(trimmed, mode);
   };
 
-  // Handle [y/n] plan confirmation
-  const handleConfirmPlan = (approved: boolean) => {
+  // Handle [y/n] plan confirmation (#8, #9)
+  const handleConfirmPlan = async (approved: boolean) => {
     if (approved) {
       setIsPlanConfirmed(true);
+      // Flush plan.md to disk now that it is approved (#9)
+      try {
+        if (typeof (fsRef.current as any).flushToDisk === 'function') {
+          await (fsRef.current as any).flushToDisk(outDir);
+        }
+      } catch {}
       setMode('act');
       executeAgent(
-        `Implement game according to plan.md: ${activePrompt}`,
-        'act',
-        savedVfsRef.current
+        `Implement project according to plan.md: ${activePrompt}`,
+        'act'
       );
     } else {
+      try {
+        await fsRef.current.deleteFile?.('plan.md');
+      } catch {}
       setIsPlanConfirmed(false);
+      // Retain planContent so PlanViewer displays the REJECTED badge (#8)
       setStatus('idle');
-      setCurrentActivity('Plan discarded. Ready for new prompt.');
+      setCurrentActivity('Plan rejected. Ready for new prompt.');
     }
   };
 
-  // Reset after completion or error
+  // Reset after error
   const handleReset = () => {
     setStatus('idle');
     setInputPrompt('');
@@ -370,33 +738,51 @@ export const App: React.FC<AppProps> = ({
 
   return (
     <Box flexDirection="column" padding={1} width="100%">
-      {/* 1. Header with Mode, Model, Thinking Level (Effort), Status */}
+      {/* 1. Header with Mode, Model, Provider, Effort, FS, Context Window Gauge (#32, #36, #38) */}
       <Header
         status={status}
         mode={mode}
         model={model}
+        provider={provider}
         thinkingLevel={thinkingLevel}
         hasApiKey={Boolean(apiKey)}
         isSimulate={isSimulate}
         turns={turns}
         maxTurns={maxTurns}
+        fsMode={fsMode}
+        contextWindowTokens={sessionUsage.contextWindowTokens}
+        maxContextTokens={sessionUsage.maxContextTokens}
       />
 
-      {/* 2. Modal Picker (Active when /model or /effort is opened without args) */}
+      {/* 2. Modal Picker (Active when /model, /boost or /effort is opened without args, #38) */}
       {activePicker === 'model' && (
         <ModalPicker
-          title="Select Active Model (/model)"
-          items={MODEL_ITEMS}
+          title="Select Active Model & Provider (/model, /boost)"
+          items={modelItems}
+          enableSearch={true}
           selectedId={model}
-          onSelect={(selectedModel) => {
+          onSelect={(selectedModel, selectedItem) => {
             setModel(selectedModel);
+            const targetProv = selectedItem.providerId || provider;
+            if (selectedItem.providerId) {
+              setProvider(selectedItem.providerId);
+            }
+            if (coreRef.current) {
+              const nextProviderInst = isSimulate
+                ? undefined
+                : createProviderInstance(targetProv, selectedModel, apiKey);
+              coreRef.current.getAgent().setModel(selectedModel, thinkingLevel);
+              coreRef.current.getAgent().setProvider(nextProviderInst);
+            }
             setActivePicker('none');
             setCurrentActivity(`Model switched to ${selectedModel}`);
             setEvents((prev) => [
               ...prev,
               {
                 type: 'THOUGHT',
-                payload: { thought: `Switched active model to: ${selectedModel}` },
+                payload: {
+                  thought: `Switched active model to: ${selectedModel} (${selectedItem.providerId || 'gemini'})`,
+                },
                 timestamp: Date.now(),
               },
             ]);
@@ -409,6 +795,7 @@ export const App: React.FC<AppProps> = ({
         <ModalPicker
           title="Select Thinking Level (/effort)"
           items={EFFORT_ITEMS}
+          enableSearch={false}
           selectedId={thinkingLevel}
           onSelect={(selectedEffort) => {
             setThinkingLevel(selectedEffort);
@@ -431,7 +818,7 @@ export const App: React.FC<AppProps> = ({
         />
       )}
 
-      {/* 3. Plan Viewer (Visible if plan.md exists or created) */}
+      {/* 3. Plan Viewer with APPROVED / REJECTED / PENDING badge (#8) */}
       {planContent ? (
         <PlanViewer
           planContent={planContent}
@@ -439,20 +826,25 @@ export const App: React.FC<AppProps> = ({
         />
       ) : null}
 
-      {/* 4. Event List & Activity Stream */}
+      {/* 4. Event List & Activity Stream with Scrollback, Telemetry & Streaming (#32, #34, #35, #37, #39) */}
       <EventList
         events={events}
         isRunning={status === 'running'}
         currentActivity={currentActivity}
-        maxDisplay={8}
+        maxDisplay={10}
+        streamingThought={streamingThought}
+        streamingText={streamingText}
       />
 
-      {/* 5. Input & Control Bar with Autocomplete */}
+      {/* 5. Input & Control Bar with Autocomplete, History, and Permission Prompt (#7, #33, #35, #39) */}
       <InputBar
         status={status}
         value={inputPrompt}
         isPickerActive={activePicker !== 'none'}
         commandContext={commandContext}
+        pendingPermission={pendingPermission}
+        onPermissionDecision={handlePermissionDecision}
+        onCancelTask={handleCancelTask}
         onChange={setInputPrompt}
         onSubmit={handleSubmit}
         onConfirmPlan={handleConfirmPlan}
@@ -469,7 +861,7 @@ export const App: React.FC<AppProps> = ({
           flexDirection="column"
         >
           <Text bold color="green">
-            💾 Deliverables Saved to Current Directory ({Object.keys(virtualFiles).length} files):
+            💾 Deliverables ({Object.keys(virtualFiles).length} files):
           </Text>
           {Object.entries(virtualFiles).map(([filePath, content]) => (
             <Box key={filePath} justifyContent="space-between">

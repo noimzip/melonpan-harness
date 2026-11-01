@@ -2,6 +2,8 @@
 name: researcher
 description: Specialist in researching technical specifications, algorithms, and library standards for games and interactive apps.
 role: Technical & Architectural Researcher
+readonly: true
+allowed-tools: read_file, list_files, grep_search, web_search, fetch_url, complete_task
 ---
 
 # Instructions for Technical Researcher

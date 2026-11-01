@@ -10,25 +10,20 @@ async function main() {
   console.log(`========================================\n`);
 
   const apiKey = process.env.GEMINI_API_KEY;
-  let core: MelonpanCore;
-
   if (apiKey) {
     console.log(`🔑 GEMINI_API_KEY detected. Using real Gemini 3.8 Flash.`);
-    core = new MelonpanCore({
-      apiKey,
-      model: 'gemini-3.8-flash',
-    });
   } else {
-    console.warn(
-      `⚠️  GEMINI_API_KEY is not set in environment. Falling back to offline MockLLMProvider for demonstration.`
+    console.log(
+      `ℹ️  GEMINI_API_KEY is not set in environment. Running in deterministic simulation mode.`
     );
-    const { MockLLMProvider } = await import('../packages/core/src/providers/mock.js');
-    core = new MelonpanCore({
-      provider: new MockLLMProvider({ delayMs: 3 }),
-    });
   }
 
-  // 入力を流し込み、イベントをリッスンする
+  const core = new MelonpanCore({
+    apiKey,
+    model: 'gemini-3.8-flash',
+    simulate: !apiKey,
+  });
+
   const eventStream = core.run(prompt);
   let finalHtml = '';
 
@@ -37,33 +32,19 @@ async function main() {
       case 'SKILL_LOADED':
         console.log(`[Skill Loaded]: ${event.payload.name}`);
         break;
-      case 'THINKING':
-        console.log(`[Thinking]: ${event.payload.message}\n`);
-        console.log(`--- [Code Streaming Output] ---`);
+      case 'THOUGHT':
+        console.log(`[Thought]: ${event.payload.thought}\n`);
         break;
-      case 'CODE_CHUNK':
-        process.stdout.write(event.payload); // CLIならそのまま出力
-        break;
-      case 'VALIDATING':
-        console.log(`\n-------------------------------`);
-        console.log(`[Validating]: ${event.payload.message}`);
-        break;
-      case 'REPAIRING':
-        console.log(
-          `\n[Repairing]: エラー検知により自己修復を開始します (Attempt ${event.payload.attempt})`
-        );
-        for (const err of event.payload.errors) {
-          console.log(`  - 修正対象: ${err}`);
-        }
-        console.log(`--- [Repair Streaming Output] ---`);
+      case 'TOOL_CALL':
+        console.log(`[Tool Call]: ${event.payload.name}`);
         break;
       case 'COMPLETE':
         console.log(`\n========================================`);
-        console.log(`🎉 [Complete]: ゲーム生成完了！`);
-        console.log(`試行回数: ${event.payload.attempts} 回`);
+        console.log(`🎉 [Complete]: タスク完了！`);
+        console.log(`ターン数: ${event.payload.turns} 回`);
         console.log(`所要時間: ${event.payload.durationMs} ms`);
         console.log(`========================================\n`);
-        finalHtml = event.payload.html;
+        finalHtml = event.payload.files['index.html'] || '';
         break;
       case 'ERROR':
         console.error(`\n❌ [Error] (${event.payload.phase}):`, event.payload.error);
@@ -74,7 +55,7 @@ async function main() {
   if (finalHtml) {
     const outputPath = path.resolve(process.cwd(), 'generated-game.html');
     fs.writeFileSync(outputPath, finalHtml, 'utf-8');
-    console.log(`📁 生成されたゲームを保存しました: ${outputPath}`);
+    console.log(`📁 生成された成果物を保存しました: ${outputPath}`);
   }
 }
 

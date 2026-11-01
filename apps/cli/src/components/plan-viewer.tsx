@@ -45,30 +45,32 @@ export const PlanViewer: React.FC<PlanViewerProps> = ({
     }
   }
 
+  const renderBadge = () => {
+    if (isConfirmed === true) {
+      return <Text>{chalk.bgGreen.black(' APPROVED ')}</Text>;
+    }
+    if (isConfirmed === false) {
+      return <Text>{chalk.bgRed.white(' REJECTED ')}</Text>;
+    }
+    return <Text>{chalk.bgYellow.black(' PENDING APPROVAL ')}</Text>;
+  };
+
   return (
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="magenta"
+      borderColor={isConfirmed === false ? 'red' : 'magenta'}
       paddingX={1}
       marginBottom={1}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Box>
-          <Text bold color="magenta">
+          <Text bold color={isConfirmed === false ? 'red' : 'magenta'}>
             📋 {title}
           </Text>
           <Text color="gray"> (plan.md)</Text>
         </Box>
-        {isConfirmed !== undefined && (
-          <Box>
-            {isConfirmed ? (
-              <Text>{chalk.bgGreen.black(' APPROVED ')}</Text>
-            ) : (
-              <Text>{chalk.bgYellow.black(' PENDING APPROVAL ')}</Text>
-            )}
-          </Box>
-        )}
+        <Box>{renderBadge()}</Box>
       </Box>
 
       {checklistItems.length > 0 ? (

@@ -1,8 +1,36 @@
 import { GoogleGenAI } from '@google/genai';
 import { SubagentRunner } from './subagents/subagent-runner.js';
-import { MELONPAN_TOOLS } from './tools/tool-definitions.js';
-import { AgentEvent, LoadedSkill } from './types.js';
+import { ToolRegistry } from './tools/tool-registry.js';
+import { createBuiltinTools } from './tools/builtin-tools.js';
+import { PromptComposer } from './prompts/prompt-composer.js';
+import { extractGeminiResponseParts } from './providers/index.js';
+import {
+  createDetailedTokenUsage,
+  estimateMessagesTokens,
+  pruneChatHistory,
+  type PruneHistoryResult,
+} from './session/context-strategy.js';
+import {
+  AgentEvent,
+  ICommandExecutor,
+  IContextStrategy,
+  IFileSystem,
+  ILLMProvider,
+  IPermissionPolicy,
+  IPromptComposer,
+  ISubagentSpawner,
+  ITool,
+  IWebProvider,
+  LLMMessage,
+  LLMToolCall,
+  LoadedSkill,
+  SkillMetadata,
+  ToolExecutionResult,
+  ToolMiddleware,
+} from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
+
+export { pruneChatHistory, type PruneHistoryResult };
 
 export interface ReactAgentOptions {
   apiKey?: string;
@@ -12,52 +40,47 @@ export interface ReactAgentOptions {
   simulate?: boolean;
   mode?: 'plan' | 'act' | 'auto';
   agentsDir?: string;
+  /** カスタムツール一覧または追加ツールプラグイン (#50) */
+  tools?: ITool[];
+  /** カスタム ToolRegistry (#50) */
+  toolRegistry?: ToolRegistry;
+  /** ツール実行ミドルウェア (#23) */
+  middlewares?: ToolMiddleware[];
+  /** プロンプト合成器 (#51) */
+  promptComposer?: IPromptComposer;
+  /** サブエージェントスポナー (#25) */
+  subagentSpawner?: ISubagentSpawner;
+  /** コマンド実行アダプター (#22) */
+  commandExecutor?: ICommandExecutor;
+  /** Web検索・URL取得アダプター (#22) */
+  webProvider?: IWebProvider;
+  /** スキルマネージャー (#24) */
+  skillManager?: any;
+  /** コンテキスト圧縮戦略 (#26) */
+  contextStrategies?: IContextStrategy[];
+  /** カスタム LLM プロバイダー (#27) */
+  provider?: ILLMProvider;
+  /** リアルタイムデルタストリーミングを有効にするか (#27) */
+  enableStreaming?: boolean;
+  /** 最大コンテキストトークン上限 (#17, #26) */
+  maxContextTokens?: number;
 }
 
-export interface PruneHistoryResult {
-  prunedCallsCount: number;
-  savedCharsCount: number;
-}
-
-/**
- * 過去ターンの chat.history を走査し、write_file の肥大化した content を
- * <Content preserved in VFS: N chars> にマスクして Context Pruning を行う。
- * これにより毎ターンの Input トークン再送信が雪だるま式に増大するのを 70〜80% 抑制する。
- */
-export function pruneChatHistory(
-  history: any[],
-  thresholdChars: number = 200
-): PruneHistoryResult {
-  let prunedCallsCount = 0;
-  let savedCharsCount = 0;
-  if (!Array.isArray(history)) return { prunedCallsCount: 0, savedCharsCount: 0 };
-
-  for (const item of history) {
-    if (!item?.parts || !Array.isArray(item.parts)) continue;
-    for (const part of item.parts) {
-      if (part?.functionCall && part.functionCall.name === 'write_file') {
-        const content = part.functionCall.args?.content;
-        if (
-          typeof content === 'string' &&
-          content.length >= thresholdChars &&
-          !content.startsWith('<Content preserved in VFS:')
-        ) {
-          const originalLen = content.length;
-          const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
-          part.functionCall.args.content = replacement;
-          prunedCallsCount++;
-          savedCharsCount += originalLen - replacement.length;
-        }
-      }
-    }
-  }
-  return { prunedCallsCount, savedCharsCount };
+export interface ReactAgentExecuteOptions {
+  signal?: AbortSignal;
+  availableSkills?: SkillMetadata[];
+  history?: LLMMessage[];
+  workspaceRoot?: string;
 }
 
 /**
- * ReAct (Reasoning + Acting) 自律エージェントループ
- * Gemini Function Calling を活用し、思考 ⇄ ツール実行 ⇄ 観測 ⇄ ファイル修正を自律的に繰り返します。
- * Clean-Room Sub-agent (researcher / code-reviewer) への委譲および Plan Mode に対応。
+ * ReAct (Reasoning + Acting) 自律エージェントループ (Core-M1 〜 Core-M4 統合オーケストレーター)
+ * - `ToolRegistry` & `ToolMiddleware` パイプラインによるプラガブルなツール実行 (#50, #23)
+ * - `IPromptComposer` によるドメイン非依存・優先度順システムプロンプト構築 (#51)
+ * - `ILLMProvider` によるマルチプロバイダー & リアルタイムデルタストリーミング (`THOUGHT_DELTA`, `TEXT_DELTA`, `TOOL_CALL_DELTA`) (#27)
+ * - `candidates?.[0]?.content?.parts` からの `part.thought === true` 正確抽出 (#4)
+ * - `AbortSignal` によるカスケード即時中断 (#27)
+ * - 累計課金トークン (`billedPromptTokens`) と現在コンテキストサイズ (`contextWindowTokens`) の分離計測 (#17)
  */
 export class ReactAgent {
   private apiKey: string;
@@ -66,7 +89,16 @@ export class ReactAgent {
   private maxTurns: number;
   private simulate: boolean;
   private mode: 'plan' | 'act' | 'auto';
-  private subagentRunner: SubagentRunner;
+  private toolRegistry: ToolRegistry;
+  private promptComposer: IPromptComposer;
+  private subagentRunner: ISubagentSpawner;
+  private commandExecutor?: ICommandExecutor;
+  private webProvider?: IWebProvider;
+  private skillManager?: any;
+  private contextStrategies: IContextStrategy[];
+  private provider?: ILLMProvider;
+  private enableStreaming: boolean;
+  private maxContextTokens: number;
 
   constructor(options: ReactAgentOptions = {}) {
     const envApiKey =
@@ -77,15 +109,87 @@ export class ReactAgent {
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
     this.maxTurns = options.maxTurns ?? 100;
-    this.simulate = options.simulate ?? !this.apiKey;
+    this.simulate = options.simulate ?? (!this.apiKey && !options.provider);
     this.mode = options.mode || 'act';
+    this.enableStreaming = options.enableStreaming ?? Boolean(options.provider);
+    this.maxContextTokens = options.maxContextTokens ?? 128000;
 
-    this.subagentRunner = new SubagentRunner({
-      apiKey: this.apiKey,
-      model: this.model,
-      agentsDir: options.agentsDir,
-      simulate: this.simulate,
-    });
+    if (options.toolRegistry) {
+      this.toolRegistry = options.toolRegistry;
+    } else {
+      const baseTools = createBuiltinTools();
+      if (options.tools && options.tools.length > 0) {
+        for (const t of options.tools) {
+          const existingIdx = baseTools.findIndex((b) => b.name === t.name);
+          if (existingIdx !== -1) {
+            baseTools[existingIdx] = t;
+          } else {
+            baseTools.push(t);
+          }
+        }
+      }
+      this.toolRegistry = new ToolRegistry(baseTools, options.middlewares || []);
+    }
+
+    this.promptComposer = options.promptComposer ?? new PromptComposer();
+    this.commandExecutor = options.commandExecutor;
+    this.webProvider = options.webProvider;
+    this.skillManager = options.skillManager;
+    this.contextStrategies = options.contextStrategies || [];
+    this.provider = options.provider;
+
+    this.subagentRunner =
+      options.subagentSpawner ??
+      new SubagentRunner({
+        apiKey: this.apiKey,
+        model: this.model,
+        agentsDir: options.agentsDir,
+        simulate: this.simulate,
+        toolRegistry: this.toolRegistry,
+        provider: this.provider,
+        commandExecutor: this.commandExecutor,
+        webProvider: this.webProvider,
+        skillManager: this.skillManager,
+      });
+  }
+
+  getToolRegistry(): ToolRegistry {
+    return this.toolRegistry;
+  }
+
+  getPromptComposer(): IPromptComposer {
+    return this.promptComposer;
+  }
+
+  setMode(mode: 'plan' | 'act' | 'auto'): void {
+    this.mode = mode;
+  }
+
+  setModel(model: string, thinkingLevel?: string): void {
+    this.model = model;
+    if (thinkingLevel) {
+      this.thinkingLevel = thinkingLevel;
+    }
+  }
+
+  setProvider(provider?: ILLMProvider): void {
+    this.provider = provider;
+    if (this.subagentRunner instanceof SubagentRunner) {
+      this.subagentRunner.setProvider(provider);
+    }
+  }
+
+  /**
+   * IFileSystem から全ファイルマップを安全に取得するヘルパー
+   */
+  private getFilesSnapshot(vfs: IFileSystem): Record<string, string> {
+    if (typeof (vfs as any).getFiles === 'function') {
+      return (vfs as any).getFiles();
+    }
+    if (typeof vfs.getSnapshot === 'function') {
+      return vfs.getSnapshot();
+    }
+    return {};
   }
 
   /**
@@ -94,9 +198,43 @@ export class ReactAgent {
   async *execute(
     prompt: string,
     skill: LoadedSkill | undefined,
-    vfs: VirtualFS
+    vfs: IFileSystem = new VirtualFS(),
+    execOptions: ReactAgentExecuteOptions = {}
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const startTime = Date.now();
+    const signal = execOptions.signal;
+
+    if (this.subagentRunner instanceof SubagentRunner) {
+      this.subagentRunner.setFileSystem(vfs);
+      this.subagentRunner.setToolRegistry(this.toolRegistry);
+      this.subagentRunner.setAdapters({
+        commandExecutor: this.commandExecutor,
+        webProvider: this.webProvider,
+        skillManager: this.skillManager,
+      });
+    }
+
+    // AbortSignal 事前チェック (#27)
+    if (signal?.aborted) {
+      yield {
+        type: 'COMPLETE',
+        payload: {
+          summary: 'Execution aborted before start.',
+          files: this.getFilesSnapshot(vfs),
+          turns: 0,
+          durationMs: 0,
+          aborted: true,
+          usage: createDetailedTokenUsage({
+            billedPromptTokens: 0,
+            billedCompletionTokens: 0,
+            contextWindowTokens: 0,
+            maxContextWindowTokens: this.maxContextTokens,
+          }),
+        },
+        timestamp: Date.now(),
+      };
+      return;
+    }
 
     // Plan Mode 開始イベントの送出
     if (this.mode === 'plan' || this.mode === 'auto') {
@@ -110,81 +248,69 @@ export class ReactAgent {
       };
     }
 
-    // 1. オフライン / テスト用確定型シミュレーションモード
-    if (this.simulate) {
-      yield* this.executeSimulation(prompt, skill, vfs, startTime);
+    // 1. オフライン / テスト用確定型シミュレーションモード (カスタムプロバイダー未指定時)
+    if (this.simulate && !this.provider) {
+      if (execOptions.history) {
+        execOptions.history.push({
+          role: 'user',
+          parts: [{ text: prompt }],
+        });
+      }
+      yield* this.executeSimulation(prompt, skill, vfs, startTime, signal);
+      if (execOptions.history) {
+        execOptions.history.push({
+          role: 'model',
+          parts: [{ text: `[Completed simulated execution for: ${prompt}]` }],
+        });
+      }
       return;
     }
 
-    // 2. 本番 Gemini ReAct ループ
+    // PromptComposer によるシステムプロンプト構築 (#51)
+    const availableSkills =
+      execOptions.availableSkills ??
+      (typeof this.skillManager?.getEnabledSkills === 'function'
+        ? this.skillManager.getEnabledSkills()
+        : undefined);
+
+    let currentActiveSkill = skill;
+    const buildSystemPrompt = () =>
+      this.promptComposer.compose({
+        mode: this.mode,
+        activeSkill: currentActiveSkill,
+        availableSkills,
+        availableTools: this.toolRegistry.getAll(),
+        workspaceRoot: execOptions.workspaceRoot,
+      });
+
+    const systemInstruction = buildSystemPrompt();
+
+    // 2. カスタム ILLMProvider またはデルタストリーミングモード (#27)
+    if (this.provider) {
+      yield* this.executeWithProvider(
+        this.provider,
+        prompt,
+        systemInstruction,
+        vfs,
+        startTime,
+        execOptions,
+        (activatedSkill) => {
+          currentActiveSkill = activatedSkill;
+          return buildSystemPrompt();
+        }
+      );
+      return;
+    }
+
+    // 3. 本番 Gemini ReAct ループ
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
-      let modeSpecificInstruction = '';
-      if (this.mode === 'plan') {
-        modeSpecificInstruction = `
-OPERATIONAL MODE: [PLAN MODE]
-- Your goal is strictly to analyze requirements and produce a thorough implementation plan.
-- Use \`dispatch_subagent('researcher', ...)\` to research algorithms, Canvas physics, and visual aesthetics.
-- Use \`write_file('plan.md', content)\` to draft the structured technical plan.
-- Once plan.md is saved, call \`complete_task(summary)\` with the plan summary. Do NOT generate index.html in plan mode.
-        `.trim();
-      } else if (this.mode === 'auto') {
-        modeSpecificInstruction = `
-OPERATIONAL MODE: [AUTO MODE: Plan -> Implement -> Multi-Perspective Audit]
-- Phase 1 (Plan): Dispatch \`researcher\` if needed, then write a concise technical design to \`plan.md\`.
-- Phase 2 (Act): Implement the complete HTML5 Canvas game in \`index.html\`.
-- Phase 3 (Audit): Call \`dispatch_subagent('code-reviewer', gameCode)\` to thoroughly audit the code.
-- Phase 4 (Refine): If any warnings or issues were found, use \`edit_file\` to fix them, then call \`complete_task\`.
-        `.trim();
-      } else {
-        modeSpecificInstruction = `
-OPERATIONAL MODE: [ACT MODE]
-- Implement the complete HTML5 Canvas game in \`index.html\` using \`write_file\`.
-- You can dispatch \`researcher\` for technical questions, or \`code-reviewer\` to audit code before finalizing.
-- When verified and fully playable, call \`complete_task\`.
-        `.trim();
-      }
-
-      const activeSkillSection = skill
-        ? `
-==================================================
-ACTIVE SKILL SPECIFICATION: [${skill.name}]
-==================================================
-${skill.instruction}`.trim()
-        : `
-==================================================
-ACTIVE SKILL SPECIFICATION: [General Autonomous Agent]
-==================================================
-No specialized domain skill is active (all skills disabled or no specific match).
-Rely on your core software engineering, creative design, and problem-solving capabilities to inspect the request, generate solutions, and verify deliverables.`.trim();
-
-      const systemInstruction = `
-You are an autonomous elite creative technologist and game engineer powered by Melonpan Core.
-You operate in a strict ReAct (Reasoning + Acting) loop.
-
-YOUR WORKSPACE TOOLS:
-1. write_file(path, content): Create or overwrite a file in the virtual filesystem.
-2. edit_file(path, search, replace): Modify an existing file with exact search/replace.
-3. dispatch_subagent(agent_type, task_prompt): Delegate research or code review to a clean-room subagent ('researcher' or 'code-reviewer').
-4. complete_task(summary): Declare that the implementation is verified, fully playable, and complete.
-
-CRITICAL TOKEN OPTIMIZATION RULES (STRICT):
-1. Initial File Creation: Use write_file(path, content) ONLY ONCE to establish the initial file.
-2. Modifications, Tuning, Refinements, & Bug Fixes: You are STRICTLY FORBIDDEN from regenerating or rewriting the entire file using write_file. You MUST use edit_file(path, search, replace) with minimal, targeted search/replace blocks. Full-file rewrites waste thousands of output tokens and are strictly prohibited.
-3. Subagent Delegation: Subagents execute in isolated clean-room sessions. Do NOT paste entire code files into task_prompt; the runner automatically provides the target file context. Keep task prompts focused and concise.
-
-${modeSpecificInstruction}
-
-${activeSkillSection}
-`.trim();
-
       const config: Record<string, any> = {
         systemInstruction,
-        tools: MELONPAN_TOOLS,
+        tools: this.toolRegistry.toGeminiTools(),
       };
 
-      // thinkingConfig による推論レベル（thinking level / effort）の設定
       const thinkingLevelUpper = (this.thinkingLevel || 'high').toUpperCase();
       const validLevels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
       if (validLevels.includes(thinkingLevelUpper)) {
@@ -198,61 +324,199 @@ ${activeSkillSection}
         };
       }
 
+      const normalizedHistory =
+        execOptions.history && execOptions.history.length > 0
+          ? execOptions.history.map((m) => {
+              let msgSig: string | undefined = undefined;
+              for (const p of m.parts || []) {
+                const s =
+                  p?.thoughtSignature ||
+                  p?.thought_signature ||
+                  p?.functionCall?.thoughtSignature ||
+                  p?.functionCall?.thought_signature;
+                if (typeof s === 'string' && s.length > 0) {
+                  msgSig = s;
+                  break;
+                }
+              }
+
+              return {
+                role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
+                parts: m.parts?.map((p: any) => {
+                  const sig =
+                    p?.thoughtSignature ||
+                    p?.thought_signature ||
+                    p?.functionCall?.thoughtSignature ||
+                    p?.functionCall?.thought_signature ||
+                    msgSig;
+                  return {
+                    ...p,
+                    ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                    ...(p?.functionCall
+                      ? {
+                          functionCall: {
+                            ...p.functionCall,
+                            ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+                          },
+                        }
+                      : {}),
+                  };
+                }),
+              };
+            })
+          : undefined;
+
       const chat = ai.chats.create({
         model: this.model,
         config,
+        ...(normalizedHistory ? { history: normalizedHistory as any } : {}),
       });
 
       let turns = 0;
       let currentMessage: any = prompt;
       let totalPromptTokens = 0;
       let totalCompletionTokens = 0;
+      let lastPromptTokens = 0;
 
       while (turns < this.maxTurns) {
-        turns++;
-
-        // Context Pruning: 過去ターンの巨大コード引数をマスクして Input トークンの雪だるま式増大を防止
-        const pruneStats = pruneChatHistory((chat as any).history, 200);
-        if (pruneStats.prunedCallsCount > 0) {
+        if (signal?.aborted) {
+          if (execOptions.history && Array.isArray((chat as any).history)) {
+            execOptions.history.splice(0, execOptions.history.length, ...(chat as any).history);
+          }
           yield {
-            type: 'CONTEXT_PRUNED',
+            type: 'COMPLETE',
             payload: {
-              prunedCallsCount: pruneStats.prunedCallsCount,
-              savedCharsCount: pruneStats.savedCharsCount,
-              thresholdChars: 200,
+              summary: 'Execution aborted.',
+              files: this.getFilesSnapshot(vfs),
+              turns,
+              durationMs: Date.now() - startTime,
+              aborted: true,
+              usage: createDetailedTokenUsage({
+                billedPromptTokens: totalPromptTokens,
+                billedCompletionTokens: totalCompletionTokens,
+                contextWindowTokens: lastPromptTokens,
+                maxContextWindowTokens: this.maxContextTokens,
+              }),
             },
             timestamp: Date.now(),
           };
+          return;
+        }
+
+        turns++;
+
+        // Context Pruning & Strategy 適用 (#11, #26)
+        const chatHistory = (chat as any).history;
+        pruneChatHistory(chatHistory, {
+          writeThresholdChars: 200,
+          editThresholdChars: 300,
+          outputThresholdChars: 800,
+        });
+
+        for (const strategy of this.contextStrategies) {
+          const compRes = await strategy.apply(chatHistory, {
+            maxContextTokens: this.maxContextTokens,
+          });
+          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+            yield {
+              type: 'CONTEXT_COMPACTED',
+              payload: {
+                strategyId: strategy.id,
+                beforeTokens: compRes.beforeTokens,
+                afterTokens: compRes.afterTokens,
+                savedTokens: compRes.savedTokens,
+                reductionRatio: compRes.reductionRatio,
+                summary: compRes.summary,
+              },
+              timestamp: Date.now(),
+            };
+          }
         }
 
         const response = await chat.sendMessage({
           message: currentMessage,
         });
 
-        // トークン使用量の集計 (usageMetadata)
-        const usageMeta = (response as any).usageMetadata;
-        if (usageMeta) {
-          totalPromptTokens += usageMeta.promptTokenCount || 0;
-          totalCompletionTokens += usageMeta.candidatesTokenCount || 0;
-          yield {
-            type: 'USAGE',
-            payload: {
-              promptTokens: totalPromptTokens,
-              completionTokens: totalCompletionTokens,
-              totalTokens: totalPromptTokens + totalCompletionTokens,
-              turn: turns,
-            },
-            timestamp: Date.now(),
-          };
+        if (Array.isArray((chat as any).history)) {
+          const candidateSig =
+            (response as any)?.candidates?.[0]?.thoughtSignature ||
+            (response as any)?.candidates?.[0]?.thought_signature;
+          for (const histMsg of (chat as any).history) {
+            if (histMsg.role === 'model' && Array.isArray(histMsg.parts)) {
+              let msgSig = candidateSig;
+              for (const p of histMsg.parts) {
+                const s = p.thoughtSignature || p.thought_signature;
+                if (typeof s === 'string' && s.length > 0) {
+                  msgSig = s;
+                  break;
+                }
+              }
+              if (msgSig) {
+                for (const p of histMsg.parts) {
+                  if (p.functionCall || p.thought) {
+                    p.thoughtSignature = p.thoughtSignature || msgSig;
+                    p.thought_signature = p.thought_signature || msgSig;
+                    if (p.functionCall) {
+                      p.functionCall.thoughtSignature = p.functionCall.thoughtSignature || msgSig;
+                      p.functionCall.thought_signature = p.functionCall.thought_signature || msgSig;
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
 
-        // 思考 (Thought) の抽出と配信
-        if (response.text && response.text.trim()) {
-          yield {
-            type: 'THOUGHT',
-            payload: { thought: response.text.trim() },
-            timestamp: Date.now(),
-          };
+        if (execOptions.history && Array.isArray((chat as any).history)) {
+          execOptions.history.splice(0, execOptions.history.length, ...(chat as any).history);
+        }
+
+        // トークン使用量の集計 (usageMetadata) (#17)
+        const usageMeta = (response as any).usageMetadata;
+        if (usageMeta) {
+          const turnPrompt = usageMeta.promptTokenCount || 0;
+          const turnCompletion = usageMeta.candidatesTokenCount || 0;
+          lastPromptTokens = turnPrompt;
+          totalPromptTokens += turnPrompt;
+          totalCompletionTokens += turnCompletion;
+        }
+
+        // Issue #4: candidates?.[0]?.content?.parts から part.thought === true を抽出
+        const { thoughts, texts } = extractGeminiResponseParts(response);
+
+        for (const t of thoughts) {
+          if (this.enableStreaming) {
+            yield {
+              type: 'THOUGHT_DELTA',
+              payload: { delta: t },
+              timestamp: Date.now(),
+            };
+          }
+          if (t.trim()) {
+            yield {
+              type: 'THOUGHT',
+              payload: { thought: t.trim() },
+              timestamp: Date.now(),
+            };
+          }
+        }
+
+        for (const txt of texts) {
+          if (this.enableStreaming) {
+            yield {
+              type: 'TEXT_DELTA',
+              payload: { delta: txt },
+              timestamp: Date.now(),
+            };
+          }
+          // 思考パートが存在しなかった場合は従来の互換動作として通常テキストも THOUGHT イベントへ配信
+          if (thoughts.length === 0 && txt.trim()) {
+            yield {
+              type: 'THOUGHT',
+              payload: { thought: txt.trim() },
+              timestamp: Date.now(),
+            };
+          }
         }
 
         const functionCalls = response.functionCalls;
@@ -263,208 +527,98 @@ ${activeSkillSection}
           let completionSummary = '';
 
           for (const call of functionCalls) {
+            const callName = call.name || 'unknown';
+            const callArgs = (call.args || {}) as Record<string, any>;
+
             yield {
               type: 'TOOL_CALL',
               payload: {
-                name: call.name,
-                args: call.args || {},
+                name: callName,
+                args: callArgs,
                 callId: call.id,
               },
               timestamp: Date.now(),
             };
 
-            if (call.name === 'write_file') {
-              const pathArg = String(call.args?.path || 'index.html');
-              const contentArg = String(call.args?.content || '');
-              vfs.writeFile(pathArg, contentArg);
+            const eventQueue: AgentEvent[] = [];
+            let notifyEvent: (() => void) | undefined;
+            let toolDone = false;
 
-              yield {
-                type: 'FILE_CHANGED',
-                payload: {
-                  path: pathArg,
-                  action: 'write',
-                  size: contentArg.length,
+            const execPromise = this.toolRegistry
+              .execute(callName, callArgs, {
+                fs: vfs,
+                commandExecutor: this.commandExecutor,
+                webProvider: this.webProvider,
+                subagentSpawner: this.subagentRunner,
+                skillManager: this.skillManager,
+                signal,
+                callId: call.id,
+                emit: (ev) => {
+                  eventQueue.push(ev);
+                  if (notifyEvent) {
+                    const fn = notifyEvent;
+                    notifyEvent = undefined;
+                    fn();
+                  }
                 },
-                timestamp: Date.now(),
-              };
+              })
+              .finally(() => {
+                toolDone = true;
+                if (notifyEvent) {
+                  const fn = notifyEvent;
+                  notifyEvent = undefined;
+                  fn();
+                }
+              });
 
-              // plan.md が書き出された場合は PLAN_CREATED を送出
-              if (pathArg === 'plan.md' || pathArg.endsWith('/plan.md')) {
-                yield {
-                  type: 'PLAN_CREATED',
-                  payload: {
-                    plan: contentArg,
-                    path: pathArg,
-                  },
-                  timestamp: Date.now(),
-                };
+            while (!toolDone || eventQueue.length > 0) {
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
               }
-
-              const observation = `Successfully wrote ${contentArg.length} characters to "${pathArg}".`;
-              yield {
-                type: 'TOOL_RESULT',
-                payload: {
-                  name: 'write_file',
-                  result: observation,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              functionResponses.push({
-                functionResponse: {
-                  name: 'write_file',
-                  response: { output: observation },
-                  id: call.id,
-                },
-              });
-            } else if (call.name === 'edit_file') {
-              const pathArg = String(call.args?.path || '');
-              const searchArg = String(call.args?.search || '');
-              const replaceArg = String(call.args?.replace || '');
-
-              const editRes = vfs.editFile(pathArg, searchArg, replaceArg);
-              if (editRes.success) {
-                yield {
-                  type: 'FILE_CHANGED',
-                  payload: {
-                    path: pathArg,
-                    action: 'edit',
-                    size: vfs.readFile(pathArg)?.length || 0,
-                    diffSummary: editRes.diffSummary,
-                  },
-                  timestamp: Date.now(),
-                };
+              if (!toolDone) {
+                await new Promise<void>((r) => {
+                  notifyEvent = r;
+                });
               }
-
-              const observation = editRes.success
-                ? editRes.diffSummary!
-                : `Error: ${editRes.error}`;
-
-              yield {
-                type: 'TOOL_RESULT',
-                payload: {
-                  name: 'edit_file',
-                  result: observation,
-                  isError: !editRes.success,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              functionResponses.push({
-                functionResponse: {
-                  name: 'edit_file',
-                  response: { output: observation },
-                  id: call.id,
-                },
-              });
-            } else if (call.name === 'dispatch_subagent') {
-              const agentType = String(call.args?.agent_type || 'researcher');
-              const taskPrompt = String(call.args?.task_prompt || '');
-              const subStartTime = Date.now();
-
-              yield {
-                type: 'SUBAGENT_DISPATCHED',
-                payload: {
-                  agentType,
-                  taskPrompt,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              // Clean-room isolation 実行: 親履歴は渡さず、VFS の最新ファイル内容のみを渡す
-              const targetFile =
-                vfs.readFile('index.html') ||
-                vfs.readFile('plan.md') ||
-                undefined;
-              const subResult = await this.subagentRunner.run(
-                agentType,
-                taskPrompt,
-                targetFile
-              );
-              const subUsage = this.subagentRunner.getLastUsage();
-              if (subUsage) {
-                totalPromptTokens += subUsage.promptTokens;
-                totalCompletionTokens += subUsage.completionTokens;
-              }
-              const durationMs = Date.now() - subStartTime;
-
-              yield {
-                type: 'SUBAGENT_COMPLETED',
-                payload: {
-                  agentType,
-                  result: subResult,
-                  durationMs,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              const observation = `[Clean-Room Sub-agent: ${agentType} Report]\n${subResult}`;
-              yield {
-                type: 'TOOL_RESULT',
-                payload: {
-                  name: 'dispatch_subagent',
-                  result: observation,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              functionResponses.push({
-                functionResponse: {
-                  name: 'dispatch_subagent',
-                  response: { output: observation },
-                  id: call.id,
-                },
-              });
-            } else if (call.name === 'complete_task') {
-              isComplete = true;
-              completionSummary = String(
-                call.args?.summary || 'Task completed successfully.'
-              );
-
-              const observation = `Task completion confirmed.`;
-              yield {
-                type: 'TOOL_RESULT',
-                payload: {
-                  name: 'complete_task',
-                  result: observation,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              functionResponses.push({
-                functionResponse: {
-                  name: 'complete_task',
-                  response: { output: observation },
-                  id: call.id,
-                },
-              });
-            } else {
-              const observation = `Unknown tool "${call.name}". Please use write_file, edit_file, dispatch_subagent, or complete_task.`;
-              yield {
-                type: 'TOOL_RESULT',
-                payload: {
-                  name: call.name,
-                  result: observation,
-                  isError: true,
-                  callId: call.id,
-                },
-                timestamp: Date.now(),
-              };
-
-              functionResponses.push({
-                functionResponse: {
-                  name: call.name,
-                  response: { error: observation },
-                  id: call.id,
-                },
-              });
             }
+
+            const execRes = await execPromise;
+
+            // サブエージェントのトークン消費量を親累計に合算
+            const subUsage = execRes.metadata?.usage as any;
+            if (subUsage) {
+              totalPromptTokens += subUsage.promptTokens || 0;
+              totalCompletionTokens += subUsage.completionTokens || 0;
+            }
+
+            yield {
+              type: 'TOOL_RESULT',
+              payload: {
+                name: callName,
+                result: execRes.output,
+                isError: execRes.isError,
+                callId: call.id,
+                metadata: execRes.metadata,
+              },
+              timestamp: Date.now(),
+            };
+
+            if (execRes.isTaskComplete) {
+              isComplete = true;
+              completionSummary =
+                execRes.completionSummary ||
+                String(callArgs.summary || 'Task completed successfully.');
+            }
+
+            functionResponses.push({
+              functionResponse: {
+                name: callName,
+                response: execRes.isError
+                  ? { error: execRes.output }
+                  : { output: execRes.output },
+                id: call.id,
+              },
+            });
           }
 
           if (isComplete) {
@@ -472,26 +626,26 @@ ${activeSkillSection}
               type: 'COMPLETE',
               payload: {
                 summary: completionSummary,
-                files: vfs.getFiles(),
+                files: this.getFilesSnapshot(vfs),
                 turns,
                 durationMs: Date.now() - startTime,
-                usage: {
-                  promptTokens: totalPromptTokens,
-                  completionTokens: totalCompletionTokens,
-                  totalTokens: totalPromptTokens + totalCompletionTokens,
-                },
+                usage: createDetailedTokenUsage({
+                  billedPromptTokens: totalPromptTokens,
+                  billedCompletionTokens: totalCompletionTokens,
+                  contextWindowTokens:
+                    lastPromptTokens || estimateMessagesTokens((chat as any).history, systemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
               },
               timestamp: Date.now(),
             };
             return;
           }
 
-          // 次のターンへツール観測結果を返却
           currentMessage = functionResponses;
         } else {
-          // ツール呼び出しがなかった場合はツール実行を促す
           currentMessage =
-            'Please proceed by calling write_file to create index.html, dispatch_subagent to review, or complete_task if finished.';
+            'Please proceed by invoking an appropriate workspace tool (e.g., write_file, edit_file, read_file, dispatch_subagent) or call complete_task if finished.';
         }
       }
 
@@ -500,14 +654,15 @@ ${activeSkillSection}
         type: 'COMPLETE',
         payload: {
           summary: `Execution ended after reaching maximum allowed turns (${this.maxTurns}).`,
-          files: vfs.getFiles(),
+          files: this.getFilesSnapshot(vfs),
           turns,
           durationMs: Date.now() - startTime,
-          usage: {
-            promptTokens: totalPromptTokens,
-            completionTokens: totalCompletionTokens,
-            totalTokens: totalPromptTokens + totalCompletionTokens,
-          },
+          usage: createDetailedTokenUsage({
+            billedPromptTokens: totalPromptTokens,
+            billedCompletionTokens: totalCompletionTokens,
+            contextWindowTokens: lastPromptTokens,
+            maxContextWindowTokens: this.maxContextTokens,
+          }),
         },
         timestamp: Date.now(),
       };
@@ -524,74 +679,533 @@ ${activeSkillSection}
   }
 
   /**
-   * オフライン / テスト用決定論的 ReAct シミュレーション (Plan Mode & Sub-agents 対応)
+   * プラガブル `ILLMProvider` を用いたリアルタイム・デルタストリーミング & ReAct ループ実行 (#27)
+   */
+  private async *executeWithProvider(
+    provider: ILLMProvider,
+    prompt: string,
+    systemInstruction: string,
+    vfs: IFileSystem,
+    startTime: number,
+    execOptions: ReactAgentExecuteOptions,
+    onSkillActivated?: (skill: LoadedSkill) => string
+  ): AsyncGenerator<AgentEvent, void, unknown> {
+    const signal = execOptions.signal;
+    let activeSystemInstruction = systemInstruction;
+    const messages: LLMMessage[] = execOptions.history
+      ? execOptions.history
+      : [];
+
+    messages.push({
+      role: 'user',
+      parts: [{ text: prompt }],
+    });
+
+    let turns = 0;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let lastContextTokens = 0;
+
+    try {
+      while (turns < this.maxTurns) {
+        if (signal?.aborted) {
+          yield {
+            type: 'COMPLETE',
+            payload: {
+              summary: 'Execution aborted.',
+              files: this.getFilesSnapshot(vfs),
+              turns,
+              durationMs: Date.now() - startTime,
+              aborted: true,
+              usage: createDetailedTokenUsage({
+                billedPromptTokens: totalPromptTokens,
+                billedCompletionTokens: totalCompletionTokens,
+                contextWindowTokens: lastContextTokens,
+                maxContextWindowTokens: this.maxContextTokens,
+              }),
+            },
+            timestamp: Date.now(),
+          };
+          return;
+        }
+
+        turns++;
+
+        // Context Pruning & Compaction Strategies (#11, #26)
+        pruneChatHistory(messages, {
+          writeThresholdChars: 200,
+          editThresholdChars: 300,
+          outputThresholdChars: 800,
+        });
+
+        for (const strategy of this.contextStrategies) {
+          const compRes = await strategy.apply(messages, {
+            maxContextTokens: this.maxContextTokens,
+          });
+          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+            yield {
+              type: 'CONTEXT_COMPACTED',
+              payload: {
+                strategyId: strategy.id,
+                beforeTokens: compRes.beforeTokens,
+                afterTokens: compRes.afterTokens,
+                savedTokens: compRes.savedTokens,
+                reductionRatio: compRes.reductionRatio,
+                summary: compRes.summary,
+              },
+              timestamp: Date.now(),
+            };
+          }
+        }
+
+        let turnThoughtAcc = '';
+        let turnTextAcc = '';
+        let turnThoughtSignature: string | undefined = undefined;
+        const turnToolCalls: LLMToolCall[] = [];
+
+        for await (const chunk of provider.streamChat(
+          {
+            model: this.model,
+            systemInstruction: activeSystemInstruction,
+            messages,
+            tools: this.toolRegistry.toFunctionDeclarations(),
+            thinkingLevel: this.thinkingLevel,
+          },
+          signal
+        )) {
+          if (signal?.aborted) {
+            break;
+          }
+
+          const chunkSig =
+            chunk.thoughtSignature ||
+            chunk.thought_signature ||
+            chunk.toolCall?.thoughtSignature ||
+            chunk.toolCall?.thought_signature;
+          if (typeof chunkSig === 'string' && chunkSig.length > 0) {
+            turnThoughtSignature = chunkSig;
+          }
+
+          if (chunk.type === 'thought_delta' && chunk.delta) {
+            turnThoughtAcc += chunk.delta;
+            yield {
+              type: 'THOUGHT_DELTA',
+              payload: { delta: chunk.delta },
+              timestamp: Date.now(),
+            };
+          } else if (chunk.type === 'text_delta' && chunk.delta) {
+            turnTextAcc += chunk.delta;
+            yield {
+              type: 'TEXT_DELTA',
+              payload: { delta: chunk.delta },
+              timestamp: Date.now(),
+            };
+          } else if (chunk.type === 'tool_call_delta' && chunk.delta) {
+            yield {
+              type: 'TOOL_CALL_DELTA',
+              payload: {
+                callId: chunk.toolCall?.id,
+                name: chunk.toolCall?.name,
+                argsDelta: chunk.delta,
+              },
+              timestamp: Date.now(),
+            };
+          } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+            turnToolCalls.push(chunk.toolCall);
+          } else if (chunk.type === 'usage' && chunk.usage) {
+            lastContextTokens = chunk.usage.promptTokens;
+            totalPromptTokens += chunk.usage.promptTokens;
+            totalCompletionTokens += chunk.usage.completionTokens;
+          }
+        }
+
+        if (signal?.aborted) {
+          yield {
+            type: 'COMPLETE',
+            payload: {
+              summary: 'Execution aborted.',
+              files: this.getFilesSnapshot(vfs),
+              turns,
+              durationMs: Date.now() - startTime,
+              aborted: true,
+              usage: createDetailedTokenUsage({
+                billedPromptTokens: totalPromptTokens,
+                billedCompletionTokens: totalCompletionTokens,
+                contextWindowTokens: lastContextTokens,
+                maxContextWindowTokens: this.maxContextTokens,
+              }),
+            },
+            timestamp: Date.now(),
+          };
+          return;
+        }
+
+        if (turnThoughtAcc.trim()) {
+          yield {
+            type: 'THOUGHT',
+            payload: { thought: turnThoughtAcc.trim() },
+            timestamp: Date.now(),
+          };
+        } else if (turnTextAcc.trim()) {
+          yield {
+            type: 'THOUGHT',
+            payload: { thought: turnTextAcc.trim() },
+            timestamp: Date.now(),
+          };
+        }
+
+        const modelParts: any[] = [];
+        if (turnThoughtAcc) {
+          modelParts.push({
+            text: turnThoughtAcc,
+            thought: true,
+            ...(turnThoughtSignature
+              ? { thoughtSignature: turnThoughtSignature, thought_signature: turnThoughtSignature }
+              : {}),
+          });
+        }
+        if (turnTextAcc) modelParts.push({ text: turnTextAcc });
+        for (const tc of turnToolCalls) {
+          const sig = tc.thoughtSignature || tc.thought_signature || turnThoughtSignature;
+          modelParts.push({
+            functionCall: {
+              id: tc.id,
+              name: tc.name,
+              args: tc.args || {},
+              ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+            },
+            ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {}),
+          });
+        }
+        messages.push({ role: 'model', parts: modelParts });
+
+        if (turnToolCalls.length > 0) {
+          const responseParts: any[] = [];
+          let isComplete = false;
+          let completionSummary = '';
+
+          for (const call of turnToolCalls) {
+            yield {
+              type: 'TOOL_CALL',
+              payload: {
+                name: call.name,
+                args: call.args || {},
+                callId: call.id,
+              },
+              timestamp: Date.now(),
+            };
+
+            const eventQueue: AgentEvent[] = [];
+            let notifyEvent: (() => void) | undefined;
+            let toolDone = false;
+
+            const execPromise = this.toolRegistry
+              .execute(call.name, call.args || {}, {
+                fs: vfs,
+                commandExecutor: this.commandExecutor,
+                webProvider: this.webProvider,
+                subagentSpawner: this.subagentRunner,
+                skillManager: this.skillManager,
+                signal,
+                callId: call.id,
+                emit: (ev) => {
+                  eventQueue.push(ev);
+                  if (notifyEvent) {
+                    const fn = notifyEvent;
+                    notifyEvent = undefined;
+                    fn();
+                  }
+                },
+              })
+              .finally(() => {
+                toolDone = true;
+                if (notifyEvent) {
+                  const fn = notifyEvent;
+                  notifyEvent = undefined;
+                  fn();
+                }
+              });
+
+            while (!toolDone || eventQueue.length > 0) {
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
+              }
+              if (!toolDone) {
+                await new Promise<void>((r) => {
+                  notifyEvent = r;
+                });
+              }
+            }
+
+            const execRes = await execPromise;
+
+            if (
+              call.name === 'activate_skill' &&
+              !execRes.isError &&
+              onSkillActivated &&
+              typeof this.skillManager?.activateSkill === 'function'
+            ) {
+              const activated = await this.skillManager.activateSkill(String(call.args?.name || ''));
+              if (activated) {
+                activeSystemInstruction = onSkillActivated(activated);
+              }
+            }
+
+            const subUsage = execRes.metadata?.usage as any;
+            if (subUsage) {
+              totalPromptTokens += subUsage.promptTokens || 0;
+              totalCompletionTokens += subUsage.completionTokens || 0;
+            }
+
+            yield {
+              type: 'TOOL_RESULT',
+              payload: {
+                name: call.name,
+                result: execRes.output,
+                isError: execRes.isError,
+                callId: call.id,
+                metadata: execRes.metadata,
+              },
+              timestamp: Date.now(),
+            };
+
+            if (execRes.isTaskComplete) {
+              isComplete = true;
+              completionSummary =
+                execRes.completionSummary ||
+                String(call.args?.summary || 'Task completed successfully.');
+            }
+
+            responseParts.push({
+              functionResponse: {
+                id: call.id,
+                name: call.name,
+                response: execRes.isError
+                  ? { error: execRes.output }
+                  : { output: execRes.output },
+              },
+            });
+          }
+
+          messages.push({ role: 'user', parts: responseParts });
+
+          if (isComplete) {
+            yield {
+              type: 'COMPLETE',
+              payload: {
+                summary: completionSummary,
+                files: this.getFilesSnapshot(vfs),
+                turns,
+                durationMs: Date.now() - startTime,
+                usage: createDetailedTokenUsage({
+                  billedPromptTokens: totalPromptTokens,
+                  billedCompletionTokens: totalCompletionTokens,
+                  contextWindowTokens:
+                    lastContextTokens || estimateMessagesTokens(messages, systemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
+              },
+              timestamp: Date.now(),
+            };
+            return;
+          }
+        } else {
+          messages.push({
+            role: 'user',
+            parts: [
+              {
+                text: 'Please proceed by calling a workspace tool or complete_task if finished.',
+              },
+            ],
+          });
+        }
+      }
+
+      yield {
+        type: 'COMPLETE',
+        payload: {
+          summary: `Execution ended after reaching maximum allowed turns (${this.maxTurns}).`,
+          files: this.getFilesSnapshot(vfs),
+          turns,
+          durationMs: Date.now() - startTime,
+          usage: createDetailedTokenUsage({
+            billedPromptTokens: totalPromptTokens,
+            billedCompletionTokens: totalCompletionTokens,
+            contextWindowTokens: lastContextTokens || estimateMessagesTokens(messages, systemInstruction),
+            maxContextWindowTokens: this.maxContextTokens,
+          }),
+        },
+        timestamp: Date.now(),
+      };
+    } catch (err: any) {
+      if (signal?.aborted) {
+        yield {
+          type: 'COMPLETE',
+          payload: {
+            summary: 'Execution aborted.',
+            files: this.getFilesSnapshot(vfs),
+            turns,
+            durationMs: Date.now() - startTime,
+            aborted: true,
+            usage: createDetailedTokenUsage({
+              billedPromptTokens: totalPromptTokens,
+              billedCompletionTokens: totalCompletionTokens,
+              contextWindowTokens: lastContextTokens,
+              maxContextWindowTokens: this.maxContextTokens,
+            }),
+          },
+          timestamp: Date.now(),
+        };
+        return;
+      }
+
+      yield {
+        type: 'ERROR',
+        payload: {
+          error: err instanceof Error ? err : new Error(String(err)),
+          phase: 'react_loop',
+        },
+        timestamp: Date.now(),
+      };
+    }
+  }
+
+  /**
+   * オフライン / テスト用決定論的 ReAct シミュレーション (Plan Mode, Sub-agents, ToolRegistry 経由実行対応)
    */
   private async *executeSimulation(
     prompt: string,
-    skill: LoadedSkill | undefined,
-    vfs: VirtualFS,
-    startTime: number
+    _skill: LoadedSkill | undefined,
+    vfs: IFileSystem,
+    startTime: number,
+    signal?: AbortSignal
   ): AsyncGenerator<AgentEvent, void, unknown> {
-    // ------------------------------------------------------------------
-    // Case A: Plan Mode (計画書作成のみを行い停止)
-    // ------------------------------------------------------------------
-    if (this.mode === 'plan') {
-      yield {
-        type: 'THOUGHT',
-        payload: {
-          thought: `[Plan Mode] Entering planning phase for "${prompt}". Dispatching "researcher" sub-agent for physics and visual architecture recommendations.`,
-        },
-        timestamp: Date.now(),
-      };
+    const runToolViaRegistry = async function* (
+      self: ReactAgent,
+      name: string,
+      args: Record<string, any>,
+      callId: string
+    ): AsyncGenerator<AgentEvent, ToolExecutionResult, unknown> {
+      if (self.enableStreaming) {
+        yield {
+          type: 'TOOL_CALL_DELTA',
+          payload: {
+            callId,
+            name,
+            argsDelta: JSON.stringify(args),
+          },
+          timestamp: Date.now(),
+        };
+      }
 
-      // 1. Dispatch researcher
       yield {
         type: 'TOOL_CALL',
         payload: {
-          name: 'dispatch_subagent',
-          args: {
-            agent_type: 'researcher',
-            task_prompt: `Investigate physics and HUD layout for "${prompt}".`,
+          name,
+          args,
+          callId,
+        },
+        timestamp: Date.now(),
+      };
+
+      const eventQueue: AgentEvent[] = [];
+      let notifyEvent: (() => void) | undefined;
+      let toolDone = false;
+
+      const execPromise = self.toolRegistry
+        .execute(name, args, {
+          fs: vfs,
+          commandExecutor: self.commandExecutor,
+          webProvider: self.webProvider,
+          subagentSpawner: self.subagentRunner,
+          skillManager: self.skillManager,
+          signal,
+          callId,
+          emit: (ev) => {
+            eventQueue.push(ev);
+            if (notifyEvent) {
+              const fn = notifyEvent;
+              notifyEvent = undefined;
+              fn();
+            }
           },
-          callId: 'sim-sub-1',
-        },
-        timestamp: Date.now(),
-      };
+        })
+        .finally(() => {
+          toolDone = true;
+          if (notifyEvent) {
+            const fn = notifyEvent;
+            notifyEvent = undefined;
+            fn();
+          }
+        });
 
-      yield {
-        type: 'SUBAGENT_DISPATCHED',
-        payload: {
-          agentType: 'researcher',
-          taskPrompt: `Investigate physics and HUD layout for "${prompt}".`,
-          callId: 'sim-sub-1',
-        },
-        timestamp: Date.now(),
-      };
+      while (!toolDone || eventQueue.length > 0) {
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+        if (!toolDone) {
+          await new Promise<void>((r) => {
+            notifyEvent = r;
+          });
+        }
+      }
 
-      const researchReport = await this.subagentRunner.run('researcher', prompt);
-
-      yield {
-        type: 'SUBAGENT_COMPLETED',
-        payload: {
-          agentType: 'researcher',
-          result: researchReport,
-          durationMs: 5,
-          callId: 'sim-sub-1',
-        },
-        timestamp: Date.now(),
-      };
+      const res = await execPromise;
 
       yield {
         type: 'TOOL_RESULT',
         payload: {
-          name: 'dispatch_subagent',
-          result: `[Clean-Room Sub-agent: researcher Report]\n${researchReport}`,
-          callId: 'sim-sub-1',
+          name,
+          result: res.output,
+          isError: res.isError,
+          callId,
+          metadata: res.metadata,
         },
         timestamp: Date.now(),
       };
 
-      // 2. Write plan.md
+      return res;
+    };
+
+    const emitThought = function* (
+      self: ReactAgent,
+      thoughtText: string
+    ): Generator<AgentEvent, void, unknown> {
+      if (self.enableStreaming) {
+        yield {
+          type: 'THOUGHT_DELTA',
+          payload: { delta: thoughtText },
+          timestamp: Date.now(),
+        };
+      }
+      yield {
+        type: 'THOUGHT',
+        payload: { thought: thoughtText },
+        timestamp: Date.now(),
+      };
+    };
+
+    // ------------------------------------------------------------------
+    // Case A: Plan Mode (計画書作成のみを行い停止)
+    // ------------------------------------------------------------------
+    if (this.mode === 'plan') {
+      yield* emitThought(
+        this,
+        `[Plan Mode] Entering planning phase for "${prompt}". Dispatching "researcher" sub-agent for physics and visual architecture recommendations.`
+      );
+
+      const subToolRes = yield* runToolViaRegistry(
+        this,
+        'dispatch_subagent',
+        {
+          agent_type: 'researcher',
+          task_prompt: `Investigate physics and HUD layout for "${prompt}".`,
+        },
+        'sim-sub-1'
+      );
+
+      const researchReport = subToolRes.output;
+
       const planContent = [
         `# Implementation Plan: ${prompt}`,
         '',
@@ -609,49 +1223,18 @@ ${activeSkillSection}
         '- [ ] Implement game loop and particle explosion engine.',
       ].join('\n');
 
-      yield {
-        type: 'THOUGHT',
-        payload: {
-          thought: 'Drafting structured technical plan in "plan.md" based on research findings.',
-        },
-        timestamp: Date.now(),
-      };
+      yield* emitThought(
+        this,
+        'Drafting structured technical plan in "plan.md" based on research findings.'
+      );
 
-      yield {
-        type: 'TOOL_CALL',
-        payload: {
-          name: 'write_file',
-          args: { path: 'plan.md', content: planContent },
-          callId: 'sim-plan-write',
-        },
-        timestamp: Date.now(),
-      };
+      yield* runToolViaRegistry(
+        this,
+        'write_file',
+        { path: 'plan.md', content: planContent },
+        'sim-plan-write'
+      );
 
-      vfs.writeFile('plan.md', planContent);
-
-      yield {
-        type: 'FILE_CHANGED',
-        payload: { path: 'plan.md', action: 'write', size: planContent.length },
-        timestamp: Date.now(),
-      };
-
-      yield {
-        type: 'PLAN_CREATED',
-        payload: { plan: planContent, path: 'plan.md' },
-        timestamp: Date.now(),
-      };
-
-      yield {
-        type: 'TOOL_RESULT',
-        payload: {
-          name: 'write_file',
-          result: `Successfully wrote plan.md.`,
-          callId: 'sim-plan-write',
-        },
-        timestamp: Date.now(),
-      };
-
-      // 3. Complete Task
       const planSummary = 'Plan Mode finalized. Technical design generated in plan.md.';
       yield {
         type: 'TOOL_CALL',
@@ -674,28 +1257,18 @@ ${activeSkillSection}
       };
 
       yield {
-        type: 'USAGE',
-        payload: {
-          promptTokens: 1250,
-          completionTokens: 450,
-          totalTokens: 1700,
-          turn: 2,
-        },
-        timestamp: Date.now(),
-      };
-
-      yield {
         type: 'COMPLETE',
         payload: {
           summary: planSummary,
-          files: vfs.getFiles(),
+          files: this.getFilesSnapshot(vfs),
           turns: 2,
           durationMs: Date.now() - startTime,
-          usage: {
-            promptTokens: 1250,
-            completionTokens: 450,
-            totalTokens: 1700,
-          },
+          usage: createDetailedTokenUsage({
+            billedPromptTokens: 1250,
+            billedCompletionTokens: 450,
+            contextWindowTokens: 780,
+            maxContextWindowTokens: this.maxContextTokens,
+          }),
         },
         timestamp: Date.now(),
       };
@@ -707,66 +1280,26 @@ ${activeSkillSection}
     // ------------------------------------------------------------------
     let turnsCount = 0;
 
-    // Auto Mode: Phase 1 Researcher & Plan
     if (this.mode === 'auto') {
       turnsCount++;
-      yield {
-        type: 'THOUGHT',
-        payload: {
-          thought: `[Auto Mode: Phase 1] Dispatching "researcher" sub-agent to investigate optimal mechanics and visual constraints.`,
+      yield* emitThought(
+        this,
+        `[Auto Mode: Phase 1] Dispatching "researcher" sub-agent to investigate optimal mechanics and visual constraints.`
+      );
+
+      const autoSubRes = yield* runToolViaRegistry(
+        this,
+        'dispatch_subagent',
+        {
+          agent_type: 'researcher',
+          task_prompt: `Research mechanics and visual HUD for "${prompt}".`,
         },
-        timestamp: Date.now(),
-      };
+        'sim-sub-res'
+      );
 
-      yield {
-        type: 'TOOL_CALL',
-        payload: {
-          name: 'dispatch_subagent',
-          args: {
-            agent_type: 'researcher',
-            task_prompt: `Research mechanics and visual HUD for "${prompt}".`,
-          },
-          callId: 'sim-sub-res',
-        },
-        timestamp: Date.now(),
-      };
-
-      yield {
-        type: 'SUBAGENT_DISPATCHED',
-        payload: {
-          agentType: 'researcher',
-          taskPrompt: `Research mechanics and visual HUD for "${prompt}".`,
-          callId: 'sim-sub-res',
-        },
-        timestamp: Date.now(),
-      };
-
-      const resReport = await this.subagentRunner.run('researcher', prompt);
-
-      yield {
-        type: 'SUBAGENT_COMPLETED',
-        payload: {
-          agentType: 'researcher',
-          result: resReport,
-          durationMs: 4,
-          callId: 'sim-sub-res',
-        },
-        timestamp: Date.now(),
-      };
-
-      yield {
-        type: 'TOOL_RESULT',
-        payload: {
-          name: 'dispatch_subagent',
-          result: `[Clean-Room Sub-agent: researcher Report]\n${resReport}`,
-          callId: 'sim-sub-res',
-        },
-        timestamp: Date.now(),
-      };
-
-      // Write plan.md
+      const resReport = autoSubRes.output;
       const autoPlan = `# Plan: ${prompt}\n\n${resReport}\n\n- Implementation file: index.html`;
-      vfs.writeFile('plan.md', autoPlan);
+      await vfs.writeFile('plan.md', autoPlan);
       yield {
         type: 'PLAN_CREATED',
         payload: { plan: autoPlan, path: 'plan.md' },
@@ -774,15 +1307,27 @@ ${activeSkillSection}
       };
     }
 
+    if (signal?.aborted) {
+      yield {
+        type: 'COMPLETE',
+        payload: {
+          summary: 'Execution aborted.',
+          files: this.getFilesSnapshot(vfs),
+          turns: turnsCount,
+          durationMs: Date.now() - startTime,
+          aborted: true,
+        },
+        timestamp: Date.now(),
+      };
+      return;
+    }
+
     // Phase 2: Act (Write index.html)
     turnsCount++;
-    yield {
-      type: 'THOUGHT',
-      payload: {
-        thought: `[ReAct: Implementation] Writing complete cyber-neon HTML5 Canvas arcade game to "index.html" with Orbitron typography, glassmorphism HUD, particle engine, and touch/keyboard controls.`,
-      },
-      timestamp: Date.now(),
-    };
+    yield* emitThought(
+      this,
+      `[ReAct: Implementation] Writing complete cyber-neon HTML5 Canvas arcade game to "index.html" with Orbitron typography, glassmorphism HUD, particle engine, and touch/keyboard controls.`
+    );
 
     const simulatedHtml = `<!DOCTYPE html>
 <html lang="ja">
@@ -983,164 +1528,63 @@ ${activeSkillSection}
 </body>
 </html>`;
 
-    yield {
-      type: 'TOOL_CALL',
-      payload: {
-        name: 'write_file',
-        args: { path: 'index.html', content: simulatedHtml },
-        callId: 'sim-call-write',
-      },
-      timestamp: Date.now(),
-    };
-
-    vfs.writeFile('index.html', simulatedHtml);
-
-    yield {
-      type: 'FILE_CHANGED',
-      payload: {
-        path: 'index.html',
-        action: 'write',
-        size: simulatedHtml.length,
-      },
-      timestamp: Date.now(),
-    };
-
-    yield {
-      type: 'TOOL_RESULT',
-      payload: {
-        name: 'write_file',
-        result: `Successfully wrote ${simulatedHtml.length} characters to "index.html".`,
-        callId: 'sim-call-write',
-      },
-      timestamp: Date.now(),
-    };
-
-    const simulatedPlaceholder = `<Content preserved in VFS: ${simulatedHtml.length} chars>`;
-    yield {
-      type: 'CONTEXT_PRUNED',
-      payload: {
-        prunedCallsCount: 1,
-        savedCharsCount: Math.max(0, simulatedHtml.length - simulatedPlaceholder.length),
-        thresholdChars: 200,
-      },
-      timestamp: Date.now(),
-    };
+    yield* runToolViaRegistry(
+      this,
+      'write_file',
+      { path: 'index.html', content: simulatedHtml },
+      'sim-call-write'
+    );
 
     // Phase 3: Code Review (Sub-agent)
     turnsCount++;
-    yield {
-      type: 'THOUGHT',
-      payload: {
-        thought: `[ReAct: Multi-Perspective Audit] Dispatching "code-reviewer" sub-agent to audit performance, security, and UI/UX polish.`,
-      },
-      timestamp: Date.now(),
-    };
+    yield* emitThought(
+      this,
+      `[ReAct: Multi-Perspective Audit] Dispatching "code-reviewer" sub-agent to audit performance, security, and UI/UX polish.`
+    );
 
-    yield {
-      type: 'TOOL_CALL',
-      payload: {
-        name: 'dispatch_subagent',
-        args: {
-          agent_type: 'code-reviewer',
-          task_prompt: `Audit "index.html" (${simulatedHtml.length} chars) for performance, security, and neon visual polish.`,
-        },
-        callId: 'sim-sub-review',
+    yield* runToolViaRegistry(
+      this,
+      'dispatch_subagent',
+      {
+        agent_type: 'code-reviewer',
+        task_prompt: `Audit "index.html" (${simulatedHtml.length} chars) for performance, security, and neon visual polish.`,
+        file_path: 'index.html',
       },
-      timestamp: Date.now(),
-    };
-
-    yield {
-      type: 'SUBAGENT_DISPATCHED',
-      payload: {
-        agentType: 'code-reviewer',
-        taskPrompt: `Audit "index.html" (${simulatedHtml.length} chars) for performance, security, and neon visual polish.`,
-        callId: 'sim-sub-review',
-      },
-      timestamp: Date.now(),
-    };
-
-    const reviewReport = await this.subagentRunner.run('code-reviewer', simulatedHtml);
-
-    yield {
-      type: 'SUBAGENT_COMPLETED',
-      payload: {
-        agentType: 'code-reviewer',
-        result: reviewReport,
-        durationMs: 6,
-        callId: 'sim-sub-review',
-      },
-      timestamp: Date.now(),
-    };
-
-    yield {
-      type: 'TOOL_RESULT',
-      payload: {
-        name: 'dispatch_subagent',
-        result: `[Clean-Room Sub-agent: code-reviewer Report]\n${reviewReport}`,
-        callId: 'sim-sub-review',
-      },
-      timestamp: Date.now(),
-    };
+      'sim-sub-review'
+    );
 
     // Phase 4: Complete
     turnsCount++;
-    yield {
-      type: 'THOUGHT',
-      payload: {
-        thought:
-          'Code review passed with APPROVED verdict. Verification confirmed. Finalizing task.',
-      },
-      timestamp: Date.now(),
-    };
+    yield* emitThought(
+      this,
+      'Code review passed with APPROVED verdict. Verification confirmed. Finalizing task.'
+    );
 
     const summary =
       'Implemented full standalone cyber-neon HTML5 Canvas arcade game with glassmorphic overlay HUD, Orbitron typography, particle explosion system, and responsive touch/keyboard controls. Validated by clean-room code reviewer.';
 
-    yield {
-      type: 'TOOL_CALL',
-      payload: {
-        name: 'complete_task',
-        args: { summary },
-        callId: 'sim-call-complete',
-      },
-      timestamp: Date.now(),
-    };
+    yield* runToolViaRegistry(
+      this,
+      'complete_task',
+      { summary },
+      'sim-call-complete'
+    );
 
-    yield {
-      type: 'TOOL_RESULT',
-      payload: {
-        name: 'complete_task',
-        result: 'Task completion confirmed.',
-        callId: 'sim-call-complete',
-      },
-      timestamp: Date.now(),
-    };
-
-    // Context Pruning 適用後のシミュレーション数値 (雪だるま式増大を抑制し、1ターンあたり約380〜450 tokens)
     const simPromptTokens = 450 + turnsCount * 380;
     const simCompletionTokens = 300 + turnsCount * 220;
-    yield {
-      type: 'USAGE',
-      payload: {
-        promptTokens: simPromptTokens,
-        completionTokens: simCompletionTokens,
-        totalTokens: simPromptTokens + simCompletionTokens,
-        turn: turnsCount,
-      },
-      timestamp: Date.now(),
-    };
     yield {
       type: 'COMPLETE',
       payload: {
         summary,
-        files: vfs.getFiles(),
+        files: this.getFilesSnapshot(vfs),
         turns: turnsCount,
         durationMs: Date.now() - startTime,
-        usage: {
-          promptTokens: simPromptTokens,
-          completionTokens: simCompletionTokens,
-          totalTokens: simPromptTokens + simCompletionTokens,
-        },
+        usage: createDetailedTokenUsage({
+          billedPromptTokens: simPromptTokens,
+          billedCompletionTokens: simCompletionTokens,
+          contextWindowTokens: 450 + 380,
+          maxContextWindowTokens: this.maxContextTokens,
+        }),
       },
       timestamp: Date.now(),
     };

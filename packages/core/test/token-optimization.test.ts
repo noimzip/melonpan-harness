@@ -20,7 +20,7 @@ describe('Token Optimization: Context Pruning & Clean-Room Subagents', () => {
       const largeCode = 'const canvas = document.createElement("canvas");\n'.repeat(20);
       expect(largeCode.length).toBeGreaterThan(500);
 
-      const history = [
+      const history: any[] = [
         {
           role: 'user',
           parts: [{ text: 'Create an arcade game' }],

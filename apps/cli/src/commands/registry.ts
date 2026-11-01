@@ -8,11 +8,14 @@ import { helpCommand } from './handlers/help.js';
 import { skillsCommand } from './handlers/skills.js';
 import { costCommand } from './handlers/cost.js';
 import { keyCommand } from './handlers/key.js';
+import { permissionsCommand } from './handlers/permissions.js';
+import { agentsCommand } from './handlers/agents.js';
+import { compactCommand } from './handlers/compact.js';
 
 export class CommandRegistry {
   private commands: Map<string, CommandDefinition> = new Map();
 
-  constructor() {
+  constructor(includeExtended = false) {
     this.register(modelCommand);
     this.register(effortCommand);
     this.register(planCommand);
@@ -22,6 +25,12 @@ export class CommandRegistry {
     this.register(skillsCommand);
     this.register(costCommand);
     this.register(keyCommand);
+
+    if (includeExtended) {
+      this.register(permissionsCommand);
+      this.register(agentsCommand);
+      this.register(compactCommand);
+    }
   }
 
   register(command: CommandDefinition): void {
@@ -90,24 +99,59 @@ export class CommandRegistry {
     const parts = trimmedLeading.slice(1).split(/\s+/);
     const hasSpace = trimmedLeading.includes(' ');
 
-    // Case 1: User is typing the slash command itself (e.g., "/", "/m", "/model")
+    // Case 1: User is typing the slash command itself (e.g., "/", "/m", "/model", "/b", "/boost")
     if (!hasSpace) {
       const prefix = trimmedLeading.toLowerCase();
       const all = this.getAllCommands();
-      return all
-        .filter((cmd) => `/${cmd.name.toLowerCase()}`.startsWith(prefix))
-        .map((cmd) => {
-          // If the command takes arguments (model, effort, plan, export, skills, key), add trailing space to hint sub-arg completion
-          const takesArgs = ['model', 'effort', 'plan', 'export', 'skills', 'key'].includes(cmd.name);
-          return {
+      const takesArgsCommands = new Set([
+        'model',
+        'boost',
+        'effort',
+        'plan',
+        'export',
+        'skills',
+        'key',
+        'permissions',
+        'agents',
+        'compact',
+      ]);
+
+      const results: CommandSuggestion[] = [];
+      const seen = new Set<string>();
+
+      for (const cmd of all) {
+        const cmdName = cmd.name.toLowerCase();
+        if (`/${cmdName}`.startsWith(prefix)) {
+          const takesArgs = takesArgsCommands.has(cmdName);
+          results.push({
             text: takesArgs ? `/${cmd.name} ` : `/${cmd.name}`,
             display: `/${cmd.name}`,
             description: cmd.description,
-          };
-        });
+          });
+          seen.add(cmdName);
+        }
+
+        // When user types beyond "/" (e.g., "/b", "/boost"), also check aliases
+        if (prefix !== '/' && cmd.aliases) {
+          for (const alias of cmd.aliases) {
+            const aliasLower = alias.toLowerCase();
+            if (`/${aliasLower}`.startsWith(prefix) && !seen.has(aliasLower)) {
+              const takesArgs = takesArgsCommands.has(aliasLower) || takesArgsCommands.has(cmdName);
+              results.push({
+                text: takesArgs ? `/${alias} ` : `/${alias}`,
+                display: `/${alias}`,
+                description: `(${cmd.name}) ${cmd.description}`,
+              });
+              seen.add(aliasLower);
+            }
+          }
+        }
+      }
+
+      return results;
     }
 
-    // Case 2: User typed command name followed by a space (e.g., "/model ", "/effort low", "/skills enable ")
+    // Case 2: User typed command name followed by a space (e.g., "/model ", "/effort low", "/permissions auto")
     const cmdName = parts[0]?.toLowerCase();
     const command = this.getCommand(cmdName);
     if (command && command.getSuggestions) {
@@ -118,4 +162,5 @@ export class CommandRegistry {
   }
 }
 
-export const commandRegistry = new CommandRegistry();
+export const commandRegistry = new CommandRegistry(false);
+export const extendedCommandRegistry = new CommandRegistry(true);

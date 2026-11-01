@@ -1,15 +1,26 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Box, Text, useInput, useStdin } from 'ink';
 import TextInput from 'ink-text-input';
+import { PermissionDecision, PermissionRequestedPayload } from '@melonpan/core';
 import { CommandContext } from '../commands/types.js';
-import { commandRegistry } from '../commands/registry.js';
+import { commandRegistry, extendedCommandRegistry } from '../commands/registry.js';
 import { CommandSuggest } from './command-suggest.js';
+import { PermissionPrompt } from './permission-prompt.js';
 
 export interface InputBarProps {
-  status: 'idle' | 'running' | 'confirming' | 'completed' | 'error';
+  status:
+    | 'idle'
+    | 'running'
+    | 'confirming'
+    | 'completed'
+    | 'error'
+    | 'awaiting_permission';
   value: string;
   isPickerActive?: boolean;
   commandContext?: CommandContext;
+  pendingPermission?: PermissionRequestedPayload;
+  onPermissionDecision?: (decision: PermissionDecision) => void;
+  onCancelTask?: () => void;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onConfirmPlan: (approved: boolean) => void;
@@ -21,6 +32,9 @@ export const InputBar: React.FC<InputBarProps> = ({
   value,
   isPickerActive = false,
   commandContext,
+  pendingPermission,
+  onPermissionDecision,
+  onCancelTask,
   onChange,
   onSubmit,
   onConfirmPlan,
@@ -29,24 +43,33 @@ export const InputBar: React.FC<InputBarProps> = ({
   const { isRawModeSupported } = useStdin();
   const [isDismissed, setIsDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [hasNavigatedSuggestions, setHasNavigatedSuggestions] = useState(false);
+
+  // Prompt History (#39)
+  const historyRef = useRef<string[]>([]);
+  const [historyPointer, setHistoryPointer] = useState<number>(-1);
 
   // Compute autocomplete suggestions when typing slash commands
   const suggestions = useMemo(() => {
     if (isDismissed || !commandContext || !value.startsWith('/')) {
       return [];
     }
-    return commandRegistry.getAutocompleteSuggestions(value, commandContext);
+    return extendedCommandRegistry.getAutocompleteSuggestions(value, commandContext);
   }, [isDismissed, commandContext, value]);
 
   // Keep selected index within bounds
-  const safeSelectedIndex = suggestions.length > 0
-    ? Math.min(selectedIndex, suggestions.length - 1)
-    : 0;
+  const safeSelectedIndex =
+    suggestions.length > 0 ? Math.min(selectedIndex, suggestions.length - 1) : 0;
 
-  // Intercept special keys (Esc, Tab, Up, Down) for Autocomplete and Confirmation
+  // Intercept special keys (Esc, Tab, Up, Down)
   useInput(
     (input, key) => {
-      // 1. Confirming state
+      // 0. Permission Prompt handling: delegated to PermissionPrompt component
+      if (status === 'awaiting_permission') {
+        return;
+      }
+
+      // 1. Confirming state (Plan mode)
       if (status === 'confirming') {
         if (input.toLowerCase() === 'y') {
           onConfirmPlan(true);
@@ -56,27 +79,38 @@ export const InputBar: React.FC<InputBarProps> = ({
         return;
       }
 
-      // 2. Completed / Error state
-      if (status === 'completed' || status === 'error') {
+      // 2. Running state: Esc cancellation (#39)
+      if (status === 'running') {
+        if (key.escape) {
+          onCancelTask?.();
+        }
+        return;
+      }
+
+      // 3. Error state: Enter or Space to reset
+      if (status === 'error') {
         if (key.return || input === ' ') {
           onReset();
         }
         return;
       }
 
-      // 3. Autocomplete navigation in Idle state
-      if (status === 'idle' && suggestions.length > 0) {
+      // 4. Autocomplete navigation in Idle / Completed state
+      if (suggestions.length > 0 && !isDismissed) {
         if (key.escape) {
           setIsDismissed(true);
+          setHasNavigatedSuggestions(false);
           return;
         }
 
         if (key.upArrow) {
+          setHasNavigatedSuggestions(true);
           setSelectedIndex((prev) => (prev > 0 ? prev - 1 : suggestions.length - 1));
           return;
         }
 
         if (key.downArrow) {
+          setHasNavigatedSuggestions(true);
           setSelectedIndex((prev) => (prev < suggestions.length - 1 ? prev + 1 : 0));
           return;
         }
@@ -85,7 +119,38 @@ export const InputBar: React.FC<InputBarProps> = ({
           const selected = suggestions[safeSelectedIndex];
           if (selected) {
             onChange(selected.text);
+            setHasNavigatedSuggestions(false);
             setSelectedIndex(0);
+          }
+          return;
+        }
+      }
+
+      // 5. Prompt History Navigation when not autocompleting (#39)
+      if ((status === 'idle' || status === 'completed') && suggestions.length === 0) {
+        if (key.upArrow && historyRef.current.length > 0) {
+          const nextIndex = historyPointer < 0
+            ? historyRef.current.length - 1
+            : Math.max(0, historyPointer - 1);
+          setHistoryPointer(nextIndex);
+          const historyItem = historyRef.current[nextIndex];
+          if (historyItem) {
+            onChange(historyItem);
+          }
+          return;
+        }
+
+        if (key.downArrow && historyPointer >= 0) {
+          const nextIndex = historyPointer + 1;
+          if (nextIndex >= historyRef.current.length) {
+            setHistoryPointer(-1);
+            onChange('');
+          } else {
+            setHistoryPointer(nextIndex);
+            const historyItem = historyRef.current[nextIndex];
+            if (historyItem) {
+              onChange(historyItem);
+            }
           }
           return;
         }
@@ -94,8 +159,7 @@ export const InputBar: React.FC<InputBarProps> = ({
     {
       isActive:
         Boolean(isRawModeSupported) &&
-        !isPickerActive &&
-        status !== 'running',
+        !isPickerActive,
     }
   );
 
@@ -113,17 +177,21 @@ export const InputBar: React.FC<InputBarProps> = ({
     const onData = (chunk: Buffer | string) => {
       const text = chunk.toString().trim();
       const lower = text.toLowerCase();
-      if (status === 'confirming') {
+      if (status === 'awaiting_permission') {
+        if (lower === 'y') onPermissionDecision?.('allow');
+        else if (lower === 'a') onPermissionDecision?.('always_allow');
+        else if (lower === 'n') onPermissionDecision?.('deny');
+      } else if (status === 'confirming') {
         if (lower === 'y' || lower.startsWith('y')) {
           onConfirmPlan(true);
         } else if (lower === 'n' || lower.startsWith('n')) {
           onConfirmPlan(false);
         }
-      } else if (status === 'idle') {
+      } else if (status === 'idle' || status === 'completed') {
         if (text.length > 0) {
           onSubmit(text);
         }
-      } else if (status === 'completed' || status === 'error') {
+      } else if (status === 'error') {
         onReset();
       }
     };
@@ -132,57 +200,74 @@ export const InputBar: React.FC<InputBarProps> = ({
     return () => {
       process.stdin.off('data', onData);
     };
-  }, [isRawModeSupported, isPickerActive, status, onConfirmPlan, onSubmit, onReset]);
+  }, [
+    isRawModeSupported,
+    isPickerActive,
+    status,
+    onPermissionDecision,
+    onConfirmPlan,
+    onSubmit,
+    onReset,
+  ]);
 
   // Handle TextInput changes, immediately detecting pasted newlines
   const handleTextChange = (newVal: string) => {
-    // Strip accidental escape characters
     const sanitized = newVal.replace(/\u001b/g, '');
 
     if (isDismissed && sanitized !== value) {
       setIsDismissed(false);
     }
     setSelectedIndex(0);
+    setHasNavigatedSuggestions(false);
 
     if (sanitized.includes('\n') || sanitized.includes('\r')) {
       const lines = sanitized.split(/[\r\n]+/);
       const submitted = lines[0]?.trim();
       if (submitted) {
-        onChange('');
-        onSubmit(submitted);
+        handleFinalSubmit(submitted);
         return;
       }
     }
     onChange(sanitized);
   };
 
-  // Handle Enter submission
+  const handleFinalSubmit = (submittedText: string) => {
+    const trimmed = submittedText.trim();
+    if (!trimmed) return;
+
+    // Add to prompt history (#39)
+    if (!historyRef.current.includes(trimmed)) {
+      historyRef.current.push(trimmed);
+    }
+    setHistoryPointer(-1);
+    setHasNavigatedSuggestions(false);
+    onChange('');
+    onSubmit(trimmed);
+  };
+
+  // Handle Enter submission (#7 & #35)
   const handleInputSubmit = (submittedText: string) => {
     const trimmed = submittedText.trim();
     if (!trimmed) return;
 
-    // If autocomplete suggestions are active, apply or execute the highlighted suggestion
-    if (suggestions.length > 0 && !isDismissed) {
+    // If user explicitly navigated the suggestion list with arrows, select it (#7)
+    if (hasNavigatedSuggestions && suggestions.length > 0 && !isDismissed) {
       const selected = suggestions[safeSelectedIndex];
       if (selected) {
-        // If suggestion ends with a space (e.g. "/model ", "/effort ", "/skills enable "),
-        // transition to argument completion without submitting
         if (selected.text.endsWith(' ') && submittedText !== selected.text) {
           onChange(selected.text);
+          setHasNavigatedSuggestions(false);
           setSelectedIndex(0);
           return;
         }
 
-        // Final leaf command (e.g. "/clear", "/cost", "/model gemini-4-argon"): execute!
-        onChange('');
-        onSubmit(selected.text);
+        handleFinalSubmit(selected.text);
         return;
       }
     }
 
-    // Normal submit
-    onChange('');
-    onSubmit(submittedText);
+    // Otherwise, submit the raw typed command or prompt!
+    handleFinalSubmit(submittedText);
   };
 
   return (
@@ -190,7 +275,9 @@ export const InputBar: React.FC<InputBarProps> = ({
       flexDirection="column"
       borderStyle="round"
       borderColor={
-        status === 'confirming'
+        status === 'awaiting_permission'
+          ? 'red'
+          : status === 'confirming'
           ? 'yellow'
           : status === 'completed'
           ? 'green'
@@ -200,7 +287,16 @@ export const InputBar: React.FC<InputBarProps> = ({
       }
       paddingX={1}
     >
-      {status === 'idle' && (
+      {/* 1. Interactive Permission Prompt (#33) */}
+      {status === 'awaiting_permission' && pendingPermission && (
+        <PermissionPrompt
+          request={pendingPermission}
+          onDecision={(decision) => onPermissionDecision?.(decision)}
+        />
+      )}
+
+      {/* 2. Idle or Continuous Multi-Turn Completed state (#35) */}
+      {(status === 'idle' || status === 'completed') && (
         <Box flexDirection="column">
           {/* Autocomplete Suggestion Popup directly above prompt */}
           {suggestions.length > 0 && !isDismissed && (
@@ -213,7 +309,7 @@ export const InputBar: React.FC<InputBarProps> = ({
           )}
 
           <Box>
-            <Text color="cyan" bold>
+            <Text color={status === 'completed' ? 'green' : 'cyan'} bold>
               ❯{' '}
             </Text>
             {isRawModeSupported ? (
@@ -222,7 +318,11 @@ export const InputBar: React.FC<InputBarProps> = ({
                 value={value}
                 onChange={handleTextChange}
                 onSubmit={handleInputSubmit}
-                placeholder="Enter prompt or / (e.g. /model, /effort, /skills, /help)..."
+                placeholder={
+                  status === 'completed'
+                    ? 'Enter next instruction or / (e.g. /compact, /cost, /help)...'
+                    : 'Enter prompt or / (e.g. /model, /permissions, /help)...'
+                }
               />
             ) : (
               <Text color="gray">
@@ -232,12 +332,13 @@ export const InputBar: React.FC<InputBarProps> = ({
           </Box>
           <Box marginTop={1}>
             <Text color="gray">
-              [Enter: Submit] [/: Commands & Autocomplete] [/help: Help] [Ctrl+C: Quit]
+              [Enter: Submit] [Tab: Complete] [↑/↓: History/Nav] [/help: Commands] [Ctrl+C: Quit]
             </Text>
           </Box>
         </Box>
       )}
 
+      {/* 3. Confirming state (Plan mode approval) */}
       {status === 'confirming' && (
         <Box flexDirection="column">
           <Box>
@@ -254,6 +355,7 @@ export const InputBar: React.FC<InputBarProps> = ({
         </Box>
       )}
 
+      {/* 4. Running state with Esc cancellation (#39) */}
       {status === 'running' && (
         <Box flexDirection="column">
           <Box>
@@ -262,29 +364,19 @@ export const InputBar: React.FC<InputBarProps> = ({
             </Text>
           </Box>
           <Box marginTop={1}>
-            <Text color="gray">[Running...] [Ctrl+C: Quit]</Text>
-          </Box>
-        </Box>
-      )}
-
-      {status === 'completed' && (
-        <Box flexDirection="column">
-          <Box>
-            <Text color="green" bold>
-              ✔ Task completed successfully! Press Enter to start a new prompt.
+            <Text color="gray">
+              [Running...] <Text bold color="yellow">[Esc: Cancel Task]</Text> [Ctrl+C: Quit]
             </Text>
           </Box>
-          <Box marginTop={1}>
-            <Text color="gray">[Enter: New Prompt] [Ctrl+C: Quit]</Text>
-          </Box>
         </Box>
       )}
 
+      {/* 5. Error state */}
       {status === 'error' && (
         <Box flexDirection="column">
           <Box>
             <Text color="red" bold>
-              ✖ An error occurred during execution. Press Enter to retry.
+              ✖ An error occurred during execution. Press Enter to retry or reset.
             </Text>
           </Box>
           <Box marginTop={1}>
