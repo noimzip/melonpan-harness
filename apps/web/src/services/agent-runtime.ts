@@ -404,7 +404,7 @@ export class AgentRuntime {
             callbacks.onMetricsUpdate((prev) => ({
               ...prev,
               billedInputTokens:
-                baseBilledInput + (event.payload.promptTokens || 0),
+                baseBilledInput + (event.payload.billedPromptTokens ?? event.payload.promptTokens ?? 0),
               billedOutputTokens:
                 baseBilledOutput + (event.payload.completionTokens || 0),
               cachedTokens:
