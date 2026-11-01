@@ -1,9 +1,31 @@
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: { cwd?: string } = {}
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    if (typeof execFile !== 'function') {
+      // ブラウザ環境などの shim フォールバック
+      return resolve({ stdout: '', stderr: '' });
+    }
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        (error as any).stdout = stdout;
+        (error as any).stderr = stderr;
+        reject(error);
+      } else {
+        resolve({
+          stdout: typeof stdout === 'string' ? stdout : String(stdout || ''),
+          stderr: typeof stderr === 'string' ? stderr : String(stderr || ''),
+        });
+      }
+    });
+  });
+}
 
 export interface GitCommitInfo {
   hash: string;
