@@ -13,6 +13,12 @@ import {
   ILLMProvider,
   GeminiProvider,
   OpenAICompatibleProvider,
+  OpenRouterProvider,
+  OrcaRouterProvider,
+  GroqProvider,
+  fetchDiscoveredModels,
+  DiscoveredModel,
+  ProviderApiKeys,
 } from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
@@ -21,13 +27,47 @@ import { InputBar } from './components/input-bar.js';
 import { ModalPicker, PickerItem } from './components/modal-picker.js';
 import { CommandContext, SessionUsage } from './commands/types.js';
 import { commandRegistry, extendedCommandRegistry } from './commands/registry.js';
+import { setDynamicDiscoveredModels } from './commands/handlers/model.js';
+
 
 function createProviderInstance(
   providerId: string,
   modelName: string,
   apiKey?: string
 ): ILLMProvider | undefined {
-  if (providerId === 'openai' || modelName.startsWith('gpt-') || modelName.startsWith('o3-')) {
+  if (providerId === 'openrouter' || modelName.startsWith('openrouter/')) {
+    const key = (typeof process !== 'undefined' ? process.env?.OPENROUTER_API_KEY : '') || apiKey || '';
+    return new OpenRouterProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.OPENROUTER_BASE_URL : '') || 'https://openrouter.ai/api/v1',
+    });
+  }
+  if (providerId === 'orcarouter' || modelName.startsWith('orcarouter/')) {
+    const key = (typeof process !== 'undefined' ? process.env?.ORCAROUTER_API_KEY : '') || apiKey || '';
+    return new OrcaRouterProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.ORCAROUTER_BASE_URL : '') || 'https://api.orcarouter.ai/v1',
+    });
+  }
+  if (
+    providerId === 'groq' ||
+    modelName.startsWith('groq/') ||
+    modelName.startsWith('llama-') ||
+    modelName.startsWith('mixtral-')
+  ) {
+    const key = (typeof process !== 'undefined' ? process.env?.GROQ_API_KEY : '') || apiKey || '';
+    return new GroqProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.GROQ_BASE_URL : '') || 'https://api.groq.com/openai/v1',
+    });
+  }
+  if (
+    providerId === 'openai' ||
+    modelName.startsWith('gpt-') ||
+    modelName.startsWith('o1-') ||
+    modelName.startsWith('o3-') ||
+    modelName.startsWith('chatgpt-')
+  ) {
     const key = (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '') || apiKey || '';
     return new OpenAICompatibleProvider({
       id: 'openai',
@@ -66,74 +106,44 @@ export interface AppProps {
   fsMode?: 'vfs' | 'disk';
 }
 
-const MODEL_ITEMS: PickerItem[] = [
-  // Google Gemini
-  {
-    id: 'gemini-3.8-flash',
-    label: 'gemini-3.8-flash',
-    description: 'Flagship high-speed multimodality & reasoning (default)',
-    group: 'Google Gemini',
-    providerId: 'gemini',
-  },
-  {
-    id: 'gemini-4-argon',
-    label: 'gemini-4-argon',
-    description: 'Next-generation frontier reasoning model',
-    group: 'Google Gemini',
-    providerId: 'gemini',
-  },
-  {
-    id: 'gemini-3.5-flash-lite',
-    label: 'gemini-3.5-flash-lite',
-    description: 'Ultra-lightweight & fast response model',
-    group: 'Google Gemini',
-    providerId: 'gemini',
-  },
-  {
-    id: 'gemma-4-31b-it',
-    label: 'gemma-4-31b-it',
-    description: 'Open weights 31B instruction-tuned model',
-    group: 'Google Gemini',
-    providerId: 'gemini',
-  },
-  // OpenAI & Local LLM
-  {
-    id: 'gpt-4o',
-    label: 'gpt-4o',
-    description: 'OpenAI flagship multimodal intelligence model',
-    group: 'OpenAI & Local LLM',
-    providerId: 'openai',
-  },
-  {
-    id: 'gpt-4o-mini',
-    label: 'gpt-4o-mini',
-    description: 'Fast, cost-efficient small model (OpenAI)',
-    group: 'OpenAI & Local LLM',
-    providerId: 'openai',
-  },
-  {
-    id: 'o3-mini',
-    label: 'o3-mini',
-    description: 'High-reasoning math and coding model (OpenAI)',
-    group: 'OpenAI & Local LLM',
-    providerId: 'openai',
-  },
-  // Anthropic
-  {
-    id: 'claude-3-7-sonnet',
-    label: 'claude-3-7-sonnet',
-    description: 'Hybrid reasoning and coding model (Anthropic)',
-    group: 'Anthropic',
-    providerId: 'anthropic',
-  },
-  {
-    id: 'claude-3-5-haiku',
-    label: 'claude-3-5-haiku',
-    description: 'Lightning-fast concise model (Anthropic)',
-    group: 'Anthropic',
-    providerId: 'anthropic',
-  },
-];
+const PROVIDER_GROUP_NAMES: Record<string, string> = {
+  gemini: 'Google Gemini',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
+  orcarouter: 'OrcaRouter',
+  groq: 'Groq',
+};
+
+export function formatDiscoveredToPickerItems(models: DiscoveredModel[]): PickerItem[] {
+  const byProvider: Record<string, DiscoveredModel[]> = {};
+  for (const m of models) {
+    if (!byProvider[m.provider]) {
+      byProvider[m.provider] = [];
+    }
+    byProvider[m.provider]!.push(m);
+  }
+
+  const items: PickerItem[] = [];
+  for (const [provider, list] of Object.entries(byProvider)) {
+    const free = list.filter((m) => Boolean(m.isFree));
+    const nonFree = list.filter((m) => !m.isFree);
+    const sorted = [...free, ...nonFree];
+
+    for (const m of sorted) {
+      items.push({
+        id: m.id,
+        label: m.id,
+        description: m.description || m.name,
+        group: PROVIDER_GROUP_NAMES[m.provider] || m.provider.toUpperCase(),
+        providerId: m.provider,
+        isFree: m.isFree,
+      });
+    }
+  }
+  return items;
+}
+
 
 const EFFORT_ITEMS: PickerItem[] = [
   {
@@ -185,6 +195,7 @@ export const App: React.FC<AppProps> = ({
   const [activePicker, setActivePicker] = useState<'none' | 'model' | 'effort'>(
     'none'
   );
+  const [modelItems, setModelItems] = useState<PickerItem[]>([]);
 
   const initialKey =
     initialApiKey ||
@@ -193,6 +204,61 @@ export const App: React.FC<AppProps> = ({
   const [isSimulate, setIsSimulate] = useState<boolean>(
     simulate !== undefined ? simulate : !Boolean(initialKey)
   );
+
+  // 動的モデルディスカバリー: APIキー設定済みプロバイダーのみからモデルを取得
+  // 要件:
+  // 1. 各種APIから取得できたモデルをそのまま表示
+  // 2. APIキーが設定されるまではモデルリストに表示する必要はない
+  // 3. 無料のモデルには右端に free と記述し、各種モデルリストの最上位に表示して残りは既定の順番で表示
+  useEffect(() => {
+    let active = true;
+    const loadDynamicModels = async () => {
+      const env = typeof process !== 'undefined' ? process.env : {};
+      const keys: ProviderApiKeys = {};
+      const geminiKey = apiKey || env?.GEMINI_API_KEY;
+      if (geminiKey) keys.gemini = geminiKey;
+      if (env?.OPENAI_API_KEY) keys.openai = env?.OPENAI_API_KEY;
+      if (env?.ANTHROPIC_API_KEY) keys.anthropic = env?.ANTHROPIC_API_KEY;
+      if (env?.OPENROUTER_API_KEY) keys.openrouter = env?.OPENROUTER_API_KEY;
+      if (env?.ORCAROUTER_API_KEY) keys.orcarouter = env?.ORCAROUTER_API_KEY;
+      if (env?.GROQ_API_KEY) keys.groq = env?.GROQ_API_KEY;
+
+      if (Object.keys(keys).length === 0) {
+        if (active) {
+          setModelItems([]);
+          setDynamicDiscoveredModels([]);
+        }
+        return;
+      }
+
+      try {
+        const discovered = await fetchDiscoveredModels(keys);
+        if (active) {
+          const items = formatDiscoveredToPickerItems(discovered);
+          setModelItems(items);
+          setDynamicDiscoveredModels(
+            items.map((it) => ({
+              id: it.id,
+              provider: it.providerId || 'custom',
+              label: it.label,
+              description: it.description || '',
+              isFree: it.isFree,
+            }))
+          );
+        }
+      } catch {
+        if (active) {
+          setModelItems([]);
+        }
+      }
+    };
+
+    loadDynamicModels();
+    return () => {
+      active = false;
+    };
+  }, [apiKey, activePicker]);
+
 
   const [inputPrompt, setInputPrompt] = useState<string>('');
   const [activePrompt, setActivePrompt] = useState<string>('');
@@ -692,7 +758,8 @@ export const App: React.FC<AppProps> = ({
       {activePicker === 'model' && (
         <ModalPicker
           title="Select Active Model & Provider (/model)"
-          items={MODEL_ITEMS}
+          items={modelItems}
+          enableSearch={true}
           selectedId={model}
           onSelect={(selectedModel, selectedItem) => {
             setModel(selectedModel);
@@ -728,6 +795,7 @@ export const App: React.FC<AppProps> = ({
         <ModalPicker
           title="Select Thinking Level (/effort)"
           items={EFFORT_ITEMS}
+          enableSearch={false}
           selectedId={thinkingLevel}
           onSelect={(selectedEffort) => {
             setThinkingLevel(selectedEffort);
