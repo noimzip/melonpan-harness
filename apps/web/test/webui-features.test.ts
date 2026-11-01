@@ -644,5 +644,82 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
         expect(traces[0].taskPrompt).toContain('Web Audio API');
       }
     });
+
+    it('verifies USAGE events update running totals accurately from session base metrics without multi-accumulation', async () => {
+      const runtime = new AgentRuntime();
+      const session = createInitialSession('トークン計算テスト');
+      session.metrics = {
+        ...session.metrics,
+        billedInputTokens: 1000,
+        billedOutputTokens: 200,
+        cachedTokens: 100,
+        totalTokens: 1200,
+      };
+
+      // Provider with 2 steps where Core reports cumulative running totals for the turn
+      const testProvider = new SimulatedProvider([
+        (_req) => [
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 'call_1',
+              name: 'write_file',
+              args: { path: 'index.html', content: '<h1>test</h1>' },
+            },
+          },
+          {
+            type: 'usage',
+            usage: { promptTokens: 300, completionTokens: 100, totalTokens: 400, cachedPromptTokens: 50 },
+          },
+        ],
+        (_req) => [
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 'call_2',
+              name: 'complete_task',
+              args: { summary: '完了' },
+            },
+          },
+          {
+            type: 'usage',
+            usage: { promptTokens: 200, completionTokens: 100, totalTokens: 300, cachedPromptTokens: 30 },
+          },
+          { type: 'done' },
+        ],
+      ]);
+
+      await runtime.executeTurn(
+        'ゲームを作って',
+        session,
+        {
+          provider: 'gemini',
+          model: 'gemini-3.8-flash',
+          apiKey: 'test-key',
+          baseUrl: '',
+          thinkingEffort: 'medium',
+          bridgeUrl: '',
+        },
+        {
+          onMessageUpdate: () => {},
+          onToolCallUpdate: () => {},
+          onFileChange: () => {},
+          onPlanUpdate: () => {},
+          onSubagentUpdate: () => {},
+          onPermissionRequest: (req) => req.resolve('allow_once'),
+          onMetricsUpdate: (updater) => {
+            session.metrics = updater(session.metrics);
+          },
+        },
+        testProvider
+      );
+
+      // Verify that running totals from Core (500, 200, 80, 700) are added to base (1000, 200, 100, 1200)
+      // rather than being compounded across multiple turn events (which would result in 1800, 500, 230, 2300)
+      expect(session.metrics.billedInputTokens).toBe(1500);
+      expect(session.metrics.billedOutputTokens).toBe(400);
+      expect(session.metrics.cachedTokens).toBe(180);
+      expect(session.metrics.totalTokens).toBe(1900);
+    });
   });
 });
