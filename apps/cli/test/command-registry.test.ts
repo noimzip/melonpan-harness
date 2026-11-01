@@ -81,20 +81,21 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
   });
 
   describe('1. Registered Commands Specification', () => {
-    it('should register all 9 required slash commands', () => {
+    it('should register all 10 required slash commands', () => {
       const all = commandRegistry.getAllCommands();
       const names = all.map((c) => c.name);
 
       expect(names).toContain('model');
       expect(names).toContain('effort');
       expect(names).toContain('plan');
+      expect(names).toContain('goal');
       expect(names).toContain('clear');
       expect(names).toContain('export');
       expect(names).toContain('help');
       expect(names).toContain('skills');
       expect(names).toContain('cost');
       expect(names).toContain('key');
-      expect(names.length).toBe(9);
+      expect(names.length).toBe(10);
     });
   });
 
@@ -104,13 +105,14 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
       expect(suggestions).toEqual([]);
     });
 
-    it('returns all 9 commands when input is exactly "/"', () => {
+    it('returns all 10 commands when input is exactly "/"', () => {
       const suggestions = commandRegistry.getAutocompleteSuggestions('/', ctx);
-      expect(suggestions.length).toBe(9);
+      expect(suggestions.length).toBe(10);
       const displays = suggestions.map((s) => s.display);
       expect(displays).toContain('/model');
       expect(displays).toContain('/effort');
       expect(displays).toContain('/plan');
+      expect(displays).toContain('/goal');
       expect(displays).toContain('/clear');
       expect(displays).toContain('/export');
       expect(displays).toContain('/help');
@@ -333,6 +335,22 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
       expect(ctx.apiKey).toBe('AIzaSyNewSavedKey1234567890');
       expect(ctx.isSimulate).toBe(false);
       expect(loggedActivities.some((a) => a.includes('API key saved to .env'))).toBe(true);
+    });
+
+    it('/goal switches to goal mode or executes objective in goal mode', async () => {
+      // 1. Without args: switch mode
+      await commandRegistry.executeCommand('/goal', ctx);
+      expect(ctx.mode).toBe('goal');
+      expect(loggedActivities.some((a) => a.includes('Switched to [Goal Mode]'))).toBe(true);
+
+      // 2. With args: execute objective in goal mode
+      await commandRegistry.executeCommand('/goal Build a neon cyber block breaker game', ctx);
+      expect(ctx.mode).toBe('goal');
+      expect(executedPrompt).toEqual({
+        prompt: 'Build a neon cyber block breaker game',
+        mode: 'goal',
+      });
+      expect(loggedActivities.some((a) => a.includes('Initiating autonomous goal pursuit'))).toBe(true);
     });
 
     it('returns false when input does not start with "/"', async () => {

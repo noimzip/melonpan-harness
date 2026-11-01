@@ -188,7 +188,7 @@ export const App: React.FC<AppProps> = ({
     | 'error'
     | 'awaiting_permission'
   >('idle');
-  const [mode, setMode] = useState<'auto' | 'plan' | 'act'>(initialMode);
+  const [mode, setMode] = useState<'auto' | 'plan' | 'act' | 'goal'>(initialMode);
   const [model, setModel] = useState<string>(defaultModel);
   const [provider, setProvider] = useState<string>(defaultProvider);
   const [thinkingLevel, setThinkingLevel] = useState<string>(initialEffort);
@@ -303,7 +303,7 @@ export const App: React.FC<AppProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Initialize or obtain Core instance
-  const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act'): MelonpanCore => {
+  const getOrCreateCore = (currentRunMode: 'auto' | 'plan' | 'act' | 'goal'): MelonpanCore => {
     const currentProvider = isSimulate
       ? undefined
       : createProviderInstance(provider, model, apiKey);
@@ -339,7 +339,7 @@ export const App: React.FC<AppProps> = ({
   // Run the core agent loop for a given prompt and mode (#5, #9, #35, #37, #39)
   const executeAgent = async (
     promptToRun: string,
-    currentRunMode: 'auto' | 'plan' | 'act'
+    currentRunMode: 'auto' | 'plan' | 'act' | 'goal'
   ) => {
     if (isRunningRef.current) return;
     isRunningRef.current = true;

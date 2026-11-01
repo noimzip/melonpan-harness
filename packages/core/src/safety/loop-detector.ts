@@ -19,6 +19,8 @@ export function createRepetitiveCallGuardMiddleware(
   const maxConsecutive = options.maxConsecutiveCalls ?? 3;
   let lastKey = '';
   let consecutiveCount = 0;
+  const recentWindow: string[] = [];
+  const maxWindowSize = 10;
 
   return async (ctx, next): Promise<ToolExecutionResult> => {
     const toolName = ctx.tool.name;
@@ -30,6 +32,11 @@ export function createRepetitiveCallGuardMiddleware(
           ? `read_file:${ctx.args.path ?? ''}`
           : `grep_search:${ctx.args.query ?? ''}:${ctx.args.path ?? ''}`;
 
+      recentWindow.push(currentKey);
+      if (recentWindow.length > maxWindowSize) {
+        recentWindow.shift();
+      }
+
       if (currentKey === lastKey) {
         consecutiveCount++;
       } else {
@@ -37,19 +44,23 @@ export function createRepetitiveCallGuardMiddleware(
         consecutiveCount = 1;
       }
 
-      if (consecutiveCount > maxConsecutive) {
+      // ウィンドウ内の同一キー出現回数（ピンポン往復検出）
+      const windowCount = recentWindow.filter((k) => k === currentKey).length;
+
+      if (consecutiveCount > maxConsecutive || windowCount > maxConsecutive + 1) {
         const targetDesc =
           toolName === 'read_file'
             ? `read_file("${ctx.args.path ?? ''}")`
             : `grep_search("${ctx.args.query ?? ''}")`;
 
+        const totalAttempts = Math.max(consecutiveCount, windowCount);
         return {
-          output: `[LOOP_GUARD_WARNING] You have called ${targetDesc} ${consecutiveCount} times in succession. The file/search contents are already fully available in your recent context history. Do NOT re-read or repeat this query. Proceed immediately to edit_file(path, search, replace) or complete_task(summary).`,
+          output: `[LOOP_GUARD_WARNING] You have called ${targetDesc} ${totalAttempts} times in succession. The file/search contents are already fully available in your recent context history. Do NOT re-read or repeat this query. Proceed immediately to edit_file(path, search, replace) or complete_task(summary).`,
           isError: false,
           metadata: {
             loopGuardTriggered: true,
             toolName,
-            consecutiveCount,
+            consecutiveCount: totalAttempts,
           },
         };
       }

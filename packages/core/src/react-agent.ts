@@ -14,6 +14,7 @@ import {
 } from './session/context-strategy.js';
 import {
   AgentEvent,
+  AgentMode,
   ICommandExecutor,
   IContextStrategy,
   IFileSystem,
@@ -42,7 +43,7 @@ export interface ReactAgentOptions {
   thinkingLevel?: string;
   maxTurns?: number;
   simulate?: boolean;
-  mode?: 'plan' | 'act' | 'auto';
+  mode?: 'plan' | 'act' | 'auto' | 'goal' | AgentMode;
   agentsDir?: string;
   /** カスタムツール一覧または追加ツールプラグイン (#50) */
   tools?: ITool[];
@@ -94,7 +95,7 @@ export class ReactAgent {
   private thinkingLevel: string;
   private maxTurns: number;
   private simulate: boolean;
-  private mode: 'plan' | 'act' | 'auto';
+  private mode: AgentMode;
   private toolRegistry: ToolRegistry;
   private promptComposer: IPromptComposer;
   private subagentRunner: ISubagentSpawner;
@@ -175,7 +176,7 @@ export class ReactAgent {
     return this.promptComposer;
   }
 
-  setMode(mode: 'plan' | 'act' | 'auto'): void {
+  setMode(mode: 'plan' | 'act' | 'auto' | 'goal' | AgentMode): void {
     this.mode = mode;
   }
 
@@ -204,6 +205,23 @@ export class ReactAgent {
       return vfs.getSnapshot();
     }
     return {};
+  }
+
+  /**
+   * モードに応じた有効な FunctionCalling 定義一覧を取得
+   * 通常モードではサブエージェント(dispatch_subagent)を除外し、/goal モード時のみ解禁
+   */
+  private getAvailableFunctionDeclarations(): any[] {
+    const decls = this.toolRegistry.toFunctionDeclarations();
+    // サブエージェントは /goal モード（または plan モード / レガシー auto モード）時のみ解禁
+    // 標準実装モード (act) では除外する
+    if (this.mode === 'act') {
+      return decls.filter((d) => d.name !== 'dispatch_subagent');
+    }
+    if (this.mode !== 'goal' && this.mode !== 'plan' && this.mode !== 'auto') {
+      return decls.filter((d) => d.name !== 'dispatch_subagent');
+    }
+    return decls;
   }
 
   /**
@@ -320,7 +338,7 @@ export class ReactAgent {
     try {
       const ai = new GoogleGenAI({ apiKey: this.apiKey });
 
-      const stableTools = this.cacheManager.stabilizeTools(this.toolRegistry.toFunctionDeclarations());
+      const stableTools = this.cacheManager.stabilizeTools(this.getAvailableFunctionDeclarations());
       let cachedContentName = await this.cacheManager.getOrCreateGeminiCache({
         ai,
         model: this.model,
@@ -435,13 +453,15 @@ export class ReactAgent {
 
         // Context Pruning & Strategy 適用 (#11, #26)
         const chatHistory = (chat as any).history;
-        pruneChatHistory(chatHistory, {
-          writeThresholdChars: 200,
-          editThresholdChars: 300,
-          outputThresholdChars: 400,
-          preserveRecentMessages: 2,
-          prunePastThoughts: true,
-        });
+        if (this.contextStrategies.length === 0) {
+          pruneChatHistory(chatHistory, {
+            writeThresholdChars: 200,
+            editThresholdChars: 300,
+            outputThresholdChars: 400,
+            preserveRecentMessages: 2,
+            prunePastThoughts: true,
+          });
+        }
 
         for (const strategy of this.contextStrategies) {
           const compRes = await strategy.apply(chatHistory, {
@@ -604,6 +624,7 @@ export class ReactAgent {
             const execPromise = this.toolRegistry
               .execute(callName, callArgs, {
                 fs: vfs,
+                mode: this.mode,
                 commandExecutor: this.commandExecutor,
                 webProvider: this.webProvider,
                 subagentSpawner: this.subagentRunner,
@@ -796,13 +817,15 @@ export class ReactAgent {
         turns++;
 
         // Context Pruning & Compaction Strategies (#11, #26)
-        pruneChatHistory(messages, {
-          writeThresholdChars: 200,
-          editThresholdChars: 300,
-          outputThresholdChars: 400,
-          preserveRecentMessages: 2,
-          prunePastThoughts: true,
-        });
+        if (this.contextStrategies.length === 0) {
+          pruneChatHistory(messages, {
+            writeThresholdChars: 200,
+            editThresholdChars: 300,
+            outputThresholdChars: 400,
+            preserveRecentMessages: 2,
+            prunePastThoughts: true,
+          });
+        }
 
         for (const strategy of this.contextStrategies) {
           const compRes = await strategy.apply(messages, {
@@ -839,7 +862,7 @@ export class ReactAgent {
             model: this.model,
             systemInstruction: activeSystemInstruction,
             messages,
-            tools: this.toolRegistry.toFunctionDeclarations(),
+            tools: this.getAvailableFunctionDeclarations(),
             thinkingLevel: this.thinkingLevel,
           },
           signal
@@ -978,6 +1001,7 @@ export class ReactAgent {
             const execPromise = this.toolRegistry
               .execute(call.name, call.args || {}, {
                 fs: vfs,
+                mode: this.mode,
                 commandExecutor: this.commandExecutor,
                 webProvider: this.webProvider,
                 subagentSpawner: this.subagentRunner,
@@ -1236,6 +1260,7 @@ export class ReactAgent {
       const execPromise = self.toolRegistry
         .execute(name, args, {
           fs: vfs,
+          mode: self.mode,
           commandExecutor: self.commandExecutor,
           webProvider: self.webProvider,
           subagentSpawner: self.subagentRunner,

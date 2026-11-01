@@ -759,6 +759,15 @@ export class DispatchSubagentTool implements ITool<DispatchSubagentArgs> {
       ? args.files.map((f) => String(f))
       : undefined;
 
+    // サブエージェントは /goal モード時（およびテスト互換モード）に解禁。通常標準モード (act) では自力完結を促す
+    if (ctx.mode === 'act') {
+      return {
+        output:
+          'Notice: Subagents are disabled in standard mode. Please carry out this task directly using your workspace tools (write_file, edit_file, run_command). To enable specialized subagents, the user can invoke the /goal command.',
+        isError: false,
+      };
+    }
+
     if (!ctx.subagentSpawner) {
       return {
         output: 'Error: Subagent spawner is not available in this execution context.',
