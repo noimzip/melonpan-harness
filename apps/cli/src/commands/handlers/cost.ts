@@ -41,7 +41,8 @@ export const costCommand: CommandDefinition = {
 
     // キャッシュヒット分はプロバイダー規約に応じて約75%〜90%割引 (Geminiは1/4料金)
     const cachedInputRate = pricing.inputPerMillion * 0.25;
-    const freshPromptTokens = Math.max(0, promptTokens - cachedPromptTokens);
+    const freshPromptTokens =
+      ctx.sessionUsage.billedPromptTokens ?? Math.max(0, promptTokens - cachedPromptTokens);
     const inputCostUsd =
       (freshPromptTokens / 1_000_000) * pricing.inputPerMillion +
       (cachedPromptTokens / 1_000_000) * cachedInputRate;

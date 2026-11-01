@@ -15,10 +15,12 @@ export interface PruneChatHistoryOptions {
   writeThresholdChars?: number;
   /** edit_file の search / replace マスク閾値文字数 (Issue #11, デフォルト: 300) */
   editThresholdChars?: number;
-  /** read_file / grep_search / run_command 等の関数レスポンス出力マスク閾値文字数 (Issue #26, デフォルト: 800) */
+  /** read_file / grep_search / run_command 等の関数レスポンス出力マスク閾値文字数 (Issue #26, デフォルト: 400) */
   outputThresholdChars?: number;
   /** 直近何件のメッセージを生のまま保持するか (デフォルト: 0 = すべて対象) */
   preserveRecentMessages?: number;
+  /** 過去ターンのモデル思考プロセス (thought) をマスクするか (デフォルト: true) */
+  prunePastThoughts?: boolean;
 }
 
 /**
@@ -54,9 +56,17 @@ export function createDetailedTokenUsage(params: {
   cacheCreationPromptTokens?: number;
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
+  rawPromptTokens?: number;
 }): TokenUsage {
-  const promptTokens = params.billedPromptTokens;
-  const completionTokens = params.billedCompletionTokens;
+  const cachedPromptTokens = params.cachedPromptTokens ?? 0;
+  const rawPromptTokens =
+    params.rawPromptTokens ??
+    (params.billedPromptTokens + cachedPromptTokens);
+  const billedPromptTokens = params.billedPromptTokens;
+  const billedCompletionTokens = params.billedCompletionTokens;
+  const billedTotalTokens = billedPromptTokens + billedCompletionTokens;
+  const promptTokens = rawPromptTokens;
+  const completionTokens = billedCompletionTokens;
   const totalTokens = promptTokens + completionTokens;
   const maxContext = params.maxContextWindowTokens ?? 128000;
   const currentContext = params.contextWindowTokens ?? promptTokens;
@@ -66,10 +76,11 @@ export function createDetailedTokenUsage(params: {
     promptTokens,
     completionTokens,
     totalTokens,
-    billedPromptTokens: promptTokens,
-    billedCompletionTokens: completionTokens,
-    billedTotalTokens: totalTokens,
-    cachedPromptTokens: params.cachedPromptTokens ?? 0,
+    rawPromptTokens,
+    billedPromptTokens,
+    billedCompletionTokens,
+    billedTotalTokens,
+    cachedPromptTokens,
     cacheCreationPromptTokens: params.cacheCreationPromptTokens,
     contextWindowTokens: currentContext,
     contextWindowUtilization: utilization,
@@ -100,16 +111,53 @@ export function pruneChatHistory(
     : (thresholdOrOptions.editThresholdChars ?? 300);
   const outputThreshold = isNumberArg
     ? undefined
-    : (thresholdOrOptions.outputThresholdChars ?? 800);
+    : (thresholdOrOptions.outputThresholdChars ?? 400);
   const preserveRecent = isNumberArg
     ? 0
     : (thresholdOrOptions.preserveRecentMessages ?? 0);
+  const prunePastThoughts = isNumberArg
+    ? false
+    : (thresholdOrOptions.prunePastThoughts ?? true);
 
   const limitIndex = Math.max(0, history.length - preserveRecent);
+
+  // 最新モデルターンのインデックスを取得（直前ターンのThought / Thought SignatureはAPI要件のため保持）
+  let lastModelIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]?.role === 'model') {
+      lastModelIdx = i;
+      break;
+    }
+  }
 
   for (let idx = 0; idx < limitIndex; idx++) {
     const item = history[idx];
     if (!item?.parts || !Array.isArray(item.parts)) continue;
+
+    // 0. 過去ターンのThought (思考プロセス) マスク処理
+    // 最新モデルターン (lastModelIdx) より前の過去ターンの thought: true / 思考テキストをマスク
+    if (prunePastThoughts && item.role === 'model' && idx < lastModelIdx) {
+      for (const part of item.parts) {
+        const isThoughtPart =
+          part?.thought === true ||
+          (Boolean(part?.thoughtSignature || part?.thought_signature) &&
+            !part?.functionCall &&
+            typeof part?.text === 'string');
+
+        if (
+          isThoughtPart &&
+          typeof part?.text === 'string' &&
+          part.text.length > 0 &&
+          !part.text.startsWith('<Thought preserved')
+        ) {
+          const originalLen = part.text.length;
+          const replacement = `<Thought preserved: ${originalLen} chars>`;
+          part.text = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+      }
+    }
 
     for (const part of item.parts) {
       // 1. write_file の content マスク
@@ -209,8 +257,9 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
     this.options = {
       writeThresholdChars: options.writeThresholdChars ?? 200,
       editThresholdChars: options.editThresholdChars ?? 300,
-      outputThresholdChars: options.outputThresholdChars ?? 600,
+      outputThresholdChars: options.outputThresholdChars ?? 400,
       preserveRecentMessages: options.preserveRecentMessages ?? 0,
+      prunePastThoughts: options.prunePastThoughts ?? true,
     };
   }
 
@@ -235,7 +284,7 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
 }
 
 export interface LlmSummaryCompactionOptions {
-  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.8) */
+  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.3) */
   triggerUtilization?: number;
   /** 最大コンテキストトークン数 (デフォルト: 128000) */
   maxContextTokens?: number;
@@ -259,7 +308,7 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
   private model: string;
 
   constructor(options: LlmSummaryCompactionOptions = {}) {
-    this.triggerUtilization = options.triggerUtilization ?? 0.8;
+    this.triggerUtilization = options.triggerUtilization ?? 0.3;
     this.maxContextTokens = options.maxContextTokens ?? 128000;
     this.keepRecentMessages = options.keepRecentMessages ?? 2;
     this.provider = options.provider;

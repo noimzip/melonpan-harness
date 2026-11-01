@@ -415,9 +415,10 @@ export class ReactAgent {
               durationMs: Date.now() - startTime,
               aborted: true,
               usage: createDetailedTokenUsage({
-                billedPromptTokens: totalPromptTokens,
+                billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                 billedCompletionTokens: totalCompletionTokens,
                 cachedPromptTokens: totalCachedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
                 contextWindowTokens: lastPromptTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -434,7 +435,8 @@ export class ReactAgent {
         pruneChatHistory(chatHistory, {
           writeThresholdChars: 200,
           editThresholdChars: 300,
-          outputThresholdChars: 800,
+          outputThresholdChars: 400,
+          prunePastThoughts: true,
         });
 
         for (const strategy of this.contextStrategies) {
@@ -509,10 +511,14 @@ export class ReactAgent {
           totalCachedPromptTokens += turnCached;
         }
 
+        const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
         yield {
           type: 'USAGE',
           payload: {
             promptTokens: totalPromptTokens,
+            billedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             completionTokens: totalCompletionTokens,
             totalTokens: totalPromptTokens + totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
@@ -629,8 +635,9 @@ export class ReactAgent {
             // サブエージェントのトークン消費量を親累計に合算
             const subUsage = execRes.metadata?.usage as any;
             if (subUsage) {
-              totalPromptTokens += subUsage.promptTokens || 0;
+              totalPromptTokens += subUsage.promptTokens || subUsage.rawPromptTokens || 0;
               totalCompletionTokens += subUsage.completionTokens || 0;
+              totalCachedPromptTokens += subUsage.cachedPromptTokens || 0;
             }
 
             yield {
@@ -672,9 +679,10 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
-                  billedPromptTokens: totalPromptTokens,
+                  billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
                   contextWindowTokens:
                     lastPromptTokens || estimateMessagesTokens((chat as any).history, systemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
@@ -701,9 +709,10 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
-            billedPromptTokens: totalPromptTokens,
+            billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             contextWindowTokens: lastPromptTokens,
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -781,7 +790,8 @@ export class ReactAgent {
         pruneChatHistory(messages, {
           writeThresholdChars: 200,
           editThresholdChars: 300,
-          outputThresholdChars: 800,
+          outputThresholdChars: 400,
+          prunePastThoughts: true,
         });
 
         for (const strategy of this.contextStrategies) {
@@ -878,9 +888,10 @@ export class ReactAgent {
               durationMs: Date.now() - startTime,
               aborted: true,
               usage: createDetailedTokenUsage({
-                billedPromptTokens: totalPromptTokens,
+                billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                 billedCompletionTokens: totalCompletionTokens,
                 cachedPromptTokens: totalCachedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
                 contextWindowTokens: lastContextTokens,
                 maxContextWindowTokens: this.maxContextTokens,
               }),
@@ -1003,8 +1014,9 @@ export class ReactAgent {
 
             const subUsage = execRes.metadata?.usage as any;
             if (subUsage) {
-              totalPromptTokens += subUsage.promptTokens || 0;
+              totalPromptTokens += subUsage.promptTokens || subUsage.rawPromptTokens || 0;
               totalCompletionTokens += subUsage.completionTokens || 0;
+              totalCachedPromptTokens += subUsage.cachedPromptTokens || 0;
             }
 
             yield {
@@ -1039,10 +1051,14 @@ export class ReactAgent {
 
           messages.push({ role: 'user', parts: responseParts });
 
+          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
           yield {
             type: 'USAGE',
             payload: {
               promptTokens: totalPromptTokens,
+              billedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               completionTokens: totalCompletionTokens,
               totalTokens: totalPromptTokens + totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
@@ -1063,9 +1079,10 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
-                  billedPromptTokens: totalPromptTokens,
+                  billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
                   contextWindowTokens:
                     lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
                   maxContextWindowTokens: this.maxContextTokens,
@@ -1085,10 +1102,14 @@ export class ReactAgent {
             ],
           });
 
+          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+
           yield {
             type: 'USAGE',
             payload: {
               promptTokens: totalPromptTokens,
+              billedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               completionTokens: totalCompletionTokens,
               totalTokens: totalPromptTokens + totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
@@ -1110,9 +1131,10 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
-            billedPromptTokens: totalPromptTokens,
+            billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
             contextWindowTokens: lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
             maxContextWindowTokens: this.maxContextTokens,
           }),
@@ -1130,9 +1152,10 @@ export class ReactAgent {
             durationMs: Date.now() - startTime,
             aborted: true,
             usage: createDetailedTokenUsage({
-              billedPromptTokens: totalPromptTokens,
+              billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
               billedCompletionTokens: totalCompletionTokens,
               cachedPromptTokens: totalCachedPromptTokens,
+              rawPromptTokens: totalPromptTokens,
               contextWindowTokens: lastContextTokens,
               maxContextWindowTokens: this.maxContextTokens,
             }),

@@ -70,6 +70,7 @@ export class AgentSession implements IAgentRuntime {
   private activeSubagents: Map<string, ActiveSubagentState> = new Map();
 
   private billedPromptTokens: number = 0;
+  private rawPromptTokens: number = 0;
   private billedCompletionTokens: number = 0;
   private cachedPromptTokens: number = 0;
   private currentContextTokens: number = 0;
@@ -246,8 +247,19 @@ export class AgentSession implements IAgentRuntime {
 
       case 'USAGE': {
         const p = event.payload as any;
-        if (p?.promptTokens !== undefined) {
-          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.promptTokens);
+        if (p?.rawPromptTokens !== undefined) {
+          this.rawPromptTokens = Math.max(this.rawPromptTokens, p.rawPromptTokens);
+        } else if (p?.promptTokens !== undefined) {
+          this.rawPromptTokens = Math.max(this.rawPromptTokens, p.promptTokens);
+        }
+        if (p?.cachedPromptTokens !== undefined) {
+          this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.cachedPromptTokens);
+        }
+        if (p?.billedPromptTokens !== undefined) {
+          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.billedPromptTokens);
+        } else if (p?.promptTokens !== undefined) {
+          const uncached = Math.max(0, p.promptTokens - (p.cachedPromptTokens || 0));
+          this.billedPromptTokens = Math.max(this.billedPromptTokens, uncached);
         }
         if (p?.completionTokens !== undefined) {
           this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.completionTokens);
@@ -255,20 +267,22 @@ export class AgentSession implements IAgentRuntime {
         if (p?.contextWindowTokens !== undefined) {
           this.currentContextTokens = p.contextWindowTokens;
         }
-        if (p?.cachedPromptTokens !== undefined) {
-          this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.cachedPromptTokens);
-        }
         break;
       }
 
       case 'COMPLETE': {
         const p = event.payload as any;
         if (p?.usage) {
-          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.usage.promptTokens || 0);
-          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.usage.completionTokens || 0);
+          const rawPrompt = p.usage.rawPromptTokens ?? p.usage.promptTokens ?? 0;
+          this.rawPromptTokens = Math.max(this.rawPromptTokens, rawPrompt);
           if (p.usage.cachedPromptTokens !== undefined) {
             this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.usage.cachedPromptTokens);
           }
+          const bPrompt =
+            p.usage.billedPromptTokens ??
+            Math.max(0, (p.usage.promptTokens || 0) - (p.usage.cachedPromptTokens || 0));
+          this.billedPromptTokens = Math.max(this.billedPromptTokens, bPrompt);
+          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.usage.completionTokens || 0);
           if (p.usage.contextWindowTokens !== undefined) {
             this.currentContextTokens = p.usage.contextWindowTokens;
           }
@@ -296,6 +310,7 @@ export class AgentSession implements IAgentRuntime {
 
     return createDetailedTokenUsage({
       billedPromptTokens: this.billedPromptTokens,
+      rawPromptTokens: this.rawPromptTokens > 0 ? this.rawPromptTokens : undefined,
       billedCompletionTokens: this.billedCompletionTokens,
       cachedPromptTokens: this.cachedPromptTokens,
       contextWindowTokens: contextTokens,

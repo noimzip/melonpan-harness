@@ -453,6 +453,8 @@ export const App: React.FC<AppProps> = ({
               setSessionUsage((prev) => ({
                 ...prev,
                 cachedPromptTokens: event.payload.cachedPromptTokens ?? prev.cachedPromptTokens,
+                billedPromptTokens: event.payload.billedPromptTokens ?? prev.billedPromptTokens,
+                rawPromptTokens: event.payload.rawPromptTokens ?? prev.rawPromptTokens,
                 contextWindowTokens: event.payload.contextWindowTokens ?? prev.contextWindowTokens,
                 maxContextTokens: event.payload.maxContextWindowTokens ?? prev.maxContextTokens,
               }));
@@ -476,6 +478,19 @@ export const App: React.FC<AppProps> = ({
             if (event.payload.usage) {
               setSessionUsage((prev) => ({
                 promptTokens: prev.promptTokens + (event.payload.usage.promptTokens || 0),
+                billedPromptTokens:
+                  (prev.billedPromptTokens || 0) +
+                  (event.payload.usage.billedPromptTokens ??
+                    Math.max(
+                      0,
+                      (event.payload.usage.promptTokens || 0) -
+                        (event.payload.usage.cachedPromptTokens || 0)
+                    )),
+                rawPromptTokens:
+                  (prev.rawPromptTokens || 0) +
+                  (event.payload.usage.rawPromptTokens ??
+                    event.payload.usage.promptTokens ??
+                    0),
                 completionTokens:
                   prev.completionTokens + (event.payload.usage.completionTokens || 0),
                 totalTokens: prev.totalTokens + (event.payload.usage.totalTokens || 0),

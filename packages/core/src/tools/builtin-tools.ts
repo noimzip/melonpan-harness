@@ -768,12 +768,30 @@ export class DispatchSubagentTool implements ITool<DispatchSubagentArgs> {
     } else if (explicitFilePath) {
       targetFileContent = await ctx.fs.readFile(explicitFilePath);
     } else {
-      if (await ctx.fs.exists('index.html')) {
-        resolvedFilePath = 'index.html';
-        targetFileContent = await ctx.fs.readFile('index.html');
-      } else if (await ctx.fs.exists('plan.md')) {
-        resolvedFilePath = 'plan.md';
-        targetFileContent = await ctx.fs.readFile('plan.md');
+      // Issue #13 & Token Bloat Prevention: Avoid blindly injecting index.html (thousands of lines)
+      // unless specifically relevant or requested in the task prompt.
+      const lowerPrompt = taskPrompt.toLowerCase();
+      const mentionsFile =
+        lowerPrompt.includes('index.html') ||
+        lowerPrompt.includes('plan.md') ||
+        lowerPrompt.includes('code') ||
+        lowerPrompt.includes('audit') ||
+        lowerPrompt.includes('review') ||
+        lowerPrompt.includes('game') ||
+        lowerPrompt.includes('html') ||
+        lowerPrompt.includes('canvas');
+
+      if (agentType !== 'researcher' && mentionsFile) {
+        if (lowerPrompt.includes('plan.md') && (await ctx.fs.exists('plan.md'))) {
+          resolvedFilePath = 'plan.md';
+          targetFileContent = await ctx.fs.readFile('plan.md');
+        } else if (await ctx.fs.exists('index.html')) {
+          resolvedFilePath = 'index.html';
+          targetFileContent = await ctx.fs.readFile('index.html');
+        } else if (await ctx.fs.exists('plan.md')) {
+          resolvedFilePath = 'plan.md';
+          targetFileContent = await ctx.fs.readFile('plan.md');
+        }
       }
     }
 

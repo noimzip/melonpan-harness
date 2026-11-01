@@ -4,6 +4,8 @@ export interface SessionUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  billedPromptTokens?: number;
+  rawPromptTokens?: number;
   cachedPromptTokens?: number;
   contextWindowTokens?: number;
   maxContextTokens?: number;

@@ -286,6 +286,8 @@ export interface TokenUsage {
   billedPromptTokens?: number;
   billedCompletionTokens?: number;
   billedTotalTokens?: number;
+  /** 生プロンプト累計入力トークン (Raw Prompt Tokens before cache deduction) */
+  rawPromptTokens?: number;
   /** キャッシュヒットした入力トークン (Prompt Cache Read Tokens / Cached Content Tokens) */
   cachedPromptTokens?: number;
   /** キャッシュ作成・書き込みトークン */
@@ -533,6 +535,7 @@ export interface UsagePayload {
   completionTokens: number;
   totalTokens: number;
   cachedPromptTokens?: number;
+  rawPromptTokens?: number;
   cacheCreationPromptTokens?: number;
   billedPromptTokens?: number;
   turn?: number;
