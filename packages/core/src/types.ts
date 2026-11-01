@@ -367,6 +367,8 @@ export interface LLMStreamChunk {
   type: LLMStreamChunkType;
   delta?: string;
   toolCall?: LLMToolCall;
+  thoughtSignature?: string;
+  thought_signature?: string;
   usage?: {
     promptTokens: number;
     completionTokens: number;

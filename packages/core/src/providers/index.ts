@@ -57,13 +57,19 @@ export function extractGeminiResponseParts(response: any): {
  * `@google/genai` レスポンスまたはチャンクから `functionCall` と
  * 思考署名 (`thoughtSignature` / `thought_signature`) を抽出するヘルパー
  */
-export function extractGeminiFunctionCalls(responseOrChunk: any): LLMToolCall[] {
+export function extractGeminiFunctionCalls(
+  responseOrChunk: any,
+  fallbackSignature?: string
+): LLMToolCall[] {
   const result: LLMToolCall[] = [];
   const parts = responseOrChunk?.candidates?.[0]?.content?.parts;
 
   let candidateSignature: string | undefined =
     responseOrChunk?.candidates?.[0]?.thoughtSignature ||
-    responseOrChunk?.candidates?.[0]?.thought_signature;
+    responseOrChunk?.candidates?.[0]?.thought_signature ||
+    responseOrChunk?.thoughtSignature ||
+    responseOrChunk?.thought_signature ||
+    fallbackSignature;
 
   if (Array.isArray(parts) && parts.length > 0) {
     if (!candidateSignature) {
@@ -183,30 +189,46 @@ export class GeminiProvider implements ILLMProvider {
       };
     }
 
-    const contents = request.messages.map((m) => ({
-      role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
-      parts: m.parts.map((p) => {
-        const sig =
+    const contents = request.messages.map((m) => {
+      let msgSig: string | undefined = undefined;
+      for (const p of m.parts || []) {
+        const s =
           p.thoughtSignature ||
           p.thought_signature ||
           p.functionCall?.thoughtSignature ||
           p.functionCall?.thought_signature;
-
-        const partObj: Record<string, any> = { ...p };
-        if (sig) {
-          partObj.thoughtSignature = sig;
-          partObj.thought_signature = sig;
-          if (partObj.functionCall) {
-            partObj.functionCall = {
-              ...partObj.functionCall,
-              thoughtSignature: sig,
-              thought_signature: sig,
-            };
-          }
+        if (typeof s === 'string' && s.length > 0) {
+          msgSig = s;
+          break;
         }
-        return partObj;
-      }),
-    }));
+      }
+
+      return {
+        role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
+        parts: m.parts.map((p) => {
+          const sig =
+            p.thoughtSignature ||
+            p.thought_signature ||
+            p.functionCall?.thoughtSignature ||
+            p.functionCall?.thought_signature ||
+            msgSig;
+
+          const partObj: Record<string, any> = { ...p };
+          if (sig) {
+            partObj.thoughtSignature = sig;
+            partObj.thought_signature = sig;
+            if (partObj.functionCall) {
+              partObj.functionCall = {
+                ...partObj.functionCall,
+                thoughtSignature: sig,
+                thought_signature: sig,
+              };
+            }
+          }
+          return partObj;
+        }),
+      };
+    });
 
     if (this.useStreamingApi && typeof (ai.models as any).generateContentStream === 'function') {
       const streamResp = await ai.models.generateContentStream({
@@ -217,6 +239,8 @@ export class GeminiProvider implements ILLMProvider {
 
       let promptTokens = 0;
       let completionTokens = 0;
+      let turnThoughtSignature: string | undefined = undefined;
+      const turnToolCalls: LLMToolCall[] = [];
 
       for await (const chunk of streamResp) {
         if (signal?.aborted) {
@@ -229,26 +253,70 @@ export class GeminiProvider implements ILLMProvider {
           completionTokens = usageMeta.candidatesTokenCount || completionTokens;
         }
 
-        const { thoughts, texts } = extractGeminiResponseParts(chunk);
+        const { thoughts, texts, thoughtSignatures } = extractGeminiResponseParts(chunk);
+        for (const sig of thoughtSignatures) {
+          if (typeof sig === 'string' && sig.length > 0) {
+            turnThoughtSignature = sig;
+          }
+        }
+
+        const candidateSig =
+          (chunk as any)?.candidates?.[0]?.thoughtSignature ||
+          (chunk as any)?.candidates?.[0]?.thought_signature ||
+          (chunk as any)?.thoughtSignature ||
+          (chunk as any)?.thought_signature;
+        if (typeof candidateSig === 'string' && candidateSig.length > 0) {
+          turnThoughtSignature = candidateSig;
+        }
+
         for (const t of thoughts) {
-          yield { type: 'thought_delta', delta: t };
+          yield {
+            type: 'thought_delta',
+            delta: t,
+            ...(turnThoughtSignature
+              ? { thoughtSignature: turnThoughtSignature, thought_signature: turnThoughtSignature }
+              : {}),
+          };
         }
         for (const txt of texts) {
           yield { type: 'text_delta', delta: txt };
         }
 
-        const toolCalls = extractGeminiFunctionCalls(chunk);
+        const toolCalls = extractGeminiFunctionCalls(chunk, turnThoughtSignature);
         for (const tc of toolCalls) {
+          if (!tc.thoughtSignature && turnThoughtSignature) {
+            tc.thoughtSignature = turnThoughtSignature;
+            tc.thought_signature = turnThoughtSignature;
+          } else if (tc.thoughtSignature && !turnThoughtSignature) {
+            turnThoughtSignature = tc.thoughtSignature;
+          }
+          turnToolCalls.push(tc);
+
           const argsJson = JSON.stringify(tc.args || {});
           yield {
             type: 'tool_call_delta',
             delta: argsJson,
             toolCall: tc,
+            ...(tc.thoughtSignature
+              ? { thoughtSignature: tc.thoughtSignature, thought_signature: tc.thoughtSignature }
+              : {}),
           };
           yield {
             type: 'tool_call',
             toolCall: tc,
+            ...(tc.thoughtSignature
+              ? { thoughtSignature: tc.thoughtSignature, thought_signature: tc.thoughtSignature }
+              : {}),
           };
+        }
+
+        if (turnThoughtSignature) {
+          for (const tc of turnToolCalls) {
+            if (!tc.thoughtSignature) {
+              tc.thoughtSignature = turnThoughtSignature;
+              tc.thought_signature = turnThoughtSignature;
+            }
+          }
         }
       }
 
@@ -260,7 +328,12 @@ export class GeminiProvider implements ILLMProvider {
           totalTokens: promptTokens + completionTokens,
         },
       };
-      yield { type: 'done' };
+      yield {
+        type: 'done',
+        ...(turnThoughtSignature
+          ? { thoughtSignature: turnThoughtSignature, thought_signature: turnThoughtSignature }
+          : {}),
+      };
       return;
     }
 
@@ -275,25 +348,53 @@ export class GeminiProvider implements ILLMProvider {
       throw new Error('GeminiProvider request aborted.');
     }
 
-    const { thoughts, texts } = extractGeminiResponseParts(response);
+    const { thoughts, texts, thoughtSignatures } = extractGeminiResponseParts(response);
+    let responseSignature: string | undefined =
+      thoughtSignatures[0] ||
+      (response as any)?.candidates?.[0]?.thoughtSignature ||
+      (response as any)?.candidates?.[0]?.thought_signature ||
+      (response as any)?.thoughtSignature ||
+      (response as any)?.thought_signature;
+
+    const toolCalls = extractGeminiFunctionCalls(response, responseSignature);
+    for (const tc of toolCalls) {
+      if (!tc.thoughtSignature && responseSignature) {
+        tc.thoughtSignature = responseSignature;
+        tc.thought_signature = responseSignature;
+      } else if (tc.thoughtSignature && !responseSignature) {
+        responseSignature = tc.thoughtSignature;
+      }
+    }
+
     for (const thoughtText of thoughts) {
-      yield { type: 'thought_delta', delta: thoughtText };
+      yield {
+        type: 'thought_delta',
+        delta: thoughtText,
+        ...(responseSignature
+          ? { thoughtSignature: responseSignature, thought_signature: responseSignature }
+          : {}),
+      };
     }
     for (const normalText of texts) {
       yield { type: 'text_delta', delta: normalText };
     }
 
-    const toolCalls = extractGeminiFunctionCalls(response);
     for (const tc of toolCalls) {
       const argsJson = JSON.stringify(tc.args || {});
       yield {
         type: 'tool_call_delta',
         delta: argsJson,
         toolCall: tc,
+        ...(tc.thoughtSignature
+          ? { thoughtSignature: tc.thoughtSignature, thought_signature: tc.thoughtSignature }
+          : {}),
       };
       yield {
         type: 'tool_call',
         toolCall: tc,
+        ...(tc.thoughtSignature
+          ? { thoughtSignature: tc.thoughtSignature, thought_signature: tc.thoughtSignature }
+          : {}),
       };
     }
 
@@ -308,7 +409,12 @@ export class GeminiProvider implements ILLMProvider {
         totalTokens: promptTokens + completionTokens,
       },
     };
-    yield { type: 'done' };
+    yield {
+      type: 'done',
+      ...(responseSignature
+        ? { thoughtSignature: responseSignature, thought_signature: responseSignature }
+        : {}),
+    };
   }
 
   async countTokens(messages: LLMMessage[], systemInstruction?: string): Promise<number> {
