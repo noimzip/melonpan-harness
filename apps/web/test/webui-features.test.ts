@@ -714,9 +714,9 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
         testProvider
       );
 
-      // Verify that running totals from Core (500, 200, 80, 700) are added to base (1000, 200, 100, 1200)
+      // Verify that running totals from Core (billedPromptTokens: 420, completion: 200, cached: 80, total: 700) are added to base (1000, 200, 100, 1200)
       // rather than being compounded across multiple turn events (which would result in 1800, 500, 230, 2300)
-      expect(session.metrics.billedInputTokens).toBe(1500);
+      expect(session.metrics.billedInputTokens).toBe(1420);
       expect(session.metrics.billedOutputTokens).toBe(400);
       expect(session.metrics.cachedTokens).toBe(180);
       expect(session.metrics.totalTokens).toBe(1900);
