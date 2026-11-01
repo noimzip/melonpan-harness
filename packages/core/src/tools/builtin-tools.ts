@@ -212,18 +212,32 @@ export class ReadFileTool implements ITool<ReadFileArgs> {
 
     const allLines = fullContent.split('\n');
     const totalLines = allLines.length;
-    const startLine = Math.max(1, args?.start_line ? Number(args.start_line) : 1);
-    const endLine = Math.min(totalLines, args?.end_line ? Number(args.end_line) : totalLines);
+
+    // 行範囲が未指定の場合は最大200行までに制限してトークン急増を防止
+    const defaultMaxLines = 200;
+    const requestedStart = args?.start_line ? Number(args.start_line) : undefined;
+    const requestedEnd = args?.end_line ? Number(args.end_line) : undefined;
+
+    let startLine = Math.max(1, requestedStart || 1);
+    let endLine = requestedEnd !== undefined
+      ? Math.min(totalLines, requestedEnd)
+      : Math.min(totalLines, startLine + defaultMaxLines - 1);
+
+    const isLineClipped = requestedEnd === undefined && totalLines > defaultMaxLines;
 
     const slicedLines = startLine <= endLine ? allLines.slice(startLine - 1, endLine) : [];
-    const numberedContent = slicedLines
+    let numberedContent = slicedLines
       .map((line, idx) => `${startLine + idx}: ${line}`)
       .join('\n');
 
-    const maxChars = 25000;
+    if (isLineClipped) {
+      numberedContent += `\n... [Showing lines ${startLine}-${endLine} of ${totalLines}. Use start_line and end_line to inspect specific ranges]`;
+    }
+
+    const maxChars = 8000;
     const truncated = numberedContent.length > maxChars;
     const outputBody = truncated
-      ? `${numberedContent.slice(0, maxChars)}\n... [Truncated ${numberedContent.length - maxChars} chars]`
+      ? `${numberedContent.slice(0, maxChars)}\n... [Truncated remaining characters. Use start_line and end_line for specific sections]`
       : numberedContent;
 
     return {
@@ -233,7 +247,7 @@ export class ReadFileTool implements ITool<ReadFileArgs> {
         startLine,
         endLine,
         totalLines,
-        truncated,
+        truncated: truncated || isLineClipped,
       },
     };
   }
@@ -357,7 +371,7 @@ export class GrepSearchTool implements ITool<GrepSearchArgs> {
     }
 
     const matches: Array<{ file: string; line: number; content: string }> = [];
-    const maxMatches = 100;
+    const maxMatches = 30;
 
     for (const filePath of candidateFiles) {
       if (includePattern && !matchGlob(filePath, includePattern)) {
@@ -370,10 +384,12 @@ export class GrepSearchTool implements ITool<GrepSearchArgs> {
       for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i]!;
         if (regex.test(lineText)) {
+          const clippedContent =
+            lineText.length > 160 ? `${lineText.slice(0, 160)}...` : lineText;
           matches.push({
             file: filePath,
             line: i + 1,
-            content: lineText.slice(0, 240),
+            content: clippedContent,
           });
           if (matches.length >= maxMatches) break;
         }
@@ -381,17 +397,26 @@ export class GrepSearchTool implements ITool<GrepSearchArgs> {
       if (matches.length >= maxMatches) break;
     }
 
-    const formatted =
+    let formatted =
       matches.length > 0
         ? matches.map((m) => `${m.file}:${m.line}: ${m.content}`).join('\n')
         : `No matches found for "${query}".`;
+
+    if (matches.length >= maxMatches) {
+      formatted += `\n... [Truncated: Showing top ${maxMatches} matches. Narrow your search pattern or path]`;
+    }
+
+    const maxChars = 8000;
+    if (formatted.length > maxChars) {
+      formatted = `${formatted.slice(0, maxChars)}\n... [Truncated at ${maxChars} characters]`;
+    }
 
     return {
       output: formatted,
       metadata: {
         query,
         matchCount: matches.length,
-        truncated: matches.length >= maxMatches,
+        truncated: matches.length >= maxMatches || formatted.length >= maxChars,
         matches,
       },
     };

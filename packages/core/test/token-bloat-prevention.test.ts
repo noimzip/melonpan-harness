@@ -674,4 +674,62 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       expect(finalUsage?.billedTotalTokens).toBe(3500); // 2500 + (200 * 5)
     });
   });
+
+  describe('6. Tool Output Size Safeguards (read_file & grep_search)', () => {
+    it('read_file clips large files to default 200 lines and provides range guidance', async () => {
+      const vfs = new VirtualFS();
+      const largeContent = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}: const item_${i} = ${i};`).join('\n');
+      await vfs.writeFile('large-source.ts', largeContent);
+
+      const tools = createBuiltinTools();
+      const readFileTool = tools.find((t) => t.name === 'read_file');
+      expect(readFileTool).toBeDefined();
+
+      const emitMock = vi.fn();
+      const result = await readFileTool!.execute(
+        { path: 'large-source.ts' },
+        { fs: vfs, emit: emitMock } as any
+      );
+
+      expect(result.isError).toBeFalsy();
+      expect(result.metadata?.truncated).toBe(true);
+      expect(result.metadata?.totalLines).toBe(500);
+      expect(result.metadata?.startLine).toBe(1);
+      expect(result.metadata?.endLine).toBe(200);
+      expect(result.output).toContain('1: Line 1:');
+      expect(result.output).toContain('200: Line 200:');
+      expect(result.output).not.toContain('201: Line 201:');
+      expect(result.output).toContain('Showing lines 1-200 of 500');
+    });
+
+    it('grep_search limits match count to 30 and truncates lines longer than 160 chars', async () => {
+      const vfs = new VirtualFS();
+      // Generate 50 matching lines with ultra-long content
+      const longLine = 'TARGET_KEYWORD ' + 'X'.repeat(300);
+      const fileContent = Array.from({ length: 50 }, () => longLine).join('\n');
+      await vfs.writeFile('large-grep.txt', fileContent);
+
+      const tools = createBuiltinTools();
+      const grepTool = tools.find((t) => t.name === 'grep_search');
+      expect(grepTool).toBeDefined();
+
+      const emitMock = vi.fn();
+      const result = await grepTool!.execute(
+        { query: 'TARGET_KEYWORD' },
+        { fs: vfs, emit: emitMock } as any
+      );
+
+      expect(result.isError).toBeFalsy();
+      expect(result.metadata?.matchCount).toBe(30);
+      expect(result.metadata?.truncated).toBe(true);
+      expect(result.output).toContain('... [Truncated: Showing top 30 matches');
+      // Verify line clipping
+      const lines = result.output.split('\n');
+      const sampleMatch = lines[0];
+      expect(sampleMatch).toContain('TARGET_KEYWORD');
+      expect(sampleMatch.endsWith('...')).toBe(true);
+      // The clipped line content should not exceed ~200 characters including prefix
+      expect(sampleMatch.length).toBeLessThan(220);
+    });
+  });
 });
