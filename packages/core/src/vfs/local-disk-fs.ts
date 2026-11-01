@@ -24,7 +24,7 @@ export class LocalDiskFS implements IFileSystem {
       typeof (globalThis as any).process !== 'undefined' &&
       typeof (globalThis as any).process.cwd === 'function'
         ? (globalThis as any).process.cwd()
-        : '.';
+        : '/';
     this.rootDir = options.rootDir || defaultCwd;
   }
 

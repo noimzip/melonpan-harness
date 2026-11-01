@@ -74,7 +74,7 @@ export class MelonpanCore implements IAgentRuntime {
       options.skillManager ??
       new SkillManager({
         skillsDir: options.skillsDir,
-        fs: options.vfs ?? new LocalDiskFS({ rootDir: process.cwd() }),
+        fs: this.vfs,
       });
 
     this.providerRegistry = new ProviderRegistry();

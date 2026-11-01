@@ -12,9 +12,21 @@ export const rm = async () => {};
 export const fileURLToPath = (url: string | URL) => String(url);
 export const pathToFileURL = (path: string) => new URL(`file://${path}`);
 
-export const exec = () => {};
-export const execFile = () => {};
-export const spawn = () => {};
+export const exec = (...args: any[]) => {
+  const cb = args[args.length - 1];
+  if (typeof cb === 'function') cb(null, '', '');
+};
+export const execFile = (...args: any[]) => {
+  const cb = args[args.length - 1];
+  if (typeof cb === 'function') cb(null, '', '');
+};
+export const spawn = () => ({
+  stdout: { on: () => {} },
+  stderr: { on: () => {} },
+  on: (_evt: string, cb: any) => {
+    if (_evt === 'close' && typeof cb === 'function') setTimeout(() => cb(0), 0);
+  },
+});
 
 export default {
   readdir,

@@ -97,16 +97,26 @@ export class AgentSession implements IAgentRuntime {
     this.enableGit = options.enableGit ?? true;
 
     // セッション専用物理ディレクトリの設定（VFSから実ディスクへ移行）
+    const safeCwd =
+      typeof (globalThis as any).process !== 'undefined' &&
+      typeof (globalThis as any).process.cwd === 'function'
+        ? (globalThis as any).process.cwd()
+        : '/';
     const defaultWorkspaceDir = path.resolve(
-      process.cwd(),
+      safeCwd,
       '.melonpan',
       'sessions',
       this.sessionId
     );
     this.workspaceDir = options.workspaceDir || defaultWorkspaceDir;
 
-    // options.fs が明示された場合はそれを使用し、未指定の場合はセッション専用 LocalDiskFS を使用
-    this.vfs = options.fs ?? new LocalDiskFS({ rootDir: this.workspaceDir });
+    // options.fs が明示された場合はそれを使用し、未指定の場合はセッション専用 LocalDiskFS または VirtualFS を使用
+    this.vfs =
+      options.fs ??
+      (typeof (globalThis as any).process !== 'undefined' &&
+      typeof (globalThis as any).process.cwd === 'function'
+        ? new LocalDiskFS({ rootDir: this.workspaceDir })
+        : new VirtualFS());
     this.store = options.store ?? new InMemorySessionStore();
     this.contextStrategies = options.contextStrategies ?? [
       new ToolOutputPruningStrategy(),

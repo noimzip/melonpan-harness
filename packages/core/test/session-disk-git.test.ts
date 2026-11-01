@@ -138,4 +138,29 @@ describe('Session Dedicated Disk Directory, Git Tracking, & Goal Mode Subagent G
       expect(functionDecls.some((d: any) => d.name === 'dispatch_subagent')).toBe(true);
     });
   });
+
+  describe('4. Browser Environment Compatibility (process.cwd undefined)', () => {
+    it('initializes AgentSession and MelonpanCore without throwing when process.cwd is undefined', () => {
+      const originalCwd = process.cwd;
+      try {
+        // Simulate browser environment where process.cwd is not a function
+        (process as any).cwd = undefined;
+
+        expect(() => {
+          const session = new AgentSession();
+          expect(session).toBeDefined();
+          expect(session.sessionId).toBeTruthy();
+        }).not.toThrow();
+
+        expect(() => {
+          const core = new MelonpanCore({
+            simulate: true,
+          });
+          expect(core).toBeDefined();
+        }).not.toThrow();
+      } finally {
+        process.cwd = originalCwd;
+      }
+    });
+  });
 });

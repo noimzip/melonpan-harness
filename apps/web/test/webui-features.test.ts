@@ -798,5 +798,68 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(session.metrics.cachedTokens).toBe(850);
       expect(session.metrics.totalTokens).toBe(2350);
     });
+
+    it('does not throw "process.cwd is not a function" when executed in browser environment without process.cwd', async () => {
+      const originalCwd = process.cwd;
+      try {
+        (process as any).cwd = undefined;
+
+        const runtime = new AgentRuntime();
+        const session = createInitialSession('ブラウザ互換テスト');
+        const testProvider = new SimulatedProvider([
+          (_req) => [
+            {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call_complete',
+                name: 'complete_task',
+                args: { summary: 'ブラウザ互換完了' },
+              },
+            },
+            { type: 'text_delta', delta: 'ブラウザ環境で正常完了' },
+            {
+              type: 'usage',
+              usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+            },
+          ],
+        ]);
+
+        let caughtError: string | null = null;
+        let finalContent = '';
+        await runtime.executeTurn(
+          'ブラウザテスト',
+          session,
+          {
+            provider: 'gemini',
+            model: 'gemini-3.8-flash',
+            apiKey: 'dummy-key',
+            baseUrl: '',
+            thinkingEffort: 'medium',
+            bridgeUrl: '',
+          },
+          {
+            onMessageUpdate: (msg) => {
+              finalContent = msg.content;
+              if (msg.content.includes('エラーが発生しました')) {
+                caughtError = msg.content;
+              }
+            },
+            onToolCallUpdate: () => {},
+            onFileChange: () => {},
+            onPlanUpdate: () => {},
+            onSubagentUpdate: () => {},
+            onPermissionRequest: (req) => req.resolve('allow_once'),
+            onMetricsUpdate: () => {},
+          },
+          testProvider
+        );
+
+        expect(caughtError).toBeNull();
+        expect(finalContent).not.toContain('process.cwd is not a function');
+        expect(finalContent).toContain('ブラウザ環境で正常完了');
+      } finally {
+        process.cwd = originalCwd;
+      }
+    });
   });
 });

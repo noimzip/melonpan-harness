@@ -184,11 +184,16 @@ export class VirtualFS implements IFileSystem {
    * 仮想ファイルシステム内の全ファイルを指定のローカルディレクトリに実ファイルとして書き出す
    * Issue #3: パストラバーサルおよびルート上書き防止ガードを実装
    */
-  async flushToDisk(targetDir: string = process.cwd()): Promise<string[]> {
+  async flushToDisk(targetDir?: string): Promise<string[]> {
+    const defaultDir =
+      typeof (globalThis as any).process !== 'undefined' &&
+      typeof (globalThis as any).process.cwd === 'function'
+        ? (globalThis as any).process.cwd()
+        : '/';
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const written: string[] = [];
-    const resolvedTarget = path.resolve(targetDir);
+    const resolvedTarget = path.resolve(targetDir ?? defaultDir);
 
     for (const [rawPath, content] of this.files.entries()) {
       // 先頭の `/` や `../` を除去した上でターゲットディレクトリ内に解決されるか検証
