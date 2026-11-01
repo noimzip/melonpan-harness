@@ -5,6 +5,7 @@ import {
   IFileSystem,
   ILLMProvider,
   ISubagentSpawner,
+  LLMToolCall,
   SubagentDefinition,
   SubagentRunResult,
   SubagentSpawnOptions,
@@ -454,7 +455,7 @@ export class SubagentRunner implements ISubagentSpawner {
         turns++;
 
         let turnText = '';
-        const toolCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
+        const toolCalls: LLMToolCall[] = [];
 
         for await (const chunk of this.provider.streamChat(
           {

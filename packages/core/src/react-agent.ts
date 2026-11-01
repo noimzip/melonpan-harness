@@ -22,6 +22,7 @@ import {
   ITool,
   IWebProvider,
   LLMMessage,
+  LLMToolCall,
   LoadedSkill,
   SkillMetadata,
   ToolExecutionResult,
@@ -713,7 +714,7 @@ export class ReactAgent {
 
         let turnThoughtAcc = '';
         let turnTextAcc = '';
-        const turnToolCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
+        const turnToolCalls: LLMToolCall[] = [];
 
         for await (const chunk of provider.streamChat(
           {

@@ -4,6 +4,7 @@ import {
   LLMChatRequest,
   LLMMessage,
   LLMStreamChunk,
+  LLMToolCall,
 } from '../types.js';
 import { estimateMessagesTokens } from '../session/context-strategy.js';
 import {
