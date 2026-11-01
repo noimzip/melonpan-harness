@@ -528,6 +528,7 @@ export interface ContextCompactedPayload {
   beforeTokens: number;
   afterTokens: number;
   savedTokens: number;
+  savedCharsCount?: number;
   reductionRatio: number;
   summary?: string;
 }

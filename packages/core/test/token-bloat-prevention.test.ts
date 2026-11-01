@@ -732,4 +732,104 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       expect(sampleMatch.length).toBeLessThan(220);
     });
   });
+
+  describe('7. Research Phase Blind-Spot Prevention & Repetitive Loop Detector', () => {
+    it('pruneChatHistory preserves latest turn tool output so agent can read inspected file while pruning older turns', () => {
+      const longOutputTurn1 = '1: const score = 100;\n'.repeat(30); // ~660 chars (> 400 outputThreshold)
+      const longOutputTurn2 = '1: const lives = 3;\n'.repeat(30); // ~600 chars (> 400 outputThreshold)
+
+      const history: any[] = [
+        { role: 'user', parts: [{ text: 'Please inspect game' }] },
+        // Turn 1
+        {
+          role: 'model',
+          parts: [{ functionCall: { name: 'read_file', args: { path: 'game.js' } } }],
+        },
+        {
+          role: 'user',
+          parts: [{ functionResponse: { name: 'read_file', response: { output: longOutputTurn1 } } }],
+        },
+        // Turn 2 (latest model turn + latest tool result)
+        {
+          role: 'model',
+          parts: [{ functionCall: { name: 'read_file', args: { path: 'game.js' } } }],
+        },
+        {
+          role: 'user',
+          parts: [{ functionResponse: { name: 'read_file', response: { output: longOutputTurn2 } } }],
+        },
+      ];
+
+      const res = pruneChatHistory(history, {
+        outputThresholdChars: 400,
+        preserveRecentMessages: 2,
+      });
+
+      // Older turn 1 tool result MUST be pruned
+      const turn1Response = history[2].parts[0].functionResponse.response.output;
+      expect(turn1Response).toContain('<Tool output pruned:');
+
+      // Latest turn 2 tool result MUST BE PRESERVED so model is not blinded!
+      const turn2Response = history[4].parts[0].functionResponse.response.output;
+      expect(turn2Response).toBe(longOutputTurn2);
+      expect(turn2Response).not.toContain('<Tool output pruned:');
+      expect(res.prunedCallsCount).toBeGreaterThan(0);
+    });
+
+    it('createRepetitiveCallGuardMiddleware blocks runaway repeated read_file on the same file', async () => {
+      const vfs = new VirtualFS();
+      await vfs.writeFile('game.js', 'console.log("hello");');
+      const tools = createBuiltinTools();
+      const readFileTool = tools.find((t) => t.name === 'read_file')!;
+
+      const registry = new ToolRegistry([readFileTool]);
+      // Use the repetitive call guard with maxConsecutiveCalls = 3
+      const { createRepetitiveCallGuardMiddleware } = await import('../src/safety/index.js');
+      registry.use(createRepetitiveCallGuardMiddleware({ maxConsecutiveCalls: 3 }));
+
+      const dummyCtx = { fs: vfs, emit: vi.fn() } as any;
+
+      // 1st, 2nd, 3rd calls: Allowed
+      const res1 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
+      expect(res1.output).toContain('console.log("hello");');
+      expect(res1.metadata?.loopGuardTriggered).toBeFalsy();
+
+      const res2 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
+      expect(res2.output).toContain('console.log("hello");');
+
+      const res3 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
+      expect(res3.output).toContain('console.log("hello");');
+
+      // 4th call: Blocked by loop guard with guidance
+      const res4 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
+      expect(res4.output).toContain('[LOOP_GUARD_WARNING]');
+      expect(res4.output).toContain('read_file("game.js") 4 times in succession');
+      expect(res4.output).toContain('Proceed immediately to edit_file(path, search, replace)');
+      expect(res4.metadata?.loopGuardTriggered).toBe(true);
+    });
+
+    it('EditFileTool includes applied diff preview so model does not need confirmation read_file', async () => {
+      const vfs = new VirtualFS();
+      await vfs.writeFile('index.html', '<!DOCTYPE html><html><body><div id="score">0</div></body></html>');
+
+      const tools = createBuiltinTools();
+      const editFileTool = tools.find((t) => t.name === 'edit_file')!;
+
+      const emitMock = vi.fn();
+      const result = await editFileTool.execute(
+        {
+          path: 'index.html',
+          search: '<div id="score">0</div>',
+          replace: '<div id="score">100</div>',
+        },
+        { fs: vfs, emit: emitMock } as any
+      );
+
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain('Replaced 23 chars with 25 chars in "index.html"');
+      expect(result.output).toContain('[Applied Diff Preview]:');
+      expect(result.output).toContain('-<!DOCTYPE html>');
+      expect(result.output).toContain('+<!DOCTYPE html>');
+    });
+  });
 });

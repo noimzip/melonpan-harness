@@ -149,9 +149,15 @@ export class EditFileTool implements ITool<EditFileArgs> {
       });
     }
 
-    const output = editRes.success
-      ? editRes.diffSummary || `Successfully edited "${pathArg}".`
-      : `Error: ${editRes.error}`;
+    let output = '';
+    if (editRes.success) {
+      output = editRes.diffSummary || `Successfully edited "${pathArg}".`;
+      if (editRes.unifiedDiff) {
+        output += `\n\n[Applied Diff Preview]:\n${editRes.unifiedDiff}`;
+      }
+    } else {
+      output = `Error: ${editRes.error}`;
+    }
 
     return {
       output,

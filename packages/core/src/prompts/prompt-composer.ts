@@ -65,6 +65,7 @@ export class ToolingRulesSection implements PromptSection {
       '1. Initial File Creation: Use write_file(path, content) ONLY ONCE to establish a new file.',
       '2. Modifications, Tuning, Refinements, & Bug Fixes: You are STRICTLY FORBIDDEN from regenerating or rewriting an entire existing file using write_file. You MUST use edit_file(path, search, replace) with minimal, targeted search/replace blocks.',
       '3. Subagent Delegation: Subagents execute in isolated clean-room sessions. NEVER paste full code files into task_prompt. Instead, pass a concise task_prompt and specify target files via file_path (e.g. file_path: "index.html" or "plan.md") or files array so the runner injects them cleanly.',
+      '4. Research & Inspection Efficiency: Do NOT repeatedly read or grep the same file. Use read_file with start_line/end_line or grep_search once to find exact target locations. edit_file already returns the applied diff preview—do NOT immediately re-read the file just to verify changes. Once code audits or refinements are complete, call complete_task promptly.',
     ].join('\n');
   }
 }
