@@ -18,7 +18,7 @@ export interface WebCommandContext {
   setProviderConfig: React.Dispatch<React.SetStateAction<ProviderConfig>>;
   setPermissionPolicy: React.Dispatch<React.SetStateAction<PermissionPolicyConfig>>;
   updateActiveSession: (updater: (prev: Session) => Session) => void;
-  executePrompt: (prompt: string, overrideMode?: 'plan' | 'act' | 'auto') => void;
+  executePrompt: (prompt: string, overrideMode?: 'plan' | 'act' | 'auto' | 'goal') => void;
   logMessage: (content: string, thought?: string) => void;
   triggerZipDownload?: () => void;
 }
@@ -268,6 +268,39 @@ export class WebCommandRegistry {
             text: '/plan ',
             display: '<prompt>',
             description: '指定したプロンプトで計画書作成フェーズを即時実行',
+          },
+        ];
+      },
+    });
+
+    this.register({
+      name: 'goal',
+      syntax: '/goal [objective]',
+      description: 'Goal Mode (サブエージェント解禁・Plan→Act→Auditサイクル) で目標を実行',
+      execute: (args, ctx) => {
+        const prompt = args.join(' ').trim();
+        if (prompt.length > 0) {
+          ctx.logMessage(`🎯 ゴールモードで目標を実行します: "${prompt}" (サブエージェント解禁)`);
+          ctx.executePrompt(prompt, 'goal');
+          return;
+        }
+
+        if (ctx.session.mode === 'goal') {
+          ctx.updateActiveSession((prev) => ({ ...prev, mode: 'act' }));
+          ctx.logMessage('💡 ゴールモード (Goal Mode) を **OFF** にしました (標準 Act モードに移行)');
+        } else {
+          ctx.updateActiveSession((prev) => ({ ...prev, mode: 'goal' }));
+          ctx.logMessage('💡 ゴールモード (Goal Mode) を **ON** にしました (サブエージェント解禁)');
+        }
+      },
+      getSuggestions: (input) => {
+        const prefix = '/goal ';
+        if (!input.startsWith(prefix)) return [];
+        return [
+          {
+            text: '/goal ',
+            display: '<objective>',
+            description: '指定した目標を Goal Mode (サブエージェント解禁) で即時実行',
           },
         ];
       },

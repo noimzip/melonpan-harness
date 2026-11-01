@@ -134,14 +134,14 @@ export function App() {
     );
   };
 
-  const handleChangeMode = (mode: 'auto' | 'plan' | 'act') => {
+  const handleChangeMode = (mode: 'auto' | 'plan' | 'act' | 'goal') => {
     updateActiveSession((prev) => ({ ...prev, mode }));
     if (mode === 'plan') {
       setActiveRightTab('plan');
     }
   };
 
-  const handleSendMessage = async (text: string, overrideMode?: 'plan' | 'act' | 'auto') => {
+  const handleSendMessage = async (text: string, overrideMode?: 'plan' | 'act' | 'auto' | 'goal') => {
     if (!text.trim() || isAgentRunning) return;
 
     const trimmed = text.trim();

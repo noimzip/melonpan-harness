@@ -93,7 +93,7 @@ export interface Session {
   name: string;
   createdAt: number;
   updatedAt: number;
-  mode: 'auto' | 'plan' | 'act';
+  mode: 'auto' | 'plan' | 'act' | 'goal';
   messages: Message[];
   files: Record<string, string>;
   activeFile: string;
