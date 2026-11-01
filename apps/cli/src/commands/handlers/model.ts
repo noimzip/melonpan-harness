@@ -153,9 +153,10 @@ export function getDynamicDiscoveredModels(): ModelCatalogItem[] {
 
 export const modelCommand: CommandDefinition = {
   name: 'model',
-  syntax: '/model [name]',
+  aliases: ['boost'],
+  syntax: '/model [name] (alias: /boost [name])',
   description:
-    'マルチプロバイダー対応モデルの表示・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq)',
+    '各種API対応モデルの表示・検索・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq)',
   execute: (args, ctx) => {
     const targetModel = args[0]?.trim();
 
@@ -217,12 +218,17 @@ export const modelCommand: CommandDefinition = {
       inferredProvider = 'openrouter';
     } else if (targetModel.startsWith('orcarouter/')) {
       inferredProvider = 'orcarouter';
-    } else if (targetModel.startsWith('groq/')) {
+    } else if (
+      targetModel.startsWith('groq/') ||
+      targetModel.startsWith('llama-') ||
+      targetModel.startsWith('mixtral-')
+    ) {
       inferredProvider = 'groq';
     } else if (
       targetModel.startsWith('gpt-') ||
       targetModel.startsWith('o1-') ||
       targetModel.startsWith('o3-') ||
+      targetModel.startsWith('o4-') ||
       targetModel.startsWith('chatgpt-')
     ) {
       inferredProvider = 'openai';
@@ -230,6 +236,8 @@ export const modelCommand: CommandDefinition = {
       inferredProvider = 'anthropic';
     } else if (targetModel.startsWith('gemini') || targetModel.startsWith('gemma')) {
       inferredProvider = 'gemini';
+    } else if (targetModel.includes(':free') || targetModel.includes('/')) {
+      inferredProvider = 'openrouter';
     }
 
     ctx.setModel(targetModel);
@@ -239,30 +247,46 @@ export const modelCommand: CommandDefinition = {
     ctx.logActivity(`Model switched to: ${targetModel}`);
     ctx.logThought(`✔ Active model changed to: ${targetModel} (${inferredProvider})`);
   },
-  getSuggestions: (input) => {
-    const prefix = '/model ';
-    if (!input.startsWith(prefix)) return [];
-    const query = input.slice(prefix.length).trim().toLowerCase();
+  getSuggestions: (input, ctx) => {
+    const matchedPrefix = ['/model ', '/boost '].find((p) => input.startsWith(p));
+    if (!matchedPrefix) return [];
+    const query = input.slice(matchedPrefix.length).trim().toLowerCase();
 
-    // Default to the 4 standard Gemini models for empty query
-    if (!query) {
-      return AVAILABLE_MODELS.map((m) => ({
-        text: `/model ${m}`,
-        display: m,
-        description: MODEL_DESCRIPTIONS[m] || 'AI Model',
+    // 1. 動的取得済みモデルが存在する場合、そのモデル群を優先表示
+    if (dynamicDiscoveredModels.length > 0) {
+      const filtered = query
+        ? dynamicDiscoveredModels.filter(
+            (m) =>
+              m.id.toLowerCase().includes(query) ||
+              m.provider.toLowerCase().includes(query) ||
+              (m.label && m.label.toLowerCase().includes(query)) ||
+              (m.description && m.description.toLowerCase().includes(query)) ||
+              (m.isFree && 'free'.includes(query))
+          )
+        : dynamicDiscoveredModels;
+
+      const freeList = filtered.filter((m) => Boolean(m.isFree));
+      const nonFreeList = filtered.filter((m) => !m.isFree);
+      const sorted = [...freeList, ...nonFreeList];
+
+      return sorted.map((m) => ({
+        text: `${matchedPrefix}${m.id}`,
+        display: m.id,
+        description: `[${m.provider}]${m.isFree ? ' [free]' : ''} ${m.description || m.label}`,
       }));
     }
 
-    // 候補リストの作成 (動的取得モデル + 静的モデル)
-    const combinedModels: ModelCatalogItem[] = [
-      ...dynamicDiscoveredModels,
-      ...ALL_SUPPORTED_MODELS.filter(
-        (s) => !dynamicDiscoveredModels.some((d) => d.id === s.id)
-      ),
-    ];
+    // 2. 空クエリ時は標準Geminiモデルを提示 (後方互換性)
+    if (!query) {
+      return AVAILABLE_MODELS.map((m) => ({
+        text: `${matchedPrefix}${m}`,
+        display: m,
+        description: MODEL_DESCRIPTIONS[m] || 'Google Gemini AI Model',
+      }));
+    }
 
-    // クエリでフィルタリングし、無料モデルを最上位にソート (要件: 無料のモデルには右端に free と記述し、最上位に表示)
-    const matched = combinedModels.filter(
+    // 3. 候補リストの作成 (静的サポートモデルからのフィルタリング)
+    const matched = ALL_SUPPORTED_MODELS.filter(
       (m) =>
         m.id.toLowerCase().includes(query) ||
         m.provider.toLowerCase().includes(query) ||
@@ -274,7 +298,7 @@ export const modelCommand: CommandDefinition = {
     const sorted = [...freeList, ...nonFreeList];
 
     return sorted.map((m) => ({
-      text: `/model ${m.id}`,
+      text: `${matchedPrefix}${m.id}`,
       display: m.id,
       description: `[${m.provider}]${m.isFree ? ' [free]' : ''} ${m.description}`,
     }));

@@ -207,5 +207,59 @@ describe('TUI-M5: Model Search, API Routing, and Free Model Prioritization', () 
       expect(rendered).toContain('No models available');
       expect(rendered).toContain('/key');
     });
+
+    it('matches free models when searching "free" even if label or description does not explicitly contain "free"', () => {
+      const items: PickerItem[] = [
+        { id: 'zero-pricing-model', label: 'Zero Model', description: 'Zero Cost', isFree: true },
+        { id: 'paid-model', label: 'Paid Model', description: 'Expensive', isFree: false },
+      ];
+
+      const rendered = renderHelper({ items, selectedId: 'zero-pricing-model', enableSearch: true });
+      expect(rendered).toContain('Zero Model');
+      expect(rendered).toContain('free');
+    });
+  });
+
+  describe('4. /boost Command Support & Seamless Integration', () => {
+    it('/boost without args opens the model picker', async () => {
+      await extendedCommandRegistry.executeCommand('/boost', ctx);
+      expect(openedPickerType).toBe('model');
+      expect(loggedActivities.some((a) => a.includes('Active Model:'))).toBe(true);
+    });
+
+    it('/boost switches model and routes provider just like /model', async () => {
+      await extendedCommandRegistry.executeCommand(
+        '/boost meta-llama/llama-3.2-3b-instruct:free',
+        ctx
+      );
+      expect(currentModel).toBe('meta-llama/llama-3.2-3b-instruct:free');
+      expect(currentProvider).toBe('openrouter');
+      expect(loggedActivities.some((a) => a.includes('Model switched to'))).toBe(true);
+    });
+
+    it('/boost provides autocomplete suggestions starting with /boost', () => {
+      const suggestions = extendedCommandRegistry.getAutocompleteSuggestions('/boost free', ctx);
+      expect(suggestions.length).toBeGreaterThan(0);
+      expect(suggestions[0].text.startsWith('/boost ')).toBe(true);
+      expect(suggestions[0].description).toContain('[free]');
+    });
+
+    it('/b autocompletes to /boost', () => {
+      const suggestions = extendedCommandRegistry.getAutocompleteSuggestions('/b', ctx);
+      expect(suggestions.some((s) => s.text === '/boost ' && s.display === '/boost')).toBe(true);
+    });
+
+    it('/key openrouter invokes refreshModels when provided on context', async () => {
+      let refreshCalled = false;
+      ctx.refreshModels = async () => {
+        refreshCalled = true;
+      };
+
+      await extendedCommandRegistry.executeCommand(
+        '/key openrouter sk-or-new-key-12345678',
+        ctx
+      );
+      expect(refreshCalled).toBe(true);
+    });
   });
 });

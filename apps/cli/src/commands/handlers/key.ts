@@ -104,6 +104,9 @@ export const keyCommand: CommandDefinition = {
       if (ctx.setSimulate) {
         ctx.setSimulate(true);
       }
+      if (ctx.refreshModels) {
+        await ctx.refreshModels();
+      }
       ctx.logActivity('API key cleared. Switched to offline simulation mode.');
       ctx.logThought('🗑️ API key removed. Melonpan is now running in offline simulation mode.');
       return;
@@ -136,6 +139,9 @@ export const keyCommand: CommandDefinition = {
         if (ctx.setApiKey) ctx.setApiKey(targetKey);
         if (ctx.setSimulate) ctx.setSimulate(false);
       }
+      if (ctx.refreshModels) {
+        await ctx.refreshModels();
+      }
       const masked = maskApiKey(targetKey);
       ctx.logActivity(`${provider.toUpperCase()} API key set (${masked})`);
       ctx.logThought(`🔑 ${provider.toUpperCase()} API key configured: [${masked}]`);
@@ -163,6 +169,9 @@ export const keyCommand: CommandDefinition = {
 
       try {
         await saveKeyToEnv(targetKey);
+        if (ctx.refreshModels) {
+          await ctx.refreshModels();
+        }
         const masked = maskApiKey(targetKey);
         ctx.logActivity(`API key saved to .env (${masked})`);
         ctx.logThought(`💾 API key [${masked}] saved to .env file in current directory.`);
@@ -188,6 +197,9 @@ export const keyCommand: CommandDefinition = {
     }
     if (ctx.setSimulate) {
       ctx.setSimulate(false);
+    }
+    if (ctx.refreshModels) {
+      await ctx.refreshModels();
     }
 
     const masked = maskApiKey(newKey);

@@ -210,54 +210,53 @@ export const App: React.FC<AppProps> = ({
   // 1. 各種APIから取得できたモデルをそのまま表示
   // 2. APIキーが設定されるまではモデルリストに表示する必要はない
   // 3. 無料のモデルには右端に free と記述し、各種モデルリストの最上位に表示して残りは既定の順番で表示
+  const loadDynamicModels = React.useCallback(async () => {
+    const env = typeof process !== 'undefined' ? process.env : {};
+    const keys: ProviderApiKeys = {};
+    const geminiKey = apiKey || env?.GEMINI_API_KEY;
+    if (geminiKey) keys.gemini = geminiKey;
+    if (env?.OPENAI_API_KEY) keys.openai = env?.OPENAI_API_KEY;
+    if (env?.ANTHROPIC_API_KEY) keys.anthropic = env?.ANTHROPIC_API_KEY;
+    if (env?.OPENROUTER_API_KEY) keys.openrouter = env?.OPENROUTER_API_KEY;
+    if (env?.ORCAROUTER_API_KEY) keys.orcarouter = env?.ORCAROUTER_API_KEY;
+    if (env?.GROQ_API_KEY) keys.groq = env?.GROQ_API_KEY;
+
+    if (Object.keys(keys).length === 0) {
+      setModelItems([]);
+      setDynamicDiscoveredModels([]);
+      return;
+    }
+
+    try {
+      const discovered = await fetchDiscoveredModels(keys, {
+        baseUrls: {
+          openrouter: env?.OPENROUTER_BASE_URL,
+          orcarouter: env?.ORCAROUTER_BASE_URL,
+          groq: env?.GROQ_BASE_URL,
+          openai: env?.OPENAI_BASE_URL,
+          anthropic: env?.ANTHROPIC_BASE_URL,
+        },
+      });
+      const items = formatDiscoveredToPickerItems(discovered);
+      setModelItems(items);
+      setDynamicDiscoveredModels(
+        items.map((it) => ({
+          id: it.id,
+          provider: it.providerId || 'custom',
+          label: it.label,
+          description: it.description || '',
+          isFree: it.isFree,
+        }))
+      );
+    } catch {
+      setModelItems([]);
+    }
+  }, [apiKey]);
+
+  // 動的モデルディスカバリー: APIキー設定済みプロバイダーのみからモデルを取得
   useEffect(() => {
-    let active = true;
-    const loadDynamicModels = async () => {
-      const env = typeof process !== 'undefined' ? process.env : {};
-      const keys: ProviderApiKeys = {};
-      const geminiKey = apiKey || env?.GEMINI_API_KEY;
-      if (geminiKey) keys.gemini = geminiKey;
-      if (env?.OPENAI_API_KEY) keys.openai = env?.OPENAI_API_KEY;
-      if (env?.ANTHROPIC_API_KEY) keys.anthropic = env?.ANTHROPIC_API_KEY;
-      if (env?.OPENROUTER_API_KEY) keys.openrouter = env?.OPENROUTER_API_KEY;
-      if (env?.ORCAROUTER_API_KEY) keys.orcarouter = env?.ORCAROUTER_API_KEY;
-      if (env?.GROQ_API_KEY) keys.groq = env?.GROQ_API_KEY;
-
-      if (Object.keys(keys).length === 0) {
-        if (active) {
-          setModelItems([]);
-          setDynamicDiscoveredModels([]);
-        }
-        return;
-      }
-
-      try {
-        const discovered = await fetchDiscoveredModels(keys);
-        if (active) {
-          const items = formatDiscoveredToPickerItems(discovered);
-          setModelItems(items);
-          setDynamicDiscoveredModels(
-            items.map((it) => ({
-              id: it.id,
-              provider: it.providerId || 'custom',
-              label: it.label,
-              description: it.description || '',
-              isFree: it.isFree,
-            }))
-          );
-        }
-      } catch {
-        if (active) {
-          setModelItems([]);
-        }
-      }
-    };
-
     loadDynamicModels();
-    return () => {
-      active = false;
-    };
-  }, [apiKey, activePicker]);
+  }, [loadDynamicModels, activePicker]);
 
 
   const [inputPrompt, setInputPrompt] = useState<string>('');
@@ -654,6 +653,7 @@ export const App: React.FC<AppProps> = ({
     setApiKey,
     isSimulate,
     setSimulate: setIsSimulate,
+    refreshModels: loadDynamicModels,
     permissionPolicy: permissionPolicyRef.current,
     compactSession: handleCompactSession,
     cancelTask: handleCancelTask,
@@ -754,10 +754,10 @@ export const App: React.FC<AppProps> = ({
         maxContextTokens={sessionUsage.maxContextTokens}
       />
 
-      {/* 2. Modal Picker (Active when /model or /effort is opened without args, #38) */}
+      {/* 2. Modal Picker (Active when /model, /boost or /effort is opened without args, #38) */}
       {activePicker === 'model' && (
         <ModalPicker
-          title="Select Active Model & Provider (/model)"
+          title="Select Active Model & Provider (/model, /boost)"
           items={modelItems}
           enableSearch={true}
           selectedId={model}

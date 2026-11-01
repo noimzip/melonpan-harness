@@ -23,6 +23,7 @@ export interface CommandContext {
   setApiKey?: (key: string) => void;
   isSimulate?: boolean;
   setSimulate?: (simulate: boolean) => void;
+  refreshModels?: () => Promise<void>;
 
   // Mode & Execution
   mode: 'plan' | 'act' | 'auto';

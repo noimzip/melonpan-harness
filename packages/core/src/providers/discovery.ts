@@ -252,16 +252,17 @@ export async function fetchOpenAIModels(
     const data: any = await res.json();
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
-    // チャット推論対応モデル (gpt-*, o1-*, o3-*, chatgpt-*) を優先
-    const chatModels = list.filter(
-      (m) =>
-        m.id?.startsWith('gpt-') ||
-        m.id?.startsWith('o1') ||
-        m.id?.startsWith('o3') ||
-        m.id?.startsWith('chatgpt')
-    );
+    // チャット推論対応モデル (gpt-*, o1-*, o3-*, o4-*, chatgpt-*) を優先しつつ、返却された全モデルを保持 (そのまま表示)
+    const isChatModel = (id: string) =>
+      id.startsWith('gpt-') ||
+      id.startsWith('o1') ||
+      id.startsWith('o3') ||
+      id.startsWith('o4') ||
+      id.startsWith('chatgpt');
 
-    const targetList = chatModels.length > 0 ? chatModels : list;
+    const chatModels = list.filter((m) => isChatModel(m.id || ''));
+    const otherModels = list.filter((m) => !isChatModel(m.id || ''));
+    const targetList = [...chatModels, ...otherModels];
 
     return targetList.map((item) => ({
       id: item.id,

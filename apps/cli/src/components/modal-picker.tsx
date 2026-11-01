@@ -32,20 +32,25 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
   const { isRawModeSupported } = useStdin();
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // 検索クエリに基づきフィルタリング (ID, ラベル, 説明, プロバイダー/グループ)
+  // 検索クエリに基づきフィルタリング (ID, ラベル, 説明, プロバイダー/グループ, isFree)
   const filteredItems = useMemo(() => {
     if (!enableSearch || !searchQuery.trim()) {
       return items;
     }
     const q = searchQuery.toLowerCase().trim();
-    return items.filter(
+    const matched = items.filter(
       (item) =>
         item.id.toLowerCase().includes(q) ||
         item.label.toLowerCase().includes(q) ||
         (item.description && item.description.toLowerCase().includes(q)) ||
         (item.group && item.group.toLowerCase().includes(q)) ||
-        (item.providerId && item.providerId.toLowerCase().includes(q))
+        (item.providerId && item.providerId.toLowerCase().includes(q)) ||
+        (item.isFree && 'free'.includes(q))
     );
+    // 検索結果内でも無料モデルを最上位に配置し、残りは既定順序を維持
+    const free = matched.filter((m) => Boolean(m.isFree));
+    const nonFree = matched.filter((m) => !m.isFree);
+    return [...free, ...nonFree];
   }, [items, searchQuery, enableSearch]);
 
   const initialIndex = Math.max(
@@ -72,6 +77,20 @@ export const ModalPicker: React.FC<ModalPickerProps> = ({
       // 検索非有効時のみ 'q' で終了
       if (!enableSearch && input.toLowerCase() === 'q') {
         onCancel();
+        return;
+      }
+
+      if (key.pageUp) {
+        setHighlightedIndex((prev) => Math.max(0, prev - pageSize));
+        return;
+      }
+
+      if (key.pageDown) {
+        setHighlightedIndex((prev) =>
+          filteredItems.length > 0
+            ? Math.min(filteredItems.length - 1, prev + pageSize)
+            : 0
+        );
         return;
       }
 

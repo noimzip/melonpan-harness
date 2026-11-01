@@ -657,7 +657,9 @@ export class ProviderRegistry {
   constructor(initialProviders?: ILLMProvider[]) {
     const defaults = initialProviders ?? [
       new GeminiProvider(),
-      new OpenAICompatibleProvider(),
+      new OpenAICompatibleProvider({ id: 'openai' }),
+      new OpenAICompatibleProvider({ id: 'openai-compat' }),
+      new OpenAICompatibleProvider({ id: 'anthropic' }),
       new OpenRouterProvider(),
       new OrcaRouterProvider(),
       new GroqProvider(),
