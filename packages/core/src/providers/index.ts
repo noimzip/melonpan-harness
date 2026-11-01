@@ -336,7 +336,10 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     };
 
     if (request.tools && request.tools.length > 0) {
-      body.tools = this.formatTools(request.tools);
+      const formatted = this.formatTools(request.tools);
+      if (formatted.length > 0) {
+        body.tools = formatted;
+      }
     }
 
 

@@ -25,10 +25,12 @@ import {
   CompleteTaskTool,
   createBuiltinTools,
 } from '../src/tools/builtin-tools.js';
+import { MELONPAN_TOOLS } from '../src/tools/tool-definitions.js';
 import { ToolRegistry } from '../src/tools/tool-registry.js';
 
 /**
  * Python の jsonschema.Draft202012Validator を利用してスキーマが Draft 2020-12 メタスキーマに適合するか厳密に検証する
+ * Python 環境がない場合は JS 実装の厳密チェックにフォールバック
  */
 function validateWithPythonJsonSchema(schema: any): { valid: boolean; error?: string } {
   try {
@@ -51,10 +53,88 @@ function validateWithPythonJsonSchema(schema: any): { valid: boolean; error?: st
   } catch (err: any) {
     const stdout = err.stdout?.toString() || '';
     const stderr = err.stderr?.toString() || '';
+    // Python または jsonschema がない場合のフォールバック検証
+    if (stdout.includes('No module named jsonschema') || err.code === 'ENOENT') {
+      return fallbackJsDraft202012Check(schema);
+    }
     return { valid: false, error: stdout || stderr || err.message };
   }
 }
 
+/**
+ * JS 実装による Draft 2020-12 構造規則チェック (フォールバック)
+ */
+function fallbackJsDraft202012Check(schema: any): { valid: boolean; error?: string } {
+  const allowedTypes = new Set([
+    'array',
+    'boolean',
+    'integer',
+    'null',
+    'number',
+    'object',
+    'string',
+  ]);
+
+  function check(s: any, path: string = ''): string | null {
+    if (!s || typeof s !== 'object') return null;
+
+    if ('type' in s) {
+      if (typeof s.type === 'string') {
+        if (!allowedTypes.has(s.type)) {
+          return `at '${path}/type': value must be one of 'array', 'boolean', 'integer', 'null', 'number', 'object', 'string' (got '${s.type}')`;
+        }
+      } else if (Array.isArray(s.type)) {
+        if (s.type.length === 0) {
+          return `at '${path}/type': array must have at least 1 item`;
+        }
+        const seen = new Set<string>();
+        for (const t of s.type) {
+          if (!allowedTypes.has(t)) {
+            return `at '${path}/type': array item '${t}' is invalid type`;
+          }
+          if (seen.has(t)) {
+            return `at '${path}/type': duplicate type item '${t}' violates uniqueItems`;
+          }
+          seen.add(t);
+        }
+      } else {
+        return `at '${path}/type': got ${typeof s.type}, want string or array`;
+      }
+    }
+
+    if ('items' in s && Array.isArray(s.items)) {
+      return `at '${path}/items': array form of items is invalid under Draft 2020-12 (must use prefixItems)`;
+    }
+
+    if ('required' in s) {
+      if (!Array.isArray(s.required)) {
+        return `at '${path}/required': must be an array of strings`;
+      }
+      const seenReq = new Set<string>();
+      for (const r of s.required) {
+        if (typeof r !== 'string') {
+          return `at '${path}/required': item ${r} is not a string`;
+        }
+        if (seenReq.has(r)) {
+          return `at '${path}/required': duplicate required item '${r}'`;
+        }
+        seenReq.add(r);
+      }
+    }
+
+    if (s.properties && typeof s.properties === 'object') {
+      for (const [k, v] of Object.entries(s.properties)) {
+        const err = check(v, `${path}/properties/${k}`);
+        if (err) return err;
+      }
+    }
+
+    return null;
+  }
+
+  const err = check(schema);
+  return err ? { valid: false, error: err } : { valid: true };
+}
 
 describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compatibility', () => {
   describe('1. Reproduction of Issue: Uppercase Type Enum fails Draft 2020-12 Metaschema', () => {
@@ -99,10 +179,21 @@ describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compa
       expect(normalizeJsonSchemaType(Type.TYPE_UNSPECIFIED)).toBeUndefined();
     });
 
-    it('handles type arrays e.g. ["STRING", "NULL"] -> ["string", "null"]', () => {
+    it('normalizes common type aliases (int, float, bool, str) to standard JSON Schema primitive types', () => {
+      expect(normalizeJsonSchemaType('int')).toBe('integer');
+      expect(normalizeJsonSchemaType('float')).toBe('number');
+      expect(normalizeJsonSchemaType('double')).toBe('number');
+      expect(normalizeJsonSchemaType('bool')).toBe('boolean');
+      expect(normalizeJsonSchemaType('str')).toBe('string');
+    });
+
+    it('handles type arrays e.g. ["STRING", "NULL"] -> ["string", "null"] and deduplicates to avoid uniqueItems failure', () => {
       expect(normalizeJsonSchemaType(['STRING', 'NULL'])).toEqual(['string', 'null']);
-      expect(normalizeJsonSchemaType(['STRING', 'TYPE_UNSPECIFIED'])).toEqual(['string']);
+      expect(normalizeJsonSchemaType(['STRING', 'TYPE_UNSPECIFIED'])).toBe('string');
       expect(normalizeJsonSchemaType(['TYPE_UNSPECIFIED'])).toBeUndefined();
+      // Deduplication avoids Draft 2020-12 'uniqueItems: true' error
+      expect(normalizeJsonSchemaType(['STRING', 'string'])).toBe('string');
+      expect(normalizeJsonSchemaType(['STRING', 'NULL', 'string'])).toEqual(['string', 'null']);
     });
 
     it('recursively normalizes complex schemas with properties, items, enum, and anyOf/allOf/oneOf', () => {
@@ -155,18 +246,73 @@ describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compa
       expect(validation.valid).toBe(true);
     });
 
-    it('cleans up invalid or duplicate items in required arrays', () => {
+    it('cleans up invalid or duplicate items in required arrays and promotes child required: true', () => {
       const schemaWithBadRequired = {
         type: Type.OBJECT,
         properties: {
-          a: { type: Type.STRING },
+          a: { type: Type.STRING, required: true },
           b: { type: Type.STRING },
         },
-        required: ['a', 'a', '', null as any, 123 as any, 'b'],
+        required: ['b', 'b', '', null as any, 123 as any],
       };
 
       const normalized = normalizeJsonSchema(schemaWithBadRequired);
-      expect(normalized.required).toEqual(['a', 'b']);
+      expect(normalized.required).toContain('a');
+      expect(normalized.required).toContain('b');
+      expect(normalized.required.length).toBe(2);
+      expect(normalized.properties.a.required).toBeUndefined(); // Removed boolean required from child property
+    });
+
+    it('normalizes single string required to array', () => {
+      const schema = {
+        type: Type.OBJECT,
+        properties: {
+          path: { type: Type.STRING },
+        },
+        required: 'path' as any,
+      };
+
+      const normalized = normalizeJsonSchema(schema);
+      expect(normalized.required).toEqual(['path']);
+      const validation = validateWithPythonJsonSchema(normalized);
+      expect(validation.valid).toBe(true);
+    });
+
+    it('converts legacy items array to single items schema or prefixItems to comply with Draft 2020-12', () => {
+      // Single item array in items: unwrap to items: schema
+      const singleItemArray = {
+        type: Type.ARRAY,
+        items: [{ type: Type.STRING }],
+      };
+      const normalizedSingle = normalizeJsonSchema(singleItemArray);
+      expect(normalizedSingle.items).toEqual({ type: 'string' });
+      expect(Array.isArray(normalizedSingle.items)).toBe(false);
+      const val1 = validateWithPythonJsonSchema(normalizedSingle);
+      expect(val1.valid).toBe(true);
+
+      // Multiple items array in items: convert to prefixItems
+      const multiItemArray = {
+        type: Type.ARRAY,
+        items: [{ type: Type.STRING }, { type: Type.NUMBER }],
+      };
+      const normalizedMulti = normalizeJsonSchema(multiItemArray);
+      expect(normalizedMulti.prefixItems).toBeDefined();
+      expect(normalizedMulti.prefixItems.length).toBe(2);
+      expect(normalizedMulti.items).toBeUndefined();
+      const val2 = validateWithPythonJsonSchema(normalizedMulti);
+      expect(val2.valid).toBe(true);
+    });
+
+    it('adds default items to array type when items is omitted (for OpenAI compliance)', () => {
+      const arrayWithoutItems = {
+        type: Type.ARRAY,
+      };
+      const normalized = normalizeJsonSchema(arrayWithoutItems);
+      expect(normalized.type).toBe('array');
+      expect(normalized.items).toBeDefined();
+      expect(normalized.items.type).toBe('string');
+      const val = validateWithPythonJsonSchema(normalized);
+      expect(val.valid).toBe(true);
     });
   });
 
@@ -253,6 +399,26 @@ describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compa
       expect(tools[1].function.name).toBe('list_files');
       expect(tools[1].function.parameters.type).toBe('object');
       expect(tools[1].function.parameters.properties.pattern.type).toBe('string');
+    });
+
+    it('correctly unwraps Gemini Tool[] object containing functionDeclarations (MELONPAN_TOOLS)', () => {
+      const formatted = formatOpenAITools(MELONPAN_TOOLS);
+      expect(formatted.length).toBe(11);
+      const names = formatted.map((t) => t.function.name);
+      expect(names).toContain('write_file');
+      expect(names).toContain('edit_file');
+      expect(names).toContain('complete_task');
+      expect(names).not.toContain('unknown_tool');
+    });
+
+    it('correctly unwraps ToolRegistry.toGeminiTools() output', () => {
+      const registry = new ToolRegistry([new WriteFileTool(), new ReadFileTool()]);
+      const geminiTools = registry.toGeminiTools();
+      const openaiTools = formatOpenAITools(geminiTools);
+
+      expect(openaiTools.length).toBe(2);
+      expect(openaiTools[0].function.name).toBe('write_file');
+      expect(openaiTools[1].function.name).toBe('read_file');
     });
 
     it('handles already-wrapped OpenAI tool definitions gracefully', () => {
