@@ -129,6 +129,12 @@ export class AgentRuntime {
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
 
+    // Capture baseline metrics from session before running this turn to avoid double-counting running totals
+    const baseBilledInput = session.metrics?.billedInputTokens || 0;
+    const baseBilledOutput = session.metrics?.billedOutputTokens || 0;
+    const baseCached = session.metrics?.cachedTokens || 0;
+    const baseTotal = session.metrics?.totalTokens || 0;
+
     const assistantMsgId = `asst_${Date.now()}`;
     const assistantMsg: Message = {
       id: assistantMsgId,
@@ -398,12 +404,12 @@ export class AgentRuntime {
             callbacks.onMetricsUpdate((prev) => ({
               ...prev,
               billedInputTokens:
-                prev.billedInputTokens + (event.payload.promptTokens || 0),
+                baseBilledInput + (event.payload.promptTokens || 0),
               billedOutputTokens:
-                prev.billedOutputTokens + (event.payload.completionTokens || 0),
+                baseBilledOutput + (event.payload.completionTokens || 0),
               cachedTokens:
-                prev.cachedTokens + (event.payload.cachedPromptTokens || 0),
-              totalTokens: prev.totalTokens + (event.payload.totalTokens || 0),
+                baseCached + (event.payload.cachedPromptTokens || 0),
+              totalTokens: baseTotal + (event.payload.totalTokens || 0),
               currentContextTokens:
                 event.payload.contextWindowTokens || prev.currentContextTokens,
             }));
