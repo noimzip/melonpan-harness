@@ -132,7 +132,147 @@ export function pruneChatHistory(
 
   for (let idx = 0; idx < limitIndex; idx++) {
     const item = history[idx];
-    if (!item?.parts || !Array.isArray(item.parts)) continue;
+    if (!item) continue;
+
+    // A. OpenAI互換形式 (LLMMessage: { role, content, tool_calls, ... }) の処理
+    if (!item.parts || !Array.isArray(item.parts)) {
+      // 1. role === 'tool' のツール出力マスク (#26)
+      const isLatestProtectedTurn =
+        preserveRecent > 0 && idx >= history.length - preserveRecent;
+      if (
+        outputThreshold !== undefined &&
+        item.role === 'tool' &&
+        !isLatestProtectedTurn &&
+        typeof item.content === 'string' &&
+        item.content.length >= outputThreshold &&
+        !item.content.startsWith('<Tool output pruned:')
+      ) {
+        const originalLen = item.content.length;
+        const preview = item.content.slice(0, 160).replace(/\n/g, ' ');
+        const replacement = `<Tool output pruned: ${originalLen} chars. Preview: ${preview}...>`;
+        item.content = replacement;
+        prunedCallsCount++;
+        savedCharsCount += originalLen - replacement.length;
+      }
+
+      // 2. role === 'assistant' のツール引数マスク (write_file / edit_file)
+      if (item.role === 'assistant') {
+        // 過去ターンのThoughtマスク
+        if (
+          prunePastThoughts &&
+          idx < lastModelIdx &&
+          typeof item.thought === 'string' &&
+          item.thought.length > 40 &&
+          !item.thought.startsWith('<Thought preserved')
+        ) {
+          const originalLen = item.thought.length;
+          const replacement = `<Thought preserved: ${originalLen} chars>`;
+          item.thought = replacement;
+          prunedCallsCount++;
+          savedCharsCount += originalLen - replacement.length;
+        }
+
+        if (Array.isArray(item.tool_calls)) {
+          for (const tc of item.tool_calls) {
+            const fnName = tc?.function?.name || tc?.name;
+            if (fnName === 'write_file') {
+              if (typeof tc.function?.arguments === 'string') {
+                try {
+                  const parsed = JSON.parse(tc.function.arguments);
+                  if (
+                    typeof parsed.content === 'string' &&
+                    parsed.content.length >= writeThreshold &&
+                    !parsed.content.startsWith('<Content preserved in VFS:')
+                  ) {
+                    const originalLen = parsed.content.length;
+                    parsed.content = `<Content preserved in VFS: ${originalLen} chars>`;
+                    const newArgs = JSON.stringify(parsed);
+                    savedCharsCount += tc.function.arguments.length - newArgs.length;
+                    tc.function.arguments = newArgs;
+                    prunedCallsCount++;
+                  }
+                } catch {
+                  // JSON parse failure, keep original
+                }
+              } else if (tc.function?.arguments && typeof tc.function.arguments === 'object') {
+                const content = tc.function.arguments.content;
+                if (
+                  typeof content === 'string' &&
+                  content.length >= writeThreshold &&
+                  !content.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = content.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.content = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+              }
+            } else if (fnName === 'edit_file') {
+              const effectiveEditThreshold = isNumberArg ? Math.max(600, editThreshold) : editThreshold;
+              if (typeof tc.function?.arguments === 'string') {
+                try {
+                  const parsed = JSON.parse(tc.function.arguments);
+                  let changed = false;
+                  if (
+                    typeof parsed.replace === 'string' &&
+                    parsed.replace.length >= effectiveEditThreshold &&
+                    !parsed.replace.startsWith('<Content preserved in VFS:')
+                  ) {
+                    parsed.replace = `<Content preserved in VFS: ${parsed.replace.length} chars>`;
+                    changed = true;
+                  }
+                  if (
+                    typeof parsed.search === 'string' &&
+                    parsed.search.length >= effectiveEditThreshold &&
+                    !parsed.search.startsWith('<Content preserved in VFS:')
+                  ) {
+                    parsed.search = `<Content preserved in VFS: ${parsed.search.length} chars>`;
+                    changed = true;
+                  }
+                  if (changed) {
+                    const newArgs = JSON.stringify(parsed);
+                    savedCharsCount += tc.function.arguments.length - newArgs.length;
+                    tc.function.arguments = newArgs;
+                    prunedCallsCount++;
+                  }
+                } catch {
+                  // keep original
+                }
+              } else if (tc.function?.arguments && typeof tc.function.arguments === 'object') {
+                const replaceText = tc.function.arguments.replace;
+                if (
+                  typeof replaceText === 'string' &&
+                  replaceText.length >= effectiveEditThreshold &&
+                  !replaceText.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = replaceText.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.replace = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+                const searchText = tc.function.arguments.search;
+                if (
+                  typeof searchText === 'string' &&
+                  searchText.length >= effectiveEditThreshold &&
+                  !searchText.startsWith('<Content preserved in VFS:')
+                ) {
+                  const originalLen = searchText.length;
+                  const replacement = `<Content preserved in VFS: ${originalLen} chars>`;
+                  tc.function.arguments.search = replacement;
+                  prunedCallsCount++;
+                  savedCharsCount += originalLen - replacement.length;
+                }
+              }
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    // B. Gemini形式 ({ role, parts: [...] }) の処理
 
     // 0. 過去ターンのThought (思考プロセス) マスク処理
     // 最新モデルターン (lastModelIdx) より前の過去ターンの thought: true / 思考テキストをマスク

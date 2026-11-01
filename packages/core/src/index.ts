@@ -12,6 +12,7 @@ import {
   ToolMiddleware,
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
+import { LocalDiskFS } from './vfs/local-disk-fs.js';
 import { AgentSession } from './session/agent-session.js';
 import {
   createPermissionMiddleware,
@@ -45,19 +46,6 @@ export class MelonpanCore implements IAgentRuntime {
   private providerRegistry: ProviderRegistry;
 
   constructor(options: MelonpanCoreOptions = {}) {
-    this.vfs = options.vfs ?? new VirtualFS();
-    this.skillManager =
-      options.skillManager ??
-      new SkillManager({
-        skillsDir: options.skillsDir,
-        fs: this.vfs,
-      });
-
-    this.providerRegistry = new ProviderRegistry();
-    if (options.provider) {
-      this.providerRegistry.registerProvider(options.provider);
-    }
-
     const maxContextTokens = options.maxContextTokens ?? 128000;
     const sharedStrategies =
       options.contextStrategies ?? [
@@ -70,7 +58,8 @@ export class MelonpanCore implements IAgentRuntime {
       model: options.model ?? 'gemini-3.8-flash',
       thinkingLevel: options.thinkingLevel ?? 'high',
       maxContextTokens,
-      fs: this.vfs,
+      workspaceDir: options.workspaceDir,
+      fs: options.vfs,
       store: options.sessionStore,
       contextStrategies: sharedStrategies,
       onRunPrompt: (prompt, runOpts) =>
@@ -79,6 +68,19 @@ export class MelonpanCore implements IAgentRuntime {
           signal: runOpts?.signal,
         }),
     });
+
+    this.vfs = options.vfs ?? (this.session as any).vfs;
+    this.skillManager =
+      options.skillManager ??
+      new SkillManager({
+        skillsDir: options.skillsDir,
+        fs: options.vfs ?? new LocalDiskFS({ rootDir: process.cwd() }),
+      });
+
+    this.providerRegistry = new ProviderRegistry();
+    if (options.provider) {
+      this.providerRegistry.registerProvider(options.provider);
+    }
 
     // ミドルウェアパイプライン構築 (#23)
     const middlewares: ToolMiddleware[] = [
@@ -295,6 +297,7 @@ export * from './runtime/index.js';
 export * from './permissions/index.js';
 export * from './session/index.js';
 export * from './cache/index.js';
+export * from './git/index.js';
 export * from './safety/index.js';
 export * from './providers/index.js';
 export * from './react-agent.js';

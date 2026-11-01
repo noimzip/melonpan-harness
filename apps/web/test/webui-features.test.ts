@@ -172,6 +172,19 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(ctx.executePrompt).toHaveBeenCalledWith('ボス戦を追加', 'plan');
     });
 
+    it('executes /goal command to toggle or run direct goal prompt with subagents', async () => {
+      const { ctx, loggedMessages } = createTestContext();
+
+      // Toggle goal mode ON
+      await webCommandRegistry.executeCommand('/goal', ctx);
+      expect(ctx.session.mode).toBe('goal');
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('ON');
+
+      // Direct goal prompt
+      await webCommandRegistry.executeCommand('/goal 完全なゲーム実装とテスト', ctx);
+      expect(ctx.executePrompt).toHaveBeenCalledWith('完全なゲーム実装とテスト', 'goal');
+    });
+
     it('executes /cost command and calculates billed usage & context occupation', async () => {
       const { ctx, loggedMessages } = createTestContext();
       ctx.session.metrics = {

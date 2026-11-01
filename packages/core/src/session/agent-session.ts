@@ -18,6 +18,9 @@ import {
 import { AgentEventBus } from '../runtime/event-bus.js';
 import { PermissionCoordinator } from '../permissions/index.js';
 import { VirtualFS } from '../vfs/virtual-fs.js';
+import { LocalDiskFS } from '../vfs/local-disk-fs.js';
+import { GitService } from '../git/git-service.js';
+import * as path from 'node:path';
 import {
   createDetailedTokenUsage,
   estimateMessagesTokens,
@@ -28,10 +31,12 @@ import { InMemorySessionStore } from './session-store.js';
 
 export interface AgentSessionOptions {
   sessionId?: string;
-  mode?: 'plan' | 'act' | 'auto' | string;
+  mode?: 'plan' | 'act' | 'auto' | 'goal' | string;
   model?: string;
   thinkingLevel?: string;
   maxContextTokens?: number;
+  workspaceDir?: string;
+  enableGit?: boolean;
   fs?: IFileSystem;
   store?: ISessionStore;
   contextStrategies?: IContextStrategy[];
@@ -39,7 +44,7 @@ export interface AgentSessionOptions {
   permissionCoordinator?: PermissionCoordinator;
   onRunPrompt?: (
     prompt: string,
-    options?: { mode?: 'plan' | 'act' | 'auto'; signal?: AbortSignal }
+    options?: { mode?: 'plan' | 'act' | 'auto' | 'goal'; signal?: AbortSignal }
   ) => AsyncGenerator<AgentEvent, void, unknown>;
 }
 
@@ -48,10 +53,13 @@ export interface AgentSessionOptions {
  */
 export class AgentSession implements IAgentRuntime {
   readonly sessionId: string;
+  readonly workspaceDir: string;
+  private enableGit: boolean;
+  private latestCommit: string | null = null;
   private createdAt: number;
   private updatedAt: number;
   private status: SessionStateSnapshot['status'] = 'idle';
-  private mode: 'plan' | 'act' | 'auto' | string;
+  private mode: 'plan' | 'act' | 'auto' | 'goal' | string;
   private model: string;
   private thinkingLevel: string;
   private maxContextTokens: number;
@@ -86,8 +94,19 @@ export class AgentSession implements IAgentRuntime {
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
     this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.enableGit = options.enableGit ?? true;
 
-    this.vfs = options.fs ?? new VirtualFS();
+    // セッション専用物理ディレクトリの設定（VFSから実ディスクへ移行）
+    const defaultWorkspaceDir = path.resolve(
+      process.cwd(),
+      '.melonpan',
+      'sessions',
+      this.sessionId
+    );
+    this.workspaceDir = options.workspaceDir || defaultWorkspaceDir;
+
+    // options.fs が明示された場合はそれを使用し、未指定の場合はセッション専用 LocalDiskFS を使用
+    this.vfs = options.fs ?? new LocalDiskFS({ rootDir: this.workspaceDir });
     this.store = options.store ?? new InMemorySessionStore();
     this.contextStrategies = options.contextStrategies ?? [
       new ToolOutputPruningStrategy(),
@@ -98,6 +117,26 @@ export class AgentSession implements IAgentRuntime {
     this.permissionCoordinator =
       options.permissionCoordinator ?? new PermissionCoordinator();
     this.onRunPrompt = options.onRunPrompt;
+
+    // セッションフォルダ初期化と git init 実行
+    if (this.enableGit && this.vfs instanceof LocalDiskFS) {
+      GitService.initSessionRepo(this.workspaceDir).catch(() => {});
+
+      // 成果物変更時に自動で git commit して差分記録
+      this.eventBus.subscribe((ev) => {
+        if (ev.type === 'FILE_CHANGED') {
+          const action = (ev as any).payload?.action || 'modified';
+          const p = (ev as any).payload?.path || 'file';
+          GitService.commitChange(this.workspaceDir, `${action}: ${p}`).then((hash) => {
+            if (hash) this.latestCommit = hash;
+          });
+        } else if (ev.type === 'COMPLETE') {
+          GitService.commitChange(this.workspaceDir, 'checkpoint: task turn complete').then((hash) => {
+            if (hash) this.latestCommit = hash;
+          });
+        }
+      });
+    }
   }
 
   getEventBus(): AgentEventBus {
@@ -394,6 +433,8 @@ export class AgentSession implements IAgentRuntime {
       lastSeq: this.eventBus.getLastSeq(),
       turns: this.turns,
       files,
+      workspaceDir: this.workspaceDir,
+      latestCommit: this.latestCommit,
       pendingPermission: this.pendingPermission,
       pendingPlan: this.pendingPlan,
       usage: this.getUsage(),

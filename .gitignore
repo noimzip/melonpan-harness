@@ -10,3 +10,5 @@ plan.md
 **/plan.md
 .env
 .env.*
+.melonpan/
+.tmp-test-sessions/

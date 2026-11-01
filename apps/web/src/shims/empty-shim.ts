@@ -13,6 +13,7 @@ export const fileURLToPath = (url: string | URL) => String(url);
 export const pathToFileURL = (path: string) => new URL(`file://${path}`);
 
 export const exec = () => {};
+export const execFile = () => {};
 export const spawn = () => {};
 
 export default {
@@ -26,5 +27,6 @@ export default {
   fileURLToPath,
   pathToFileURL,
   exec,
+  execFile,
   spawn,
 };

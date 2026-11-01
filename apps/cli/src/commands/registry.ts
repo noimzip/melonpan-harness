@@ -11,6 +11,7 @@ import { keyCommand } from './handlers/key.js';
 import { permissionsCommand } from './handlers/permissions.js';
 import { agentsCommand } from './handlers/agents.js';
 import { compactCommand } from './handlers/compact.js';
+import { goalCommand } from './handlers/goal.js';
 
 export class CommandRegistry {
   private commands: Map<string, CommandDefinition> = new Map();
@@ -19,6 +20,7 @@ export class CommandRegistry {
     this.register(modelCommand);
     this.register(effortCommand);
     this.register(planCommand);
+    this.register(goalCommand);
     this.register(clearCommand);
     this.register(exportCommand);
     this.register(helpCommand);
