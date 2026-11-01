@@ -213,7 +213,10 @@ export function pruneChatHistory(
       }
 
       // 3. read_file / grep_search / run_command 等の巨大 functionResponse 出力マスク (#26)
-      if (outputThreshold !== undefined && part?.functionResponse) {
+      // preserveRecent が有効な場合、直近のツール実行結果はモデルが参照して次のアクションを決定するために保護する
+      const isLatestProtectedTurn =
+        preserveRecent > 0 && idx >= history.length - preserveRecent;
+      if (outputThreshold !== undefined && part?.functionResponse && !isLatestProtectedTurn) {
         const resObj = part.functionResponse.response;
         const rawContent =
           typeof resObj === 'string'

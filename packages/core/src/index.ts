@@ -17,6 +17,7 @@ import {
   createPermissionMiddleware,
   createSafetyGuardMiddleware,
 } from './permissions/index.js';
+import { createRepetitiveCallGuardMiddleware } from './safety/index.js';
 import { ProviderRegistry } from './providers/index.js';
 import {
   LlmSummaryCompactionStrategy,
@@ -80,7 +81,10 @@ export class MelonpanCore implements IAgentRuntime {
     });
 
     // ミドルウェアパイプライン構築 (#23)
-    const middlewares: ToolMiddleware[] = [createSafetyGuardMiddleware()];
+    const middlewares: ToolMiddleware[] = [
+      createSafetyGuardMiddleware(),
+      createRepetitiveCallGuardMiddleware(),
+    ];
     if (options.permissionPolicy) {
       middlewares.push(
         createPermissionMiddleware(
@@ -291,5 +295,6 @@ export * from './runtime/index.js';
 export * from './permissions/index.js';
 export * from './session/index.js';
 export * from './cache/index.js';
+export * from './safety/index.js';
 export * from './providers/index.js';
 export * from './react-agent.js';

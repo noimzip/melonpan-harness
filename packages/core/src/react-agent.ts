@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
 import { ContextCacheManager } from './cache/context-cache-manager.js';
+import { createRepetitiveCallGuardMiddleware } from './safety/index.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
 
@@ -135,7 +136,9 @@ export class ReactAgent {
           }
         }
       }
-      this.toolRegistry = new ToolRegistry(baseTools, options.middlewares || []);
+      const middlewares = options.middlewares ? [...options.middlewares] : [];
+      middlewares.push(createRepetitiveCallGuardMiddleware());
+      this.toolRegistry = new ToolRegistry(baseTools, middlewares);
     }
 
     this.promptComposer = options.promptComposer ?? new PromptComposer();
@@ -436,6 +439,7 @@ export class ReactAgent {
           writeThresholdChars: 200,
           editThresholdChars: 300,
           outputThresholdChars: 400,
+          preserveRecentMessages: 2,
           prunePastThoughts: true,
         });
 
@@ -443,7 +447,7 @@ export class ReactAgent {
           const compRes = await strategy.apply(chatHistory, {
             maxContextTokens: this.maxContextTokens,
           });
-          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+          if (compRes.compacted) {
             yield {
               type: 'CONTEXT_COMPACTED',
               payload: {
@@ -451,8 +455,13 @@ export class ReactAgent {
                 beforeTokens: compRes.beforeTokens,
                 afterTokens: compRes.afterTokens,
                 savedTokens: compRes.savedTokens,
+                savedCharsCount: compRes.savedCharsCount,
                 reductionRatio: compRes.reductionRatio,
-                summary: compRes.summary,
+                summary:
+                  compRes.summary ||
+                  (strategy.id === 'tool-output-pruning'
+                    ? `Pruned ${compRes.savedCharsCount || 0} characters from context history`
+                    : undefined),
               },
               timestamp: Date.now(),
             };
@@ -791,6 +800,7 @@ export class ReactAgent {
           writeThresholdChars: 200,
           editThresholdChars: 300,
           outputThresholdChars: 400,
+          preserveRecentMessages: 2,
           prunePastThoughts: true,
         });
 
@@ -798,7 +808,7 @@ export class ReactAgent {
           const compRes = await strategy.apply(messages, {
             maxContextTokens: this.maxContextTokens,
           });
-          if (compRes.compacted && strategy.id !== 'tool-output-pruning') {
+          if (compRes.compacted) {
             yield {
               type: 'CONTEXT_COMPACTED',
               payload: {
@@ -806,8 +816,13 @@ export class ReactAgent {
                 beforeTokens: compRes.beforeTokens,
                 afterTokens: compRes.afterTokens,
                 savedTokens: compRes.savedTokens,
+                savedCharsCount: compRes.savedCharsCount,
                 reductionRatio: compRes.reductionRatio,
-                summary: compRes.summary,
+                summary:
+                  compRes.summary ||
+                  (strategy.id === 'tool-output-pruning'
+                    ? `Pruned ${compRes.savedCharsCount || 0} characters from context history`
+                    : undefined),
               },
               timestamp: Date.now(),
             };
