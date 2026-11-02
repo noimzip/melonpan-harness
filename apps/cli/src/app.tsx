@@ -444,6 +444,12 @@ export const App: React.FC<AppProps> = ({
             setCurrentActivity(
               `Context compacted (${event.payload.savedTokens} tokens saved)`
             );
+            baseSessionUsageRef.current = {
+              ...baseSessionUsageRef.current,
+              savedTokens:
+                (baseSessionUsageRef.current.savedTokens || 0) +
+                (event.payload.savedTokens || 0),
+            };
             setSessionUsage((prev) => ({
               ...prev,
               savedTokens: (prev.savedTokens || 0) + event.payload.savedTokens,
@@ -453,7 +459,7 @@ export const App: React.FC<AppProps> = ({
           case 'USAGE':
             if (event.payload) {
               const base = baseSessionUsageRef.current;
-              setSessionUsage({
+              const updatedUsage: SessionUsage = {
                 ...base,
                 promptTokens: base.promptTokens + (event.payload.promptTokens || 0),
                 completionTokens: base.completionTokens + (event.payload.completionTokens || 0),
@@ -475,7 +481,9 @@ export const App: React.FC<AppProps> = ({
                     0),
                 contextWindowTokens: event.payload.contextWindowTokens ?? base.contextWindowTokens,
                 maxContextTokens: event.payload.maxContextWindowTokens ?? base.maxContextTokens,
-              });
+                savedTokens: base.savedTokens,
+              };
+              setSessionUsage(updatedUsage);
             }
             break;
 
@@ -627,21 +635,25 @@ export const App: React.FC<AppProps> = ({
     const core = getOrCreateCore(mode);
     const session = core.getSession();
     const compacted = await session.compact({ force: true });
-    if (compacted) {
-      setEvents((prev) => [
-        ...prev,
-        {
-          type: 'CONTEXT_COMPACTED',
-          payload: compacted,
-          timestamp: Date.now(),
-        },
-      ]);
-      setSessionUsage((prev) => ({
-        ...prev,
-        contextWindowTokens: compacted.afterTokens,
-        savedTokens: (prev.savedTokens || 0) + compacted.savedTokens,
-      }));
-    }
+            if (compacted) {
+              setEvents((prev) => [
+                ...prev,
+                {
+                  type: 'CONTEXT_COMPACTED',
+                  payload: compacted,
+                  timestamp: Date.now(),
+                },
+              ]);
+              setSessionUsage((prev) => {
+                const next = {
+                  ...prev,
+                  contextWindowTokens: compacted.afterTokens,
+                  savedTokens: (prev.savedTokens || 0) + compacted.savedTokens,
+                };
+                baseSessionUsageRef.current = next;
+                return next;
+              });
+            }
   };
 
   // Command execution context shared with slash command handlers

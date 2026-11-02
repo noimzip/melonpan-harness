@@ -83,6 +83,12 @@ export class AgentSession implements IAgentRuntime {
   private cachedPromptTokens: number = 0;
   private currentContextTokens: number = 0;
 
+  // Issue #62: マルチターン対話（複数の run 呼び出し）で各 run の USAGE 累計が前の run を上書き・消失させないためのベースライン
+  private runBaseBilledPromptTokens: number = 0;
+  private runBaseRawPromptTokens: number = 0;
+  private runBaseBilledCompletionTokens: number = 0;
+  private runBaseCachedPromptTokens: number = 0;
+
   private onRunPrompt?: AgentSessionOptions['onRunPrompt'];
 
   constructor(options: AgentSessionOptions = {}) {
@@ -240,6 +246,16 @@ export class AgentSession implements IAgentRuntime {
   }
 
   /**
+   * Issue #62: 新規プロンプト実行 (run) 開始時に現在までのセッション累計トークンをベースラインとしてスナップショットする
+   */
+  beginRunUsageTracking(): void {
+    this.runBaseBilledPromptTokens = this.billedPromptTokens;
+    this.runBaseRawPromptTokens = this.rawPromptTokens;
+    this.runBaseBilledCompletionTokens = this.billedCompletionTokens;
+    this.runBaseCachedPromptTokens = this.cachedPromptTokens;
+  }
+
+  /**
    * イベントをセッションバスへ記録・配信し、セッション状態スナップショットをリアルタイム更新する (#52, #53)
    */
   recordEvent<T = any>(event: AgentEvent<T>): AgentEvent<T> {
@@ -296,23 +312,28 @@ export class AgentSession implements IAgentRuntime {
 
       case 'USAGE': {
         const p = event.payload as any;
-        if (p?.rawPromptTokens !== undefined) {
-          this.rawPromptTokens = Math.max(this.rawPromptTokens, p.rawPromptTokens);
-        } else if (p?.promptTokens !== undefined) {
-          this.rawPromptTokens = Math.max(this.rawPromptTokens, p.promptTokens);
-        }
-        if (p?.cachedPromptTokens !== undefined) {
-          this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.cachedPromptTokens);
-        }
-        if (p?.billedPromptTokens !== undefined) {
-          this.billedPromptTokens = Math.max(this.billedPromptTokens, p.billedPromptTokens);
-        } else if (p?.promptTokens !== undefined) {
-          const uncached = Math.max(0, p.promptTokens - (p.cachedPromptTokens || 0));
-          this.billedPromptTokens = Math.max(this.billedPromptTokens, uncached);
-        }
-        if (p?.completionTokens !== undefined) {
-          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.completionTokens);
-        }
+        const runRaw = p?.rawPromptTokens ?? p?.promptTokens ?? 0;
+        const runCached = p?.cachedPromptTokens ?? 0;
+        const runBilledPrompt =
+          p?.billedPromptTokens ?? Math.max(0, (p?.promptTokens || 0) - runCached);
+        const runCompletion = p?.completionTokens ?? 0;
+
+        this.rawPromptTokens = Math.max(
+          this.rawPromptTokens,
+          this.runBaseRawPromptTokens + runRaw
+        );
+        this.cachedPromptTokens = Math.max(
+          this.cachedPromptTokens,
+          this.runBaseCachedPromptTokens + runCached
+        );
+        this.billedPromptTokens = Math.max(
+          this.billedPromptTokens,
+          this.runBaseBilledPromptTokens + runBilledPrompt
+        );
+        this.billedCompletionTokens = Math.max(
+          this.billedCompletionTokens,
+          this.runBaseBilledCompletionTokens + runCompletion
+        );
         if (p?.contextWindowTokens !== undefined) {
           this.currentContextTokens = p.contextWindowTokens;
         }
@@ -322,20 +343,34 @@ export class AgentSession implements IAgentRuntime {
       case 'COMPLETE': {
         const p = event.payload as any;
         if (p?.usage) {
-          const rawPrompt = p.usage.rawPromptTokens ?? p.usage.promptTokens ?? 0;
-          this.rawPromptTokens = Math.max(this.rawPromptTokens, rawPrompt);
-          if (p.usage.cachedPromptTokens !== undefined) {
-            this.cachedPromptTokens = Math.max(this.cachedPromptTokens, p.usage.cachedPromptTokens);
-          }
-          const bPrompt =
-            p.usage.billedPromptTokens ??
-            Math.max(0, (p.usage.promptTokens || 0) - (p.usage.cachedPromptTokens || 0));
-          this.billedPromptTokens = Math.max(this.billedPromptTokens, bPrompt);
-          this.billedCompletionTokens = Math.max(this.billedCompletionTokens, p.usage.completionTokens || 0);
+          const runRaw = p.usage.rawPromptTokens ?? p.usage.promptTokens ?? 0;
+          const runCached = p.usage.cachedPromptTokens ?? 0;
+          const runBilledPrompt =
+            p.usage.billedPromptTokens ?? Math.max(0, (p.usage.promptTokens || 0) - runCached);
+          const runCompletion = p.usage.billedCompletionTokens ?? p.usage.completionTokens ?? 0;
+
+          this.rawPromptTokens = Math.max(
+            this.rawPromptTokens,
+            this.runBaseRawPromptTokens + runRaw
+          );
+          this.cachedPromptTokens = Math.max(
+            this.cachedPromptTokens,
+            this.runBaseCachedPromptTokens + runCached
+          );
+          this.billedPromptTokens = Math.max(
+            this.billedPromptTokens,
+            this.runBaseBilledPromptTokens + runBilledPrompt
+          );
+          this.billedCompletionTokens = Math.max(
+            this.billedCompletionTokens,
+            this.runBaseBilledCompletionTokens + runCompletion
+          );
           if (p.usage.contextWindowTokens !== undefined) {
             this.currentContextTokens = p.usage.contextWindowTokens;
           }
         }
+        // 次回の run に備えてベースラインを更新
+        this.beginRunUsageTracking();
         this.status = this.mode === 'plan' ? 'confirming_plan' : 'completed';
         break;
       }
@@ -595,10 +630,13 @@ export class AgentSession implements IAgentRuntime {
     this.thinkingLevel = loaded.thinkingLevel;
     this.messages = this.normalizeSessionMessages(loaded.messages || []);
     this.billedPromptTokens = loaded.usage?.billedPromptTokens ?? loaded.usage?.promptTokens ?? 0;
+    this.rawPromptTokens = loaded.usage?.rawPromptTokens ?? loaded.usage?.promptTokens ?? 0;
+    this.cachedPromptTokens = loaded.usage?.cachedPromptTokens ?? 0;
     this.billedCompletionTokens =
       loaded.usage?.billedCompletionTokens ?? loaded.usage?.completionTokens ?? 0;
     this.currentContextTokens =
       loaded.usage?.contextWindowTokens ?? estimateMessagesTokens(this.messages);
+    this.beginRunUsageTracking();
 
     if (loaded.files) {
       for (const [fp, content] of Object.entries(loaded.files)) {

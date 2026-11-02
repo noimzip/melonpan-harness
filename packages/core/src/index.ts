@@ -138,6 +138,9 @@ export class MelonpanCore implements IAgentRuntime {
       this.session.setMode(runOptions.mode);
     }
 
+    // Issue #62: 新規 run 開始時にそれまでのセッション累計トークンをベースラインとして記録
+    this.session.beginRunUsageTracking();
+
     // 1. スキルメタデータの軽量インデックス化
     const indexed = await this.skillManager.loadAllMetadata();
     yield this.session.recordEvent({

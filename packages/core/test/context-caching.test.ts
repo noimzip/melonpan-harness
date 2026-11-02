@@ -433,4 +433,110 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect((prodStrategy as any).triggerUtilization).toBe(0.85);
     expect((prodStrategy as any).keepRecentMessages).toBe(6);
   });
+
+  it('Issue #62: AgentSession accurately accumulates usage across multiple runs without overwriting or double-counting within a run', () => {
+    const session = new AgentSession({ fs: new VirtualFS() });
+
+    // Run 1: Turn 1 USAGE (1000 prompt, 200 cached, 100 completion) -> Turn 2 USAGE (2200 cumulative prompt, 1000 cached, 250 completion) -> COMPLETE
+    session.beginRunUsageTracking();
+    session.recordEvent({
+      type: 'USAGE',
+      payload: {
+        promptTokens: 1000,
+        rawPromptTokens: 1000,
+        cachedPromptTokens: 200,
+        billedPromptTokens: 800,
+        completionTokens: 100,
+        totalTokens: 1100,
+        turn: 1,
+        contextWindowTokens: 1000,
+      },
+      timestamp: Date.now(),
+    });
+    session.recordEvent({
+      type: 'USAGE',
+      payload: {
+        promptTokens: 2200,
+        rawPromptTokens: 2200,
+        cachedPromptTokens: 1000,
+        billedPromptTokens: 1200,
+        completionTokens: 250,
+        totalTokens: 2450,
+        turn: 2,
+        contextWindowTokens: 1200,
+      },
+      timestamp: Date.now(),
+    });
+    session.recordEvent({
+      type: 'COMPLETE',
+      payload: {
+        summary: 'Run 1 done',
+        files: {},
+        turns: 2,
+        durationMs: 100,
+        usage: {
+          promptTokens: 2200,
+          rawPromptTokens: 2200,
+          cachedPromptTokens: 1000,
+          billedPromptTokens: 1200,
+          completionTokens: 250,
+          billedCompletionTokens: 250,
+          totalTokens: 2450,
+          contextWindowTokens: 1200,
+        },
+      },
+      timestamp: Date.now(),
+    });
+
+    const usageAfterRun1 = session.getUsage();
+    expect(usageAfterRun1.rawPromptTokens).toBe(2200);
+    expect(usageAfterRun1.cachedPromptTokens).toBe(1000);
+    expect(usageAfterRun1.billedPromptTokens).toBe(1200);
+    expect(usageAfterRun1.completionTokens).toBe(250);
+
+    // Run 2: Smaller 1-turn follow-up (1500 prompt, 1300 cached, 80 completion)
+    // Must ADD to Run 1's baseline (2200 + 1500 = 3700 raw, 1000 + 1300 = 2300 cached, 1200 + 200 = 1400 billed)
+    session.beginRunUsageTracking();
+    session.recordEvent({
+      type: 'USAGE',
+      payload: {
+        promptTokens: 1500,
+        rawPromptTokens: 1500,
+        cachedPromptTokens: 1300,
+        billedPromptTokens: 200,
+        completionTokens: 80,
+        totalTokens: 1580,
+        turn: 1,
+        contextWindowTokens: 1500,
+      },
+      timestamp: Date.now(),
+    });
+    session.recordEvent({
+      type: 'COMPLETE',
+      payload: {
+        summary: 'Run 2 done',
+        files: {},
+        turns: 1,
+        durationMs: 50,
+        usage: {
+          promptTokens: 1500,
+          rawPromptTokens: 1500,
+          cachedPromptTokens: 1300,
+          billedPromptTokens: 200,
+          completionTokens: 80,
+          billedCompletionTokens: 80,
+          totalTokens: 1580,
+          contextWindowTokens: 1500,
+        },
+      },
+      timestamp: Date.now(),
+    });
+
+    const usageAfterRun2 = session.getUsage();
+    expect(usageAfterRun2.rawPromptTokens).toBe(3700);
+    expect(usageAfterRun2.cachedPromptTokens).toBe(2300);
+    expect(usageAfterRun2.billedPromptTokens).toBe(1400);
+    expect(usageAfterRun2.completionTokens).toBe(330);
+    expect(usageAfterRun2.contextWindowTokens).toBe(1500);
+  });
 });
