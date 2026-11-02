@@ -1046,16 +1046,15 @@ export class ReactAgent {
 
             const execRes = await execPromise;
 
+            // Issue #55: activate_skill の実行結果は functionResponse として会話履歴末尾に1回だけ追加されるため、
+            // activeSystemInstruction（先頭システムプロンプト）を後から書き換えてスキル本文を二重注入・Prefix Cache 全破壊しないよう保護する。
             if (
               call.name === 'activate_skill' &&
               !execRes.isError &&
               onSkillActivated &&
               typeof this.skillManager?.activateSkill === 'function'
             ) {
-              const activated = await this.skillManager.activateSkill(String(call.args?.name || ''));
-              if (activated) {
-                activeSystemInstruction = onSkillActivated(activated);
-              }
+              await this.skillManager.activateSkill(String(call.args?.name || ''));
             }
 
             const subUsage = execRes.metadata?.usage as any;

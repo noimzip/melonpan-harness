@@ -20,6 +20,49 @@ import { MockCommandExecutor, NodeCommandExecutor } from './command-executor.js'
 import { FetchWebProvider, MockWebProvider } from './web-provider.js';
 
 /**
+ * Issue #55: Ingestion-Time Tool Output & Diff Compaction ヘルパー
+ * 履歴に入った後の次ターンでインプレース書き換え（KV キャッシュ破壊）するのではなく、
+ * ツールが実行結果を返す瞬間（Ingestion 時）に Head + Tail 要約で適切なサイズへ丸める。
+ */
+export function compactOutputAtIngestion(
+  text: string,
+  options: {
+    maxChars?: number;
+    maxLines?: number;
+    headLines?: number;
+    tailLines?: number;
+  } = {}
+): { text: string; compacted: boolean } {
+  const maxChars = options.maxChars ?? 2000;
+  const maxLines = options.maxLines ?? 45;
+  const headLines = options.headLines ?? 20;
+  const tailLines = options.tailLines ?? 15;
+
+  const lines = text.split('\n');
+  if (text.length <= maxChars && lines.length <= maxLines) {
+    return { text, compacted: false };
+  }
+
+  if (lines.length > headLines + tailLines) {
+    const head = lines.slice(0, headLines).join('\n');
+    const tail = lines.slice(lines.length - tailLines).join('\n');
+    const omittedLines = lines.length - (headLines + tailLines);
+    const joined = `${head}\n... [Compacted ${omittedLines} lines at ingestion to preserve context & prefix cache] ...\n${tail}`;
+    if (joined.length <= maxChars) {
+      return { text: joined, compacted: true };
+    }
+  }
+
+  const headChars = Math.floor(maxChars * 0.55);
+  const tailChars = Math.floor(maxChars * 0.3);
+  const omittedChars = Math.max(0, text.length - (headChars + tailChars));
+  return {
+    text: `${text.slice(0, headChars)}\n... [Compacted ${omittedChars} chars at ingestion to preserve context & prefix cache] ...\n${text.slice(text.length - tailChars)}`,
+    compacted: true,
+  };
+}
+
+/**
  * 1. write_file ツールプラグイン (#50, #20)
  */
 export class WriteFileTool implements ITool<WriteFileArgs> {
@@ -153,7 +196,16 @@ export class EditFileTool implements ITool<EditFileArgs> {
     if (editRes.success) {
       output = editRes.diffSummary || `Successfully edited "${pathArg}".`;
       if (editRes.unifiedDiff) {
-        output += `\n\n[Applied Diff Preview]:\n${editRes.unifiedDiff}`;
+        // Issue #55: Ingestion-Time Diff Compaction
+        // UI イベント (FILE_CHANGED) および metadata.unifiedDiff には完全な Diff を保持しつつ、
+        // LLM 会話履歴に入る output は 360 文字 / 14 行を超える巨大 Diff の場合に Head+Tail 圧縮する。
+        const compactedDiff = compactOutputAtIngestion(editRes.unifiedDiff, {
+          maxChars: 360,
+          maxLines: 14,
+          headLines: 7,
+          tailLines: 4,
+        });
+        output += `\n\n[Applied Diff Preview]:\n${compactedDiff.text}`;
       }
     } else {
       output = `Error: ${editRes.error}`;
@@ -482,8 +534,24 @@ export class RunCommandTool implements ITool<RunCommandArgs> {
     parts.push(`Exit Code: ${res.exitCode ?? 'null'} (${res.durationMs}ms)`);
     if (res.timedOut) parts.push('[TIMED OUT]');
     if (res.aborted) parts.push('[ABORTED]');
-    if (res.stdout.trim()) parts.push(`STDOUT:\n${res.stdout.trim()}`);
-    if (res.stderr.trim()) parts.push(`STDERR:\n${res.stderr.trim()}`);
+    if (res.stdout.trim()) {
+      const compactedStdout = compactOutputAtIngestion(res.stdout.trim(), {
+        maxChars: 2000,
+        maxLines: 45,
+        headLines: 20,
+        tailLines: 15,
+      });
+      parts.push(`STDOUT:\n${compactedStdout.text}`);
+    }
+    if (res.stderr.trim()) {
+      const compactedStderr = compactOutputAtIngestion(res.stderr.trim(), {
+        maxChars: 2000,
+        maxLines: 45,
+        headLines: 20,
+        tailLines: 15,
+      });
+      parts.push(`STDERR:\n${compactedStderr.text}`);
+    }
 
     const isError = res.exitCode !== 0 || Boolean(res.timedOut) || Boolean(res.aborted);
 

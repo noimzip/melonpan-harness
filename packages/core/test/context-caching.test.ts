@@ -354,4 +354,46 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect(turnSnapshots[2]![1]).toBe(turnSnapshots[1]![1]);
     expect(turnSnapshots[2]![2]).toBe(turnSnapshots[1]![2]);
   });
+
+  it('Issue #55: compacts large EditFileTool diffs and RunCommandTool outputs at ingestion time while preserving full metadata/events', async () => {
+    const { createBuiltinTools, compactOutputAtIngestion } = await import('../src/tools/builtin-tools.js');
+    const vfs = new VirtualFS();
+    const initialLines = Array.from({ length: 60 }, (_, i) => `const line_${i} = ${i};`).join('\n');
+    const replacedLines = Array.from({ length: 60 }, (_, i) => `const updated_${i} = ${i * 10};`).join('\n');
+    await vfs.writeFile('game.js', initialLines);
+
+    const tools = createBuiltinTools();
+    const editTool = tools.find((t) => t.name === 'edit_file')!;
+    const emitted: any[] = [];
+
+    const editRes = await editTool.execute(
+      {
+        path: 'game.js',
+        search: initialLines,
+        replace: replacedLines,
+      },
+      { fs: vfs, emit: (e: any) => emitted.push(e) } as any
+    );
+
+    expect(editRes.isError).toBe(false);
+    // LLM output is compacted at ingestion time
+    expect(editRes.output).toContain('Compacted');
+    expect(editRes.output.length).toBeLessThan(600);
+    // Full unifiedDiff is preserved in metadata and FILE_CHANGED event for UI
+    expect(editRes.metadata?.unifiedDiff.length).toBeGreaterThan(1500);
+    expect(emitted[0]?.payload?.unifiedDiff?.length).toBeGreaterThan(1500);
+
+    // Direct helper check for huge stdout logs
+    const hugeLog = Array.from({ length: 120 }, (_, i) => `[TEST PASS] Suite ${i}: verified`).join('\n');
+    const compactedLog = compactOutputAtIngestion(hugeLog, {
+      maxChars: 1000,
+      maxLines: 30,
+      headLines: 10,
+      tailLines: 10,
+    });
+    expect(compactedLog.compacted).toBe(true);
+    expect(compactedLog.text).toContain('[TEST PASS] Suite 0: verified');
+    expect(compactedLog.text).toContain('[TEST PASS] Suite 119: verified');
+    expect(compactedLog.text).toContain('Compacted 100 lines at ingestion');
+  });
 });
