@@ -21,6 +21,8 @@ export interface HeaderProps {
   fsMode?: 'vfs' | 'disk';
   contextWindowTokens?: number;
   maxContextTokens?: number;
+  promptTokens?: number;
+  cachedPromptTokens?: number;
 }
 
 function formatTokens(num: number): string {
@@ -46,6 +48,8 @@ export const Header: React.FC<HeaderProps> = ({
   fsMode = 'vfs',
   contextWindowTokens = 0,
   maxContextTokens = 128_000,
+  promptTokens = 0,
+  cachedPromptTokens = 0,
 }) => {
   const activeKey =
     provider === 'openai'
@@ -86,12 +90,17 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  // Context window gauge calculation (#36)
+  // Context window gauge & Prefix Cache Hit Rate calculation (#36, #63)
   const ctxPercent = maxContextTokens > 0
     ? Math.min(100, Math.round((contextWindowTokens / maxContextTokens) * 100))
     : 0;
   const ctxColor =
     ctxPercent >= 90 ? 'red' : ctxPercent >= 70 ? 'yellow' : 'cyan';
+  const cacheHitPercent =
+    promptTokens > 0
+      ? Math.min(100, Math.round((cachedPromptTokens / promptTokens) * 100))
+      : 0;
+  const cacheColor = cacheHitPercent >= 50 ? 'green' : cacheHitPercent > 0 ? 'yellow' : 'gray';
 
   return (
     <Box
@@ -148,6 +157,10 @@ export const Header: React.FC<HeaderProps> = ({
           <Text color="gray">Ctx: </Text>
           <Text color={ctxColor} bold>
             {formatTokens(contextWindowTokens)}/{formatTokens(maxContextTokens)} ({ctxPercent}%)
+          </Text>
+          <Text color="gray">  |  Cache: </Text>
+          <Text color={cacheColor} bold>
+            {cacheHitPercent}%
           </Text>
           <Text color="gray">  |  Turn: {turns}/{maxTurns}</Text>
         </Box>

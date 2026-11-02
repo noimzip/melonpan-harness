@@ -41,8 +41,9 @@ export const costCommand: CommandDefinition = {
 
     // キャッシュヒット分はプロバイダー規約に応じて約75%〜90%割引 (Geminiは1/4料金)
     const cachedInputRate = pricing.inputPerMillion * 0.25;
+    const rawPromptTokens = ctx.sessionUsage.rawPromptTokens ?? promptTokens;
     const freshPromptTokens =
-      ctx.sessionUsage.billedPromptTokens ?? Math.max(0, promptTokens - cachedPromptTokens);
+      ctx.sessionUsage.billedPromptTokens ?? Math.max(0, rawPromptTokens - cachedPromptTokens);
     const inputCostUsd =
       (freshPromptTokens / 1_000_000) * pricing.inputPerMillion +
       (cachedPromptTokens / 1_000_000) * cachedInputRate;
@@ -50,7 +51,13 @@ export const costCommand: CommandDefinition = {
     const totalCostUsd = inputCostUsd + outputCostUsd;
     const totalCostJpy = totalCostUsd * USD_TO_JPY_RATE;
 
-    const cachePercent = promptTokens > 0 ? Math.round((cachedPromptTokens / promptTokens) * 100) : 0;
+    // Issue #63: Prefix Cache Hit によるコスト節約額 (Uncached 料金との差額)
+    const savedCostUsd =
+      (cachedPromptTokens / 1_000_000) * (pricing.inputPerMillion - cachedInputRate);
+    const savedCostJpy = savedCostUsd * USD_TO_JPY_RATE;
+
+    const cachePercent =
+      rawPromptTokens > 0 ? Math.round((cachedPromptTokens / rawPromptTokens) * 100) : 0;
     const ctxPercent = maxContextTokens > 0
       ? Math.min(100, Math.round((contextWindowTokens / maxContextTokens) * 100))
       : 0;
@@ -58,9 +65,10 @@ export const costCommand: CommandDefinition = {
     const lines = [
       '💰 1. Session Billed Usage (全ターン累計課金対象・キャッシュ最適化適用):',
       `  • Active Model      : ${ctx.model}`,
-      `  • Input Tokens      : ${promptTokens.toLocaleString()} tokens ($${pricing.inputPerMillion.toFixed(3)} / 1M)`,
+      `  • Input Tokens      : ${rawPromptTokens.toLocaleString()} tokens ($${pricing.inputPerMillion.toFixed(3)} / 1M)`,
       `    └ Cached (Hit)    : ${cachedPromptTokens.toLocaleString()} tokens (${cachePercent}% hit rate, $${cachedInputRate.toFixed(4)} / 1M)`,
       `    └ Fresh (Uncached): ${freshPromptTokens.toLocaleString()} tokens`,
+      `    └ Cache Savings   : -$${savedCostUsd.toFixed(5)} USD (約 ¥${savedCostJpy.toFixed(2)} JPY saved)`,
       `  • Output Tokens     : ${completionTokens.toLocaleString()} tokens ($${pricing.outputPerMillion.toFixed(3)} / 1M)`,
       `  • Total Tokens      : ${totalTokens.toLocaleString()} tokens`,
       `  • Estimated Cost    : $${totalCostUsd.toFixed(5)} USD (約 ¥${totalCostJpy.toFixed(2)} JPY)`,

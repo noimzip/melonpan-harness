@@ -816,6 +816,8 @@ export const App: React.FC<AppProps> = ({
         fsMode={fsMode}
         contextWindowTokens={sessionUsage.contextWindowTokens}
         maxContextTokens={sessionUsage.maxContextTokens}
+        promptTokens={sessionUsage.rawPromptTokens ?? sessionUsage.promptTokens}
+        cachedPromptTokens={sessionUsage.cachedPromptTokens}
       />
 
       {/* 2. Modal Picker (Active when /model, /boost or /effort is opened without args, #38) */}

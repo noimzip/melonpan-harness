@@ -256,9 +256,19 @@ describe('Melonpan CLI Command Registry & Autocomplete', () => {
       expect(loggedActivities.some((a) => a.includes('cleared'))).toBe(true);
     });
 
-    it('/cost reports cumulative session tokens and estimated cost in USD and JPY', async () => {
+    it('/cost reports cumulative session tokens, Prefix Cache Hit Rate, Cache Savings, and estimated cost in USD and JPY (#63)', async () => {
+      ctx.sessionUsage = {
+        promptTokens: 10000,
+        rawPromptTokens: 10000,
+        cachedPromptTokens: 8000,
+        billedPromptTokens: 2000,
+        completionTokens: 500,
+        totalTokens: 10500,
+      };
       await commandRegistry.executeCommand('/cost', ctx);
-      expect(loggedActivities.some((a) => a.includes('Token usage: 1,500 tokens'))).toBe(true);
+      expect(loggedActivities.some((a) => a.includes('Token usage: 10,500 tokens'))).toBe(true);
+      expect(loggedThoughts.some((t) => t.includes('80% hit rate'))).toBe(true);
+      expect(loggedThoughts.some((t) => t.includes('Cache Savings'))).toBe(true);
       expect(loggedThoughts.some((t) => t.includes('USD') && t.includes('JPY'))).toBe(true);
     });
 

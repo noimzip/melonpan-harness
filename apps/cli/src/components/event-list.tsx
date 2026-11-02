@@ -224,6 +224,12 @@ export const EventList: React.FC<EventListProps> = ({
         if (meta.exitCode !== undefined) metaParts.push(`exit: ${meta.exitCode}`);
         if (meta.matches !== undefined) metaParts.push(`${meta.matches} matches`);
         if (meta.durationMs !== undefined) metaParts.push(`${meta.durationMs}ms`);
+        if (meta.qualityGate) {
+          const qg = meta.qualityGate;
+          metaParts.push(
+            `QG: ${qg.passed ? 'PASS' : 'FAIL'} (${qg.score}/100)`
+          );
+        }
         const metaStr = metaParts.length > 0 ? ` (${metaParts.join(', ')})` : '';
 
         return (
