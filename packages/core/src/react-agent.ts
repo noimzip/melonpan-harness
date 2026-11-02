@@ -40,6 +40,56 @@ import {
 
 export { pruneChatHistory, type PruneHistoryResult };
 
+export interface AdaptiveThinkingContext {
+  configuredLevel?: string;
+  turn: number;
+  mode?: AgentMode | string;
+  lastToolNames?: string[];
+  lastTurnHadError?: boolean;
+  adaptiveEnabled?: boolean;
+}
+
+/**
+ * Issue #60: Phase-Aware Adaptive Thinking Effort
+ *
+ * - 初回設計ターン (`turn === 1`)、`plan` / `goal` モードの初期設計、または直前ターンでエラー・Quality Gate 警告が発生した場合は `high` 推論を割り当てて深いアーキテクチャ設計・自己修復を行う。
+ * - `read_file` / `list_files` / `grep_search` などの単純な探索ターン直後は `low` に引き下げて思考トークンとレイテンシを節約する。
+ * - `edit_file` / `write_file` 後の定常実装フェーズでは `medium` にバランスさせる。
+ * - ユーザーが `minimal` / `low` / `medium` を明示指定しており `adaptiveEnabled` が有効化されていない場合はユーザー指定値をそのまま尊重する。
+ */
+export function resolveAdaptiveThinkingLevel(ctx: AdaptiveThinkingContext): string {
+  const rawLevel = (ctx.configuredLevel || 'high').toLowerCase();
+  const isExplicitAdaptive = rawLevel === 'adaptive' || rawLevel === 'auto' || ctx.adaptiveEnabled === true;
+
+  if (!isExplicitAdaptive && rawLevel !== 'high') {
+    return rawLevel;
+  }
+
+  // 初回ターン、プランニングフェーズ、または直前ターンでエラーが発生した場合は深い推論 ('high')
+  if (ctx.turn <= 1 || ctx.mode === 'plan' || ctx.lastTurnHadError) {
+    return 'high';
+  }
+
+  const lastTools = ctx.lastToolNames || [];
+  if (lastTools.length > 0) {
+    const allReadOnly = lastTools.every((name) =>
+      ['read_file', 'list_files', 'grep_search', 'activate_skill'].includes(name)
+    );
+    if (allReadOnly) {
+      return 'low';
+    }
+
+    const hasSubagentOrWrite = lastTools.some((name) =>
+      ['write_file', 'edit_file', 'dispatch_subagent', 'run_command'].includes(name)
+    );
+    if (hasSubagentOrWrite) {
+      return 'medium';
+    }
+  }
+
+  return isExplicitAdaptive ? 'medium' : rawLevel;
+}
+
 export interface ReactAgentOptions {
   apiKey?: string;
   model?: string;
@@ -426,6 +476,8 @@ export class ReactAgent {
       let totalCachedPromptTokens = 0;
       let lastPromptTokens = 0;
       let hasExecutedTools = false;
+      let lastToolNames: string[] = [];
+      let lastTurnHadError = false;
 
       while (turns < this.maxTurns) {
         if (signal?.aborted) {
@@ -605,6 +657,8 @@ export class ReactAgent {
 
         if (functionCalls && functionCalls.length > 0) {
           hasExecutedTools = true;
+          lastToolNames = functionCalls.map((c: any) => c.name || 'unknown');
+          lastTurnHadError = false;
           const functionResponses: any[] = [];
           let isComplete = false;
           let completionSummary = '';
@@ -687,6 +741,13 @@ export class ReactAgent {
               },
               timestamp: Date.now(),
             };
+
+            if (
+              execRes.isError ||
+              (execRes.metadata?.qualityGate && execRes.metadata.qualityGate.passed === false)
+            ) {
+              lastTurnHadError = true;
+            }
 
             if (execRes.isTaskComplete) {
               isComplete = true;
@@ -824,6 +885,8 @@ export class ReactAgent {
     let totalCachedPromptTokens = 0;
     let lastContextTokens = 0;
     let hasExecutedTools = false;
+    let lastToolNames: string[] = [];
+    let lastTurnHadError = false;
 
     try {
       while (turns < this.maxTurns) {
@@ -892,13 +955,21 @@ export class ReactAgent {
         let turnThoughtSignature: string | undefined = undefined;
         const turnToolCalls: LLMToolCall[] = [];
 
+        const effectiveThinkingLevel = resolveAdaptiveThinkingLevel({
+          configuredLevel: this.thinkingLevel,
+          turn: turns,
+          mode: this.mode,
+          lastToolNames,
+          lastTurnHadError,
+        });
+
         for await (const chunk of provider.streamChat(
           {
             model: this.model,
             systemInstruction: activeSystemInstruction,
             messages,
             tools: this.getAvailableFunctionDeclarations(),
-            thinkingLevel: this.thinkingLevel,
+            thinkingLevel: effectiveThinkingLevel,
           },
           signal
         )) {
@@ -1022,6 +1093,8 @@ export class ReactAgent {
 
         if (turnToolCalls.length > 0) {
           hasExecutedTools = true;
+          lastToolNames = turnToolCalls.map((c) => c.name);
+          lastTurnHadError = false;
           const responseParts: any[] = [];
           let isComplete = false;
           let completionSummary = '';
@@ -1111,6 +1184,13 @@ export class ReactAgent {
               },
               timestamp: Date.now(),
             };
+
+            if (
+              execRes.isError ||
+              (execRes.metadata?.qualityGate && execRes.metadata.qualityGate.passed === false)
+            ) {
+              lastTurnHadError = true;
+            }
 
             if (execRes.isTaskComplete) {
               isComplete = true;

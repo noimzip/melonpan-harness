@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ReactAgent } from '../src/react-agent.js';
+import { ReactAgent, resolveAdaptiveThinkingLevel } from '../src/react-agent.js';
 import { LoadedSkill } from '../src/types.js';
 import { VirtualFS } from '../src/vfs/virtual-fs.js';
 
@@ -100,5 +100,46 @@ describe('ReactAgent', () => {
     expect(completeEv.payload.turns).toBe(2);
     expect(completeEv.payload.summary).toContain('Completed the Neon Cyber Arcade game');
     expect(vfs.hasFile('index.html')).toBe(true);
+  });
+
+  it('dynamically adjusts thinking effort across phases via resolveAdaptiveThinkingLevel (#60)', async () => {
+    // 1. Initial design turn (turn 1) uses 'high'
+    expect(resolveAdaptiveThinkingLevel({ configuredLevel: 'high', turn: 1 })).toBe('high');
+
+    // 2. Routine read-only turn drops to 'low' to save reasoning tokens
+    expect(
+      resolveAdaptiveThinkingLevel({
+        configuredLevel: 'high',
+        turn: 2,
+        lastToolNames: ['read_file', 'list_files'],
+      })
+    ).toBe('low');
+
+    // 3. Routine write/edit turn uses balanced 'medium'
+    expect(
+      resolveAdaptiveThinkingLevel({
+        configuredLevel: 'high',
+        turn: 3,
+        lastToolNames: ['edit_file'],
+      })
+    ).toBe('medium');
+
+    // 4. Error or Quality Gate failure escalates back to 'high' for deep self-repair
+    expect(
+      resolveAdaptiveThinkingLevel({
+        configuredLevel: 'high',
+        turn: 4,
+        lastToolNames: ['edit_file'],
+        lastTurnHadError: true,
+      })
+    ).toBe('high');
+
+    // 5. Explicit user setting ('minimal') is respected without override
+    expect(
+      resolveAdaptiveThinkingLevel({
+        configuredLevel: 'minimal',
+        turn: 1,
+      })
+    ).toBe('minimal');
   });
 });
