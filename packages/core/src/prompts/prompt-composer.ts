@@ -29,7 +29,10 @@ export class RoleSection implements PromptSection {
 }
 
 /**
- * 2. ToolingRulesSection: 有効ツール一覧とトークン節約・サブエージェント委譲規約 (#51, #14)
+ * 2. ToolingRulesSection: 有効ツール一覧とトークン節約・サブエージェント委譲規約 (#51, #14, #56)
+ * Issue #56 (Pi-Inspired < 1,000 Tokens Lean System Prompt):
+ * API の `tools` (`functionDeclarations`) スキーマと重複する冗長な各ツール説明文を排除し、
+ * ツール識別子リストと高密度なコア行動原則のみを記述して毎ターンの固定トークンオーバーヘッドを最小化する。
  */
 export class ToolingRulesSection implements PromptSection {
   readonly id = 'tooling-rules';
@@ -37,35 +40,19 @@ export class ToolingRulesSection implements PromptSection {
 
   render(ctx: PromptBuildContext): string {
     const tools = ctx.availableTools || [];
-    const toolLines =
+    const toolNames =
       tools.length > 0
-        ? tools
-            .map(
-              (t, idx) =>
-                `${idx + 1}. ${t.name}: ${t.declaration.description || t.category}`
-            )
-            .join('\n')
-        : [
-            '1. write_file(path, content): Create or overwrite a file in the filesystem.',
-            '2. edit_file(path, search, replace): Modify an existing file with exact search/replace.',
-            '3. read_file(path, start_line?, end_line?): Read file contents with line numbers.',
-            '4. list_files(path?, pattern?): List files in the workspace.',
-            '5. grep_search(query, path?, include_pattern?): Search for patterns across files.',
-            '6. run_command(command, cwd?, timeout_ms?): Run shell commands for verification.',
-            '7. activate_skill(name): Load specialized domain instructions on demand.',
-            '8. dispatch_subagent(agent_type, task_prompt, file_path?, files?): Delegate to a clean-room sub-agent.',
-            '9. complete_task(summary): Declare that the implementation is verified and complete.',
-          ].join('\n');
+        ? tools.map((t) => t.name).join(', ')
+        : 'write_file, edit_file, read_file, list_files, grep_search, run_command, activate_skill, dispatch_subagent, complete_task';
 
     return [
-      'YOUR WORKSPACE TOOLS:',
-      toolLines,
+      `YOUR WORKSPACE TOOLS: ${toolNames}`,
       '',
-      'CRITICAL TOKEN OPTIMIZATION & CLEAN-ROOM RULES (STRICT):',
-      '1. Initial File Creation: Use write_file(path, content) ONLY ONCE to establish a new file.',
-      '2. Modifications, Tuning, Refinements, & Bug Fixes: You are STRICTLY FORBIDDEN from regenerating or rewriting an entire existing file using write_file. You MUST use edit_file(path, search, replace) with minimal, targeted search/replace blocks.',
-      '3. Subagent Delegation: Subagents execute in isolated clean-room sessions. NEVER paste full code files into task_prompt. Instead, pass a concise task_prompt and specify target files via file_path (e.g. file_path: "index.html" or "plan.md") or files array so the runner injects them cleanly.',
-      '4. Research & Inspection Efficiency: Do NOT repeatedly read or grep the same file. Use read_file with start_line/end_line or grep_search once to find exact target locations. edit_file already returns the applied diff preview—do NOT immediately re-read the file just to verify changes. Once code audits or refinements are complete, call complete_task promptly.',
+      'TOKEN & CLEAN-ROOM RULES:',
+      '1. Initial Creation: Use write_file(path, content) ONCE per new file.',
+      '2. Incremental Edits: NEVER rewrite an entire existing file with write_file. Always use edit_file(path, search, replace) (or edits array) for targeted modifications.',
+      '3. Clean-Room Subagents: NEVER paste full code files into task_prompt; pass file_path or files array instead.',
+      '4. Inspection Efficiency: Use start_line/end_line with read_file and avoid re-reading files after edit_file.',
     ].join('\n');
   }
 }

@@ -244,6 +244,21 @@ describe('Core-M1: ToolRegistry, Exploration/Shell/Web Tools, PromptComposer & A
       const customPrompt = composer.compose({ mode: 'plan' });
       expect(customPrompt).toContain('You are a specialized security auditor.');
       expect(customPrompt).toContain('OPERATIONAL MODE: [PLAN MODE]');
+
+      // Issue #56: Pi-inspired lean system prompt (< 1,000 tokens) without redundant tool descriptions
+      const estimatedTokens = Math.ceil(prompt.length / 4);
+      expect(estimatedTokens).toBeLessThan(1000);
+      expect(prompt).not.toContain('Write content to a file in the filesystem');
+      // Verify Static Prefix (Role -> ToolingRules -> Mode) precedes Dynamic Suffix (Skills -> Workspace)
+      const roleIdx = prompt.indexOf('autonomous software engineer');
+      const toolsIdx = prompt.indexOf('YOUR WORKSPACE TOOLS:');
+      const modeIdx = prompt.indexOf('OPERATIONAL MODE:');
+      const skillIdx = prompt.indexOf('AVAILABLE AGENT SKILLS CATALOG');
+      const workspaceIdx = prompt.indexOf('WORKSPACE CONTEXT:');
+      expect(roleIdx).toBeLessThan(toolsIdx);
+      expect(toolsIdx).toBeLessThan(modeIdx);
+      expect(modeIdx).toBeLessThan(skillIdx);
+      expect(skillIdx).toBeLessThan(workspaceIdx);
     });
   });
 
