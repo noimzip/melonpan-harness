@@ -33,7 +33,10 @@ import {
 } from './types.js';
 import { VirtualFS } from './vfs/virtual-fs.js';
 import { ContextCacheManager } from './cache/context-cache-manager.js';
-import { createRepetitiveCallGuardMiddleware } from './safety/index.js';
+import {
+  createQualityGateMiddleware,
+  createRepetitiveCallGuardMiddleware,
+} from './safety/index.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
 
@@ -139,6 +142,7 @@ export class ReactAgent {
       }
       const middlewares = options.middlewares ? [...options.middlewares] : [];
       middlewares.push(createRepetitiveCallGuardMiddleware());
+      middlewares.push(createQualityGateMiddleware());
       this.toolRegistry = new ToolRegistry(baseTools, middlewares);
     }
 
