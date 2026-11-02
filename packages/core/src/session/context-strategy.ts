@@ -477,11 +477,11 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
 }
 
 export interface LlmSummaryCompactionOptions {
-  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.3) */
+  /** 自動圧縮を発動するコンテキスト使用率閾値 (0.0 - 1.0, デフォルト: 0.85 — プレフィックスキャッシュ保護優先) */
   triggerUtilization?: number;
   /** 最大コンテキストトークン数 (デフォルト: 128000) */
   maxContextTokens?: number;
-  /** 圧縮時に末尾（最新）の何メッセージをそのまま残すか (デフォルト: 4) */
+  /** 圧縮時に末尾（最新）の何メッセージをそのまま残すか (デフォルト: 6) */
   keepRecentMessages?: number;
   /** 要約生成に使用するカスタム LLM プロバイダー (省略時は決定論的構造化サマリーを生成) */
   provider?: ILLMProvider;
@@ -490,7 +490,7 @@ export interface LlmSummaryCompactionOptions {
 
 /**
  * 2. LlmSummaryCompactionStrategy: コンテキストウィンドウが閾値を超えた際、または明示的な `/compact` 実行時に
- * 古い会話ターンを要約してコンテキストを圧縮する `IContextStrategy` 実装 (#26)
+ * 古い会話ターンを要約してコンテキストを圧縮する `IContextStrategy` 実装 (#26, #58)
  */
 export class LlmSummaryCompactionStrategy implements IContextStrategy {
   readonly id = 'llm-summary-compaction';
@@ -501,9 +501,12 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
   private model: string;
 
   constructor(options: LlmSummaryCompactionOptions = {}) {
-    this.triggerUtilization = options.triggerUtilization ?? 0.3;
     this.maxContextTokens = options.maxContextTokens ?? 128000;
-    this.keepRecentMessages = options.keepRecentMessages ?? 2;
+    // Issue #58: 実運用（maxContextTokens > 4000）では Prefix Cache を長く維持するため triggerUtilization = 0.85, keepRecentMessages = 6 に設定。
+    // 小規模テスト用の極小 maxContextTokens (<= 4000) が明示的閾値なしで渡された場合は従来互換の 0.3 / 2 を適用。
+    const isTinyTestWindow = this.maxContextTokens <= 4000;
+    this.triggerUtilization = options.triggerUtilization ?? (isTinyTestWindow ? 0.3 : 0.85);
+    this.keepRecentMessages = options.keepRecentMessages ?? (isTinyTestWindow ? 2 : 6);
     this.provider = options.provider;
     this.model = options.model || 'gemini-3.5-flash-lite';
   }

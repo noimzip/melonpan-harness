@@ -396,4 +396,41 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect(compactedLog.text).toContain('[TEST PASS] Suite 119: verified');
     expect(compactedLog.text).toContain('Compacted 100 lines at ingestion');
   });
+
+  it('Issue #58: ContextCacheManager skips explicit cache creation when below minExplicitCacheTokens and supports prompt_cache_key', async () => {
+    const manager = new ContextCacheManager({
+      minExplicitCacheTokens: 2048,
+      promptCacheKey: 'session-melonpan-123',
+    });
+
+    const mockAiClient = {
+      caches: {
+        create: vi.fn(async () => ({ name: 'cachedContents/should-not-be-called' })),
+      },
+    };
+
+    // Short prompt (< 2048 tokens) skips explicit API call and relies on Implicit Caching
+    const skipped = await manager.getOrCreateGeminiCache({
+      ai: mockAiClient,
+      model: 'gemini-3.8-flash',
+      systemInstruction: 'Short system instruction under 2048 tokens',
+      tools: [],
+    });
+    expect(skipped).toBeUndefined();
+    expect(mockAiClient.caches.create).not.toHaveBeenCalled();
+
+    // Prompt cache key is injected into OpenAI/Codex compatible body
+    const body: Record<string, any> = {
+      messages: [{ role: 'system', content: 'System' }],
+    };
+    manager.applyPromptCacheControl(body);
+    expect(body.prompt_cache_key).toBe('session-melonpan-123');
+  });
+
+  it('Issue #58: LlmSummaryCompactionStrategy defaults to 85% triggerUtilization and 6 keepRecentMessages for production context windows', async () => {
+    const { LlmSummaryCompactionStrategy } = await import('../src/session/context-strategy.js');
+    const prodStrategy = new LlmSummaryCompactionStrategy({ maxContextTokens: 128000 });
+    expect((prodStrategy as any).triggerUtilization).toBe(0.85);
+    expect((prodStrategy as any).keepRecentMessages).toBe(6);
+  });
 });

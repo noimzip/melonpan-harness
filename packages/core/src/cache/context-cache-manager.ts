@@ -18,6 +18,15 @@ export interface ContextCacheManagerOptions {
   enableGeminiCache?: boolean;
   /** Anthropic / OpenRouter Prompt Caching (cache_control: ephemeral) を有効化するか (デフォルト: true) */
   enablePromptCaching?: boolean;
+  /**
+   * Issue #58: Gemini 明示的キャッシュ (`ai.caches.create`) を呼び出す最小推定トークン数。
+   * 未達の場合は無駄な API 往復エラーを避け、Gemini Implicit Prefix Caching に即時委譲する。
+   */
+  minExplicitCacheTokens?: number;
+  /**
+   * Issue #58: OpenAI / Codex スタイルの `prompt_cache_key` ルーティングヒント
+   */
+  promptCacheKey?: string;
 }
 
 /**
@@ -45,11 +54,24 @@ export class ContextCacheManager {
   private ttlSeconds: number;
   private enableGeminiCache: boolean;
   private enablePromptCaching: boolean;
+  private minExplicitCacheTokens: number;
+  private promptCacheKey?: string;
 
   constructor(options: ContextCacheManagerOptions = {}) {
     this.ttlSeconds = options.ttlSeconds ?? 1800; // 300ターンの長時間対話に耐える30分TTL
     this.enableGeminiCache = options.enableGeminiCache ?? true;
     this.enablePromptCaching = options.enablePromptCaching ?? true;
+    this.minExplicitCacheTokens = options.minExplicitCacheTokens ?? 0;
+    this.promptCacheKey = options.promptCacheKey;
+  }
+
+  /**
+   * システムプロンプトおよびツール定義の推定トークン数を算出
+   */
+  estimatePrefixTokens(systemInstruction?: string, tools?: any[]): number {
+    const sysChars = (systemInstruction || '').length;
+    const toolsChars = tools && tools.length > 0 ? JSON.stringify(tools).length : 0;
+    return Math.ceil((sysChars + toolsChars) / 4);
   }
 
   /**
@@ -90,11 +112,21 @@ export class ContextCacheManager {
     systemInstruction?: string;
     tools?: any[];
     displayName?: string;
+    minTokens?: number;
   }): Promise<string | undefined> {
     if (!this.enableGeminiCache) return undefined;
-    const { ai, model, systemInstruction, tools, displayName } = options;
+    const { ai, model, systemInstruction, tools, displayName, minTokens } = options;
     if (!ai || !ai.caches || typeof ai.caches.create !== 'function') return undefined;
     if (!this.isExplicitCacheSupported(model)) return undefined;
+
+    // Issue #58: 最小トークン数ガード — 閾値未満の軽量プロンプトでは無駄な caches.create 往復をスキップし Implicit Caching を活用
+    const requiredMinTokens = minTokens ?? this.minExplicitCacheTokens;
+    if (requiredMinTokens > 0) {
+      const estimatedTokens = this.estimatePrefixTokens(systemInstruction, tools);
+      if (estimatedTokens < requiredMinTokens) {
+        return undefined;
+      }
+    }
 
     const fingerprint = this.generateFingerprint(model, systemInstruction, tools);
     const existing = this.activeCaches.get(fingerprint);
@@ -153,13 +185,22 @@ export class ContextCacheManager {
    * 2. ツール定義 (最後のツール)
    * 3. 会話履歴の直前ターン（累積メッセージ全体をキャッシュ再利用）
    */
-  applyPromptCacheControl(body: {
-    messages?: any[];
-    tools?: any[];
-    [key: string]: any;
-  }): void {
+  applyPromptCacheControl(
+    body: {
+      messages?: any[];
+      tools?: any[];
+      prompt_cache_key?: string;
+      [key: string]: any;
+    },
+    options?: { promptCacheKey?: string }
+  ): void {
     if (!this.enablePromptCaching) return;
     if (!Array.isArray(body.messages)) return;
+
+    const effectiveCacheKey = options?.promptCacheKey ?? this.promptCacheKey;
+    if (effectiveCacheKey && !body.prompt_cache_key) {
+      body.prompt_cache_key = effectiveCacheKey;
+    }
 
     // 1. システムプロンプト (role: 'system') に cache_control を付与
     const systemMsg = body.messages.find((m) => m?.role === 'system');
