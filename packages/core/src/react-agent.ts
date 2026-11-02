@@ -744,7 +744,7 @@ export class ReactAgent {
 
             if (
               execRes.isError ||
-              (execRes.metadata?.qualityGate && execRes.metadata.qualityGate.passed === false)
+              ((execRes.metadata?.qualityGate as any)?.passed === false)
             ) {
               lastTurnHadError = true;
             }
@@ -1187,7 +1187,7 @@ export class ReactAgent {
 
             if (
               execRes.isError ||
-              (execRes.metadata?.qualityGate && execRes.metadata.qualityGate.passed === false)
+              ((execRes.metadata?.qualityGate as any)?.passed === false)
             ) {
               lastTurnHadError = true;
             }
