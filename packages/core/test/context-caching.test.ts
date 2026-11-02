@@ -265,4 +265,93 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect(result.savedCharsCount).toBeGreaterThan(0);
     expect(history[0].parts[0].functionResponse.response.error).toContain('<Tool output pruned:');
   });
+
+  it('Issue #54: enforces Append-Only Immutable Prefix across multi-turn execution without mutating prior turns', async () => {
+    const turnSnapshots: string[][] = [];
+    let turn = 0;
+
+    const mockProvider = {
+      id: 'mock-prefix-check',
+      async *streamChat(req: any) {
+        turn++;
+        // Record serialized snapshot of each message in the request
+        turnSnapshots.push(req.messages.map((m: any) => JSON.stringify(m)));
+
+        yield {
+          type: 'thought_delta' as const,
+          delta: `Turn ${turn} architectural reasoning that exceeds forty characters easily.`,
+          thoughtSignature: `sig_${turn}`,
+        };
+
+        if (turn === 1) {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: {
+              id: 'call_1',
+              name: 'write_file',
+              args: {
+                path: 'index.html',
+                content: '<!DOCTYPE html><html><body>' + 'A'.repeat(400) + '</body></html>',
+              },
+              thoughtSignature: 'sig_1',
+            },
+          };
+        } else if (turn === 2) {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: {
+              id: 'call_2',
+              name: 'edit_file',
+              args: {
+                path: 'index.html',
+                search: '<body>',
+                replace: '<body class="neon">' + 'B'.repeat(350),
+              },
+              thoughtSignature: 'sig_2',
+            },
+          };
+        } else {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: {
+              id: 'call_3',
+              name: 'complete_task',
+              args: { summary: 'Done with immutable prefix' },
+              thoughtSignature: 'sig_3',
+            },
+          };
+        }
+
+        yield {
+          type: 'usage' as const,
+          usage: {
+            promptTokens: 1500,
+            completionTokens: 150,
+            totalTokens: 1650,
+            cachedPromptTokens: turn > 1 ? 1200 : 0,
+          },
+        };
+      },
+    };
+
+    const { ReactAgent } = await import('../src/react-agent.js');
+    const vfs = new VirtualFS();
+    const agent = new ReactAgent({
+      provider: mockProvider,
+      maxContextTokens: 128000,
+    });
+
+    for await (const _ev of agent.execute('Build game', undefined, vfs)) {
+      // consume stream
+    }
+
+    expect(turnSnapshots.length).toBe(3);
+    // Turn 1 has 1 message ([user_0])
+    // Turn 2 has 3 messages ([user_0, model_1, user_1]) -> prefix [0] must match Turn 1 [0] byte-for-byte
+    expect(turnSnapshots[1]![0]).toBe(turnSnapshots[0]![0]);
+    // Turn 3 has 5 messages ([user_0, model_1, user_1, model_2, user_2]) -> prefix [0..2] must match Turn 2 [0..2] byte-for-byte!
+    expect(turnSnapshots[2]![0]).toBe(turnSnapshots[1]![0]);
+    expect(turnSnapshots[2]![1]).toBe(turnSnapshots[1]![1]);
+    expect(turnSnapshots[2]![2]).toBe(turnSnapshots[1]![2]);
+  });
 });

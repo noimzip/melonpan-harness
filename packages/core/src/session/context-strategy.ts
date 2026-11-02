@@ -21,6 +21,16 @@ export interface PruneChatHistoryOptions {
   preserveRecentMessages?: number;
   /** 過去ターンのモデル思考プロセス (thought) をマスクするか (デフォルト: true) */
   prunePastThoughts?: boolean;
+  /**
+   * Append-Only Prefix Cache 保護モード (Issue #54, デフォルト: true)
+   * true の場合、コンテキスト使用率が triggerUtilization (デフォルト 0.85) 未満の通常ターンでは
+   * 過去メッセージのインプレース書き換えを行わず、プロバイダーの KV Prefix Cache ヒット率を最大化する。
+   */
+  preservePrefixCache?: boolean;
+  /**
+   * preservePrefixCache 有効時に強制プルーニングを発動するコンテキスト使用率閾値 (Issue #54, デフォルト: 0.85)
+   */
+  triggerUtilization?: number;
 }
 
 /**
@@ -394,7 +404,12 @@ export function pruneChatHistory(
 
 /**
  * 1. ToolOutputPruningStrategy: `write_file`, `edit_file` (#11), `read_file`, `grep_search`, `run_command` の
- * 巨大ペイロードを段階的にマスクする `IContextStrategy` 実装 (#26)
+ * 巨大ペイロードを段階的にマスクする `IContextStrategy` 実装 (#26, #54)
+ *
+ * Issue #54 (Codex / Pi 流 Cache-First 設計):
+ * `preservePrefixCache` (デフォルト: true) が有効かつ `options.maxContextTokens` が指定された通常ターンでは、
+ * コンテキスト使用率が `triggerUtilization` (デフォルト: 0.85) に達するまで過去履歴のインプレース書き換えを行わず、
+ * Byte-for-Byte の Immutable Prefix を維持して KV キャッシュヒット率を最大化する。
  */
 export class ToolOutputPruningStrategy implements IContextStrategy {
   readonly id = 'tool-output-pruning';
@@ -407,11 +422,42 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
       outputThresholdChars: options.outputThresholdChars ?? 400,
       preserveRecentMessages: options.preserveRecentMessages ?? 0,
       prunePastThoughts: options.prunePastThoughts ?? true,
+      preservePrefixCache: options.preservePrefixCache ?? true,
+      triggerUtilization: options.triggerUtilization ?? 0.85,
     };
   }
 
-  apply(history: any[]): ContextCompactionResult {
+  apply(
+    history: any[],
+    runtimeOptions?: { maxContextTokens?: number; force?: boolean }
+  ): ContextCompactionResult {
     const beforeTokens = estimateMessagesTokens(history);
+
+    // Issue #54: ReAct ループ内 (runtimeOptions.maxContextTokens 指定時) かつ force でない場合、
+    // コンテキスト使用率が triggerUtilization (85%) 未満なら過去メッセージを一切変異させず Prefix Cache を保護する
+    if (
+      this.options.preservePrefixCache &&
+      runtimeOptions?.maxContextTokens &&
+      !runtimeOptions.force
+    ) {
+      const utilization =
+        runtimeOptions.maxContextTokens > 0
+          ? beforeTokens / runtimeOptions.maxContextTokens
+          : 0;
+      const threshold = this.options.triggerUtilization ?? 0.85;
+      if (utilization < threshold) {
+        return {
+          compacted: false,
+          beforeTokens,
+          afterTokens: beforeTokens,
+          savedTokens: 0,
+          reductionRatio: 0,
+          prunedCallsCount: 0,
+          savedCharsCount: 0,
+        };
+      }
+    }
+
     const pruneRes = pruneChatHistory(history, this.options);
     const afterTokens = estimateMessagesTokens(history);
     const savedTokens = Math.max(0, beforeTokens - afterTokens);

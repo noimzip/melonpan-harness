@@ -955,8 +955,15 @@ export class ReactAgent {
 
         const modelParts: any[] = [];
         if (turnThoughtAcc) {
+          // Issue #54: Ingestion-Time Thought Compaction
+          // UI への THOUGHT / THOUGHT_DELTA イベント配信後に履歴へ格納する時点でコンパクト化し、
+          // 次ターン以降に過去メッセージをインプレース書き換えして KV Prefix Cache を破壊することを防ぐ。
+          const compactThoughtText =
+            turnThoughtAcc.length > 40 && !turnThoughtAcc.startsWith('<Thought preserved')
+              ? `<Thought preserved: ${turnThoughtAcc.length} chars>`
+              : turnThoughtAcc;
           modelParts.push({
-            text: turnThoughtAcc,
+            text: compactThoughtText,
             thought: true,
             ...(turnThoughtSignature
               ? { thoughtSignature: turnThoughtSignature, thought_signature: turnThoughtSignature }
