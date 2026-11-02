@@ -421,6 +421,7 @@ export class ReactAgent {
       let totalCompletionTokens = 0;
       let totalCachedPromptTokens = 0;
       let lastPromptTokens = 0;
+      let hasExecutedTools = false;
 
       while (turns < this.maxTurns) {
         if (signal?.aborted) {
@@ -599,6 +600,7 @@ export class ReactAgent {
         const functionCalls = response.functionCalls;
 
         if (functionCalls && functionCalls.length > 0) {
+          hasExecutedTools = true;
           const functionResponses: any[] = [];
           let isComplete = false;
           let completionSummary = '';
@@ -725,6 +727,34 @@ export class ReactAgent {
 
           currentMessage = functionResponses;
         } else {
+          // Issue #57: Natural Task Completion
+          // 既にツールを実行済み（または VFS にファイルが存在）で、モデルがツール呼び出しなしに最終サマリーテキストを返した場合、
+          // 強制的に complete_task を呼ばせるための追加 1 ターン（全コンテキスト再送）を節約し自然終了する。
+          const naturalSummary = texts.join('\n').trim();
+          const currentFiles = this.getFilesSnapshot(vfs);
+          if (naturalSummary && (hasExecutedTools || Object.keys(currentFiles).length > 0)) {
+            yield {
+              type: 'COMPLETE',
+              payload: {
+                summary: naturalSummary,
+                files: currentFiles,
+                turns,
+                durationMs: Date.now() - startTime,
+                usage: createDetailedTokenUsage({
+                  billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
+                  billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
+                  contextWindowTokens:
+                    lastPromptTokens || estimateMessagesTokens((chat as any).history, systemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
+              },
+              timestamp: Date.now(),
+            };
+            return;
+          }
+
           currentMessage =
             'Please proceed by invoking an appropriate workspace tool (e.g., write_file, edit_file, read_file, dispatch_subagent) or call complete_task if finished.';
         }
@@ -789,6 +819,7 @@ export class ReactAgent {
     let totalCompletionTokens = 0;
     let totalCachedPromptTokens = 0;
     let lastContextTokens = 0;
+    let hasExecutedTools = false;
 
     try {
       while (turns < this.maxTurns) {
@@ -986,6 +1017,7 @@ export class ReactAgent {
         messages.push({ role: 'model', parts: modelParts });
 
         if (turnToolCalls.length > 0) {
+          hasExecutedTools = true;
           const responseParts: any[] = [];
           let isComplete = false;
           let completionSummary = '';
@@ -1138,6 +1170,53 @@ export class ReactAgent {
             return;
           }
         } else {
+          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+          const naturalSummary = turnTextAcc.trim();
+          const currentFiles = this.getFilesSnapshot(vfs);
+
+          // Issue #57: Natural Task Completion
+          // 既にツールを実行済み（または VFS にファイルが存在）で、モデルがツール呼び出しなしに最終サマリーテキストを返した場合、
+          // 強制的に complete_task を呼ばせるための追加 1 ターンを節約し自然終了する。
+          if (naturalSummary && (hasExecutedTools || Object.keys(currentFiles).length > 0)) {
+            yield {
+              type: 'USAGE',
+              payload: {
+                promptTokens: totalPromptTokens,
+                billedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
+                completionTokens: totalCompletionTokens,
+                totalTokens: totalPromptTokens + totalCompletionTokens,
+                cachedPromptTokens: totalCachedPromptTokens,
+                turn: turns,
+                contextWindowTokens:
+                  lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+                maxContextWindowTokens: this.maxContextTokens,
+              },
+              timestamp: Date.now(),
+            };
+
+            yield {
+              type: 'COMPLETE',
+              payload: {
+                summary: naturalSummary,
+                files: currentFiles,
+                turns,
+                durationMs: Date.now() - startTime,
+                usage: createDetailedTokenUsage({
+                  billedPromptTokens,
+                  billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
+                  contextWindowTokens:
+                    lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
+              },
+              timestamp: Date.now(),
+            };
+            return;
+          }
+
           messages.push({
             role: 'user',
             parts: [
@@ -1146,8 +1225,6 @@ export class ReactAgent {
               },
             ],
           });
-
-          const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
 
           yield {
             type: 'USAGE',

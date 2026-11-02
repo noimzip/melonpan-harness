@@ -50,4 +50,55 @@ describe('ReactAgent', () => {
     const customAgent = new ReactAgent({ simulate: true, maxTurns: 50 });
     expect((customAgent as any).maxTurns).toBe(50);
   });
+
+  it('completes naturally without forcing an extra complete_task turn when tools have executed and model returns final text (#57)', async () => {
+    let providerCalls = 0;
+    const mockProvider = {
+      name: 'mock-provider',
+      async *streamChat() {
+        providerCalls++;
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool_call' as const,
+            toolCall: {
+              id: 'call-1',
+              name: 'write_file',
+              args: {
+                path: 'index.html',
+                content: '<!DOCTYPE html><html><body><canvas id="game"></canvas></body></html>',
+              },
+            },
+          };
+          yield {
+            type: 'usage' as const,
+            usage: { promptTokens: 500, completionTokens: 120, totalTokens: 620, cachedPromptTokens: 0 },
+          };
+        } else {
+          // Turn 2: Model returns final summary text directly without calling complete_task
+          yield {
+            type: 'text_delta' as const,
+            delta: 'Completed the Neon Cyber Arcade game in index.html with 60fps loop.',
+          };
+          yield {
+            type: 'usage' as const,
+            usage: { promptTokens: 650, completionTokens: 30, totalTokens: 680, cachedPromptTokens: 450 },
+          };
+        }
+      },
+    };
+
+    const agent = new ReactAgent({ provider: mockProvider as any, maxTurns: 10 });
+    const vfs = new VirtualFS();
+    const events: any[] = [];
+    for await (const ev of agent.execute('Build neon game', mockSkill, vfs)) {
+      events.push(ev);
+    }
+
+    expect(providerCalls).toBe(2);
+    const completeEv = events.find((e) => e.type === 'COMPLETE');
+    expect(completeEv).toBeDefined();
+    expect(completeEv.payload.turns).toBe(2);
+    expect(completeEv.payload.summary).toContain('Completed the Neon Cyber Arcade game');
+    expect(vfs.hasFile('index.html')).toBe(true);
+  });
 });

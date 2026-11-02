@@ -147,7 +147,7 @@ export class EditFileTool implements ITool<EditFileArgs> {
   readonly declaration = {
     name: 'edit_file',
     description:
-      'Edit an existing file in the filesystem by finding an exact snippet and replacing it with new code.',
+      'Edit an existing file in the filesystem by replacing exact snippet(s). Supports single (search + replace) or multi-hunk (edits array) atomic updates.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -158,23 +158,44 @@ export class EditFileTool implements ITool<EditFileArgs> {
         search: {
           type: Type.STRING,
           description:
-            'The exact continuous block of text in the existing file that needs to be replaced.',
+            'Exact continuous block of text in the existing file to replace (for single-hunk edit).',
         },
         replace: {
           type: Type.STRING,
-          description: 'The replacement code chunk.',
+          description: 'The replacement code chunk (for single-hunk edit).',
+        },
+        edits: {
+          type: Type.ARRAY,
+          description:
+            'Optional list of { search, replace } hunks to apply sequentially in a single atomic tool call.',
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              search: {
+                type: Type.STRING,
+                description: 'Exact text block to find.',
+              },
+              replace: {
+                type: Type.STRING,
+                description: 'Replacement text block.',
+              },
+            },
+            required: ['search', 'replace'],
+          },
         },
       },
-      required: ['path', 'search', 'replace'],
+      required: ['path'],
     },
   };
 
   async execute(args: EditFileArgs, ctx: ToolExecutionContext): Promise<ToolExecutionResult> {
     const pathArg = String(args?.path || '');
-    const searchArg = String(args?.search ?? '');
-    const replaceArg = String(args?.replace ?? '');
+    const editsArg = Array.isArray(args?.edits) ? args.edits : undefined;
 
-    const editRes = await ctx.fs.editFile(pathArg, searchArg, replaceArg);
+    const editRes =
+      editsArg && editsArg.length > 0
+        ? await ctx.fs.editFile(pathArg, editsArg)
+        : await ctx.fs.editFile(pathArg, String(args?.search ?? ''), String(args?.replace ?? ''));
     if (editRes.success) {
       const updatedContent = await ctx.fs.readFile(pathArg);
       ctx.emit({

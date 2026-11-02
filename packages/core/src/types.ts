@@ -66,10 +66,19 @@ export interface ListFilesOptions {
   ignore?: string[];
 }
 
+export interface EditHunk {
+  search: string;
+  replace: string;
+}
+
 export interface IFileSystem {
   readFile(path: string, options?: ReadFileOptions): Promise<string | undefined> | string | undefined;
   writeFile(path: string, content: string): Promise<void> | void;
-  editFile(path: string, search: string, replace: string): Promise<FileDiffResult> | FileDiffResult;
+  editFile(
+    path: string,
+    searchOrEdits: string | EditHunk[],
+    replace?: string
+  ): Promise<FileDiffResult> | FileDiffResult;
   deleteFile(path: string): Promise<boolean> | boolean;
   exists(path: string): Promise<boolean> | boolean;
   listFiles(dirPath?: string, options?: ListFilesOptions): Promise<string[]> | string[];
@@ -744,8 +753,13 @@ export interface WriteFileArgs {
 
 export interface EditFileArgs {
   path: string;
-  search: string;
-  replace: string;
+  search?: string;
+  replace?: string;
+  /**
+   * Issue #57 (Codex-style Multi-Hunk Atomic Patch):
+   * 1回のツール呼び出しで複数箇所の search/replace をアトミックに一括適用する配列
+   */
+  edits?: EditHunk[];
 }
 
 export interface ReadFileArgs {

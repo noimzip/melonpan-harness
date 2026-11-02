@@ -167,4 +167,28 @@ describe('VirtualFS / InMemoryVFS & LocalDiskFS (Issues #2, #3, #10, #20)', () =
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('supports atomic multi-hunk edits in VirtualFS and rolls back on hunk failure (#57)', () => {
+    const vfs = new VirtualFS();
+    vfs.writeFile('index.html', '<html>\n<head><title>Old</title></head>\n<body><h1>Hello</h1></body>\n</html>');
+
+    const res = vfs.editFile('index.html', [
+      { search: '<title>Old</title>', replace: '<title>Cyber Neon</title>' },
+      { search: '<h1>Hello</h1>', replace: '<h1>Arcade Ready</h1>' },
+    ]);
+    expect(res.success).toBe(true);
+    expect(res.diffSummary).toContain('Applied 2 hunks');
+    expect(vfs.readFile('index.html')).toContain('<title>Cyber Neon</title>');
+    expect(vfs.readFile('index.html')).toContain('<h1>Arcade Ready</h1>');
+
+    // If any hunk fails, file content remains untouched (atomic rollback)
+    const beforeRollback = vfs.readFile('index.html');
+    const failedRes = vfs.editFile('index.html', [
+      { search: '<h1>Arcade Ready</h1>', replace: '<h1>Mutated</h1>' },
+      { search: 'NON_EXISTENT_HUNK', replace: 'Nope' },
+    ]);
+    expect(failedRes.success).toBe(false);
+    expect(failedRes.error).toContain('hunk #2');
+    expect(vfs.readFile('index.html')).toBe(beforeRollback);
+  });
 });

@@ -1,4 +1,5 @@
 import {
+  EditHunk,
   FileDiffResult,
   IFileSystem,
   ListFilesOptions,
@@ -56,11 +57,12 @@ export class VirtualFS implements IFileSystem {
    * ファイルの一部分を検索・置換して差分更新する
    * Issue #2: 特殊 `$` パターン (`$1`, `$&`, `$'` 等) によるデータ破壊を防止するため関数置換を使用
    * Issue #20: 構造化 Unified Diff (`unifiedDiff`, `addedLines`, `removedLines`) を返却
+   * Issue #57: 単一 search/replace に加え、複数箇所の `EditHunk[]` アトミック一括置換に対応
    */
   editFile(
     filePath: string,
-    search: string,
-    replace: string
+    searchOrEdits: string | EditHunk[],
+    replace: string = ''
   ): FileDiffResult {
     const key = this.normalizePath(filePath);
     const existing = this.files.get(key);
@@ -72,22 +74,49 @@ export class VirtualFS implements IFileSystem {
       };
     }
 
-    if (!existing.includes(search)) {
+    const hunks: EditHunk[] = Array.isArray(searchOrEdits)
+      ? searchOrEdits
+      : [{ search: searchOrEdits, replace }];
+
+    if (hunks.length === 0) {
       return {
         success: false,
-        error: `Search pattern not found in "${filePath}". Please provide the exact text chunk you wish to replace.`,
+        error: `No edit hunks provided for "${filePath}".`,
       };
     }
 
-    // Issue #2: String.prototype.replace の第2引数に関数を渡し、`$1` 等の特殊パターン展開を防止
-    const updated = existing.replace(search, () => replace);
+    let updated = existing;
+    let totalSearchChars = 0;
+    let totalReplaceChars = 0;
+
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i]!;
+      if (!hunk.search || !updated.includes(hunk.search)) {
+        return {
+          success: false,
+          error:
+            hunks.length > 1
+              ? `Search pattern in hunk #${i + 1} not found in "${filePath}". Atomic multi-hunk edit aborted without modifying the file.`
+              : `Search pattern not found in "${filePath}". Please provide the exact text chunk you wish to replace.`,
+        };
+      }
+      // Issue #2: String.prototype.replace の第2引数に関数を渡し、`$1` 等の特殊パターン展開を防止
+      updated = updated.replace(hunk.search, () => hunk.replace);
+      totalSearchChars += hunk.search.length;
+      totalReplaceChars += hunk.replace.length;
+    }
+
     this.files.set(key, updated);
 
     const diffInfo = computeUnifiedDiff(key, existing, updated);
+    const summaryPrefix =
+      hunks.length > 1
+        ? `Applied ${hunks.length} hunks (replaced ${totalSearchChars} chars with ${totalReplaceChars} chars) in "${key}"`
+        : `Replaced ${totalSearchChars} chars with ${totalReplaceChars} chars in "${key}"`;
 
     return {
       success: true,
-      diffSummary: `Replaced ${search.length} chars with ${replace.length} chars in "${key}" (+${diffInfo.addedLines}/-${diffInfo.removedLines} lines).`,
+      diffSummary: `${summaryPrefix} (+${diffInfo.addedLines}/-${diffInfo.removedLines} lines).`,
       unifiedDiff: diffInfo.unifiedDiff,
       addedLines: diffInfo.addedLines,
       removedLines: diffInfo.removedLines,

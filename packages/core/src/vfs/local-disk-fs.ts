@@ -1,4 +1,5 @@
 import {
+  EditHunk,
   FileDiffResult,
   IFileSystem,
   ListFilesOptions,
@@ -122,8 +123,8 @@ export class LocalDiskFS implements IFileSystem {
 
   async editFile(
     filePath: string,
-    search: string,
-    replace: string
+    searchOrEdits: string | EditHunk[],
+    replace: string = ''
   ): Promise<FileDiffResult> {
     const existing = await this.readFile(filePath);
     if (existing === undefined) {
@@ -133,22 +134,50 @@ export class LocalDiskFS implements IFileSystem {
       };
     }
 
-    if (!existing.includes(search)) {
+    const hunks: EditHunk[] = Array.isArray(searchOrEdits)
+      ? searchOrEdits
+      : [{ search: searchOrEdits, replace }];
+
+    if (hunks.length === 0) {
       return {
         success: false,
-        error: `Search pattern not found in "${filePath}". Please provide the exact text chunk you wish to replace.`,
+        error: `No edit hunks provided for "${filePath}".`,
       };
     }
 
+    let updated = existing;
+    let totalSearchChars = 0;
+    let totalReplaceChars = 0;
+
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i]!;
+      if (!hunk.search || !updated.includes(hunk.search)) {
+        return {
+          success: false,
+          error:
+            hunks.length > 1
+              ? `Search pattern in hunk #${i + 1} not found in "${filePath}". Atomic multi-hunk edit aborted without modifying the file.`
+              : `Search pattern not found in "${filePath}". Please provide the exact text chunk you wish to replace.`,
+        };
+      }
+      // Issue #2: 特殊 `$` パターンによるデータ破壊防止
+      updated = updated.replace(hunk.search, () => hunk.replace);
+      totalSearchChars += hunk.search.length;
+      totalReplaceChars += hunk.replace.length;
+    }
+
     const { relKey } = await this.resolveSafePath(filePath);
-    // Issue #2: 特殊 `$` パターンによるデータ破壊防止
-    const updated = existing.replace(search, () => replace);
     await this.writeFile(filePath, updated);
 
     const diffInfo = computeUnifiedDiff(relKey || filePath, existing, updated);
+    const summaryPrefix =
+      hunks.length > 1
+        ? `Applied ${hunks.length} hunks (replaced ${totalSearchChars} chars with ${totalReplaceChars} chars) in "${relKey || filePath}"`
+        : `Replaced ${totalSearchChars} chars with ${totalReplaceChars} chars in "${relKey || filePath}"`;
+
     return {
       success: true,
-      diffSummary: `Replaced ${search.length} chars with ${replace.length} chars in "${relKey || filePath}" (+${diffInfo.addedLines}/-${diffInfo.removedLines} lines).`,
+      diffSummary: `${summaryPrefix} (+${diffInfo.addedLines}/-${diffInfo.removedLines} lines).`,
       unifiedDiff: diffInfo.unifiedDiff,
       addedLines: diffInfo.addedLines,
       removedLines: diffInfo.removedLines,
