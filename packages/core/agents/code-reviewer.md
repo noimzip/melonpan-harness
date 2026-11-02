@@ -28,9 +28,9 @@ Your objective is to thoroughly audit the code provided in the task prompt acros
    - Are mobile touch and pointer events properly handled with `touch-action: none` and `preventDefault`?
    - Is there a clear game loop (Ready -> Playing -> Game Over -> Instant Restart on tap/space)?
 
-## Output Format (STRICT)
+## Output Format (STRICT — Actionable Delta Handoff < 200 Tokens)
 
 Categorize all findings into:
-- **Critical (致命的バグ)**: Must be fixed immediately before completion (e.g. infinite loops, broken controls, crashes).
-- **Warning (改善推奨)**: Performance optimizations, visual polish, or minor UX improvements.
+- **Critical (致命的バグ)**: Must be fixed immediately before completion (e.g. infinite loops, broken controls, crashes). Include exact line numbers (`L<num>`) and concrete `search/replace` patch guidance for `edit_file`.
+- **Warning (改善推奨)**: Performance optimizations, visual polish, or minor UX improvements with target line numbers.
 - **Verdict (判定)**: `APPROVED` (if no Critical issues) or `NEEDS_REVISION` (if Critical issues exist).

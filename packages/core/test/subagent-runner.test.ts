@@ -56,4 +56,22 @@ describe('SubagentRunner (Clean-Room Isolation)', () => {
     expect(result).toContain('### 4. Verdict');
     expect(result).toContain('APPROVED');
   });
+
+  it('attaches Pre-Audit Static Quality Gate diagnostics and enforces delta handoff rubrics for code-reviewer (#61)', async () => {
+    const runner = new SubagentRunner({ agentsDir, simulate: true });
+    const promptWithGate = await runner.buildPromptWithFileContext(
+      'Audit index.html for 60fps performance',
+      {
+        filePath: 'index.html',
+        fileContext: '<html><body><canvas></canvas><script>ctx.shadowBlur = 15;</script></body></html>',
+        agentType: 'code-reviewer',
+      }
+    );
+
+    expect(promptWithGate).toContain('[Pre-Audit Static Quality Gate]:');
+    expect(promptWithGate).toContain('SHADOW_BLUR_NOT_RESET');
+
+    const defs = await runner.loadDefinitions();
+    expect(defs.get('code-reviewer')?.instruction).toContain('Actionable Delta Handoff < 200 Tokens');
+  });
 });

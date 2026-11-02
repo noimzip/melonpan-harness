@@ -14,6 +14,7 @@ import {
 import { ToolRegistry } from '../tools/tool-registry.js';
 import { createBuiltinTools } from '../tools/builtin-tools.js';
 import { VirtualFS } from '../vfs/virtual-fs.js';
+import { inspectHtmlGameQuality } from '../safety/quality-gate.js';
 
 export type { SubagentDefinition };
 
@@ -311,7 +312,8 @@ export class SubagentRunner implements ISubagentSpawner {
   }
 
   /**
-   * コンテキスト文字列（対象ファイル群）を動的な言語フェンスタグ付きで構築する (#12, #13)
+   * コンテキスト文字列（対象ファイル群）を動的な言語フェンスタグ付きで構築する (#12, #13, #61)
+   * code-reviewer の場合は対象 HTML ファイルに対して 0 トークン静的品質検査 (Quality Gate) の事前診断結果を自動添付する。
    */
   async buildPromptWithFileContext(
     taskPrompt: string,
@@ -319,34 +321,38 @@ export class SubagentRunner implements ISubagentSpawner {
       filePath?: string;
       files?: string[];
       fileContext?: string;
+      agentType?: string;
     }
   ): Promise<string> {
     const blocks: string[] = [taskPrompt];
+    const isReviewer = options?.agentType === 'code-reviewer';
+
+    const appendFileBlock = (fp: string | undefined, content: string) => {
+      const lang = inferCodeFenceLanguage(fp, content);
+      const label = fp ? `[Target File Content (${fp})]` : `[Target File Content (VFS)]`;
+      if (isReviewer && (lang === 'html' || (fp && fp.toLowerCase().endsWith('.html')))) {
+        const qg = inspectHtmlGameQuality(content, fp || 'index.html');
+        blocks.push(`[Pre-Audit Static Quality Gate]: ${qg.summary}`);
+      }
+      blocks.push(`${label}:\n\`\`\`${lang}\n${content}\n\`\`\``);
+    };
 
     if (options?.files && options.files.length > 0) {
       for (const fp of options.files) {
         const content = await this.vfs.readFile(fp);
         if (content !== undefined) {
-          const lang = inferCodeFenceLanguage(fp, content);
-          blocks.push(`[Target File Content (${fp})]:\n\`\`\`${lang}\n${content}\n\`\`\``);
+          appendFileBlock(fp, content);
         }
       }
       return blocks.join('\n\n');
     }
 
     if (options?.fileContext !== undefined) {
-      const lang = inferCodeFenceLanguage(options.filePath, options.fileContext);
-      const label = options.filePath
-        ? `[Target File Content (${options.filePath})]`
-        : `[Target File Content (VFS)]`;
-      blocks.push(`${label}:\n\`\`\`${lang}\n${options.fileContext}\n\`\`\``);
+      appendFileBlock(options.filePath, options.fileContext);
     } else if (options?.filePath) {
       const content = await this.vfs.readFile(options.filePath);
       if (content !== undefined) {
-        const lang = inferCodeFenceLanguage(options.filePath, content);
-        blocks.push(
-          `[Target File Content (${options.filePath})]:\n\`\`\`${lang}\n${content}\n\`\`\``
-        );
+        appendFileBlock(options.filePath, content);
       }
     }
 
@@ -399,6 +405,7 @@ export class SubagentRunner implements ISubagentSpawner {
       filePath: options.filePath,
       files: options.files,
       fileContext: options.fileContext,
+      agentType,
     });
 
     const emitHierarchical = (event: AgentEvent) => {

@@ -18,6 +18,6 @@ Provide a clear, structured response that the main agent can directly use to mak
 1. **結論 (Conclusion)**:
    - Direct, actionable answer to the technical question or specification request.
 2. **推奨実装 (Recommended Implementation)**:
-   - Specific formulas, code snippets, or configuration structures needed for the task.
+   - Specific formulas, compact copy-ready code snippets, or configuration structures needed for the task.
 3. **懸念点・リスク (Risks & Considerations)**:
-   - Mobile touch quirks, performance bottlenecks in `requestAnimationFrame`, browser compatibility issues, or edge cases.
+   - Mobile touch quirks, performance bottlenecks in `requestAnimationFrame`, browser compatibility issues, or edge cases. Keep the entire response under 200 tokens.
