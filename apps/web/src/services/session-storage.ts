@@ -40,6 +40,11 @@ export function createInitialSession(name = '新しいゲーム開発'): Session
       prunedChars: 0,
       compactionCount: 0,
       compactionLogs: [],
+      estimatedCostUsd: 0,
+      estimatedCostJpy: 0,
+      savedCostUsd: 0,
+      savedCostJpy: 0,
+      activeModel: 'gemini-3.8-flash',
     },
   };
 }

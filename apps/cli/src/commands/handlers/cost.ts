@@ -1,23 +1,5 @@
 import { CommandDefinition } from '../types.js';
-
-interface ModelPricing {
-  inputPerMillion: number;
-  outputPerMillion: number;
-}
-
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  'gemini-3.5-flash-lite': { inputPerMillion: 0.075, outputPerMillion: 0.3 },
-  'gemini-3.8-flash': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
-  'gemini-4-argon': { inputPerMillion: 1.25, outputPerMillion: 5.0 },
-  'gemma-4-31b-it': { inputPerMillion: 0.2, outputPerMillion: 0.5 },
-  'gpt-4o': { inputPerMillion: 2.5, outputPerMillion: 10.0 },
-  'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
-  'o3-mini': { inputPerMillion: 1.1, outputPerMillion: 4.4 },
-  'claude-3-7-sonnet': { inputPerMillion: 3.0, outputPerMillion: 15.0 },
-  'claude-3-5-haiku': { inputPerMillion: 0.8, outputPerMillion: 4.0 },
-};
-
-const USD_TO_JPY_RATE = 158;
+import { calculateTokenCost, DEFAULT_COST_CAP_USD, USD_TO_JPY_RATE } from '@melonpan/core';
 
 export const costCommand: CommandDefinition = {
   name: 'cost',
@@ -34,27 +16,25 @@ export const costCommand: CommandDefinition = {
       savedTokens = 0,
     } = ctx.sessionUsage;
 
-    const pricing = MODEL_PRICING[ctx.model] || {
-      inputPerMillion: 0.1,
-      outputPerMillion: 0.4,
-    };
-
-    // キャッシュヒット分はプロバイダー規約に応じて約75%〜90%割引 (Geminiは1/4料金)
-    const cachedInputRate = pricing.inputPerMillion * 0.25;
     const rawPromptTokens = ctx.sessionUsage.rawPromptTokens ?? promptTokens;
     const freshPromptTokens =
       ctx.sessionUsage.billedPromptTokens ?? Math.max(0, rawPromptTokens - cachedPromptTokens);
-    const inputCostUsd =
-      (freshPromptTokens / 1_000_000) * pricing.inputPerMillion +
-      (cachedPromptTokens / 1_000_000) * cachedInputRate;
-    const outputCostUsd = (completionTokens / 1_000_000) * pricing.outputPerMillion;
-    const totalCostUsd = inputCostUsd + outputCostUsd;
-    const totalCostJpy = totalCostUsd * USD_TO_JPY_RATE;
 
-    // Issue #63: Prefix Cache Hit によるコスト節約額 (Uncached 料金との差額)
-    const savedCostUsd =
-      (cachedPromptTokens / 1_000_000) * (pricing.inputPerMillion - cachedInputRate);
-    const savedCostJpy = savedCostUsd * USD_TO_JPY_RATE;
+    const cost = calculateTokenCost({
+      model: ctx.model,
+      billedPromptTokens: freshPromptTokens,
+      rawPromptTokens,
+      cachedPromptTokens,
+      completionTokens,
+      usdToJpyRate: USD_TO_JPY_RATE,
+    });
+
+    const pricing = cost.pricing;
+    const cachedInputRate = pricing.cachedInputPerMillion;
+    const totalCostUsd = cost.totalCostUsd;
+    const totalCostJpy = cost.totalCostJpy;
+    const savedCostUsd = cost.savedCostUsd;
+    const savedCostJpy = cost.savedCostJpy;
 
     const cachePercent =
       rawPromptTokens > 0 ? Math.round((cachedPromptTokens / rawPromptTokens) * 100) : 0;
@@ -71,7 +51,7 @@ export const costCommand: CommandDefinition = {
       `    └ Cache Savings   : -$${savedCostUsd.toFixed(5)} USD (約 ¥${savedCostJpy.toFixed(2)} JPY saved)`,
       `  • Output Tokens     : ${completionTokens.toLocaleString()} tokens ($${pricing.outputPerMillion.toFixed(3)} / 1M)`,
       `  • Total Tokens      : ${totalTokens.toLocaleString()} tokens`,
-      `  • Estimated Cost    : $${totalCostUsd.toFixed(5)} USD (約 ¥${totalCostJpy.toFixed(2)} JPY)`,
+      `  • Estimated Cost    : $${totalCostUsd.toFixed(5)} USD (約 ¥${totalCostJpy.toFixed(2)} JPY) / Cap: $${DEFAULT_COST_CAP_USD.toFixed(2)} USD`,
       '  ───────────────────────────────────────────',
       '🧠 2. Current Context Window (現在の会話・推論履歴占有量):',
       `  • Occupied Context  : ${contextWindowTokens.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${ctxPercent}%)`,

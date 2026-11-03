@@ -5,6 +5,7 @@ import {
   SkillManager,
   RuleBasedPermissionPolicy,
   ILLMProvider,
+  calculateTokenCost,
 } from '@melonpan/core';
 import {
   Message,
@@ -401,24 +402,47 @@ export class AgentRuntime {
           }
 
           case 'USAGE': {
-            callbacks.onMetricsUpdate((prev) => ({
-              ...prev,
-              billedInputTokens:
-                baseBilledInput + (event.payload.billedPromptTokens ?? event.payload.promptTokens ?? 0),
-              billedOutputTokens:
-                baseBilledOutput + (event.payload.completionTokens || 0),
-              cachedTokens:
-                baseCached + (event.payload.cachedPromptTokens || 0),
-              totalTokens: baseTotal + (event.payload.totalTokens || 0),
-              currentContextTokens:
-                event.payload.contextWindowTokens || prev.currentContextTokens,
-            }));
+            callbacks.onMetricsUpdate((prev) => {
+              const billedInputTokens =
+                baseBilledInput + (event.payload.billedPromptTokens ?? event.payload.promptTokens ?? 0);
+              const billedOutputTokens =
+                baseBilledOutput + (event.payload.completionTokens || 0);
+              const cachedTokens =
+                baseCached + (event.payload.cachedPromptTokens || 0);
+              const totalTokens = baseTotal + (event.payload.totalTokens || 0);
+              const cost = calculateTokenCost({
+                model: providerConfig.model,
+                billedPromptTokens: billedInputTokens,
+                rawPromptTokens: billedInputTokens + cachedTokens,
+                cachedPromptTokens: cachedTokens,
+                completionTokens: billedOutputTokens,
+              });
+              return {
+                ...prev,
+                billedInputTokens,
+                billedOutputTokens,
+                cachedTokens,
+                totalTokens,
+                currentContextTokens:
+                  event.payload.contextWindowTokens || prev.currentContextTokens,
+                estimatedCostUsd: cost.totalCostUsd,
+                estimatedCostJpy: cost.totalCostJpy,
+                savedCostUsd: cost.savedCostUsd,
+                savedCostJpy: cost.savedCostJpy,
+                activeModel: providerConfig.model,
+              };
+            });
             break;
           }
 
           case 'COMPLETE':
             assistantMsg.isStreaming = false;
-            if (signal.aborted || /abort/i.test(event.payload.summary || '')) {
+            if (event.payload.costCapReached) {
+              assistantMsg.content =
+                (assistantMsg.content ? assistantMsg.content + '\n\n' : '') +
+                (event.payload.summary ||
+                  '⚠️ 累計費用が上限に達したため、安全のため自動一時停止しました。');
+            } else if (signal.aborted || /abort/i.test(event.payload.summary || '')) {
               assistantMsg.content =
                 (assistantMsg.content ? assistantMsg.content + '\n\n' : '') +
                 '⚠️ *ユーザーによってタスクが中断されました。*';

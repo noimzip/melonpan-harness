@@ -4,9 +4,14 @@ import {
   Database,
   Scissors,
   Archive,
-  RotateCw,
-  Sparkles,
+  Coins,
+  ShieldAlert,
 } from 'lucide-react';
+import {
+  calculateTokenCost,
+  DEFAULT_COST_CAP_USD,
+  USD_TO_JPY_RATE,
+} from '@melonpan/core';
 import { ContextMetrics } from '../types';
 import { WobblyButton } from './WobblyButton';
 
@@ -20,6 +25,22 @@ export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
     100,
     Math.round((metrics.currentContextTokens / metrics.contextWindowLimit) * 100)
   );
+
+  const computedCost = calculateTokenCost({
+    model: metrics.activeModel || 'gemini-3.8-flash',
+    billedPromptTokens: metrics.billedInputTokens,
+    rawPromptTokens: metrics.billedInputTokens + metrics.cachedTokens,
+    cachedPromptTokens: metrics.cachedTokens,
+    completionTokens: metrics.billedOutputTokens,
+  });
+
+  const costUsd = metrics.estimatedCostUsd ?? computedCost.totalCostUsd;
+  const costJpy = metrics.estimatedCostJpy ?? computedCost.totalCostJpy;
+  const savedUsd = metrics.savedCostUsd ?? computedCost.savedCostUsd;
+  const savedJpy = metrics.savedCostJpy ?? computedCost.savedCostJpy;
+  const costCapUsd = DEFAULT_COST_CAP_USD;
+  const costCapJpy = Math.round(costCapUsd * USD_TO_JPY_RATE);
+  const costPercent = Math.min(100, Math.round((costUsd / costCapUsd) * 100));
 
   return (
     <div className="h-full overflow-y-auto p-5 space-y-6 bg-[var(--card)] select-none text-xs">
@@ -90,6 +111,36 @@ export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
             <div className="font-bold font-mono text-sm mt-0.5 text-[var(--accent)]">
               {metrics.totalTokens.toLocaleString()}
             </div>
+          </div>
+        </div>
+
+        {/* Real-time Estimated Cost & Safety Circuit Breaker */}
+        <div className="pt-2 border-t border-[var(--stroke)]/20 space-y-2">
+          <div className="flex justify-between items-center p-2.5 rounded-xl bg-[var(--card)] border border-[var(--stroke)]/30">
+            <span className="flex items-center gap-1.5 font-bold">
+              <Coins size={14} className="text-[var(--warm-accent)]" />
+              推定費用 (Estimated Cost):
+            </span>
+            <span className="font-mono font-bold text-sm text-[var(--accent)]">
+              ${costUsd.toFixed(4)} USD (約 ¥{costJpy.toFixed(2)} JPY)
+            </span>
+          </div>
+
+          <div className="flex justify-between items-center text-[11px] px-2 opacity-80">
+            <span>Prefix Cache 節約額 (Cache Savings):</span>
+            <span className="font-mono font-bold text-[var(--warm-success)]">
+              -${savedUsd.toFixed(4)} USD (約 ¥{savedJpy.toFixed(2)} JPY)
+            </span>
+          </div>
+
+          <div className="flex justify-between items-center text-[11px] px-2 opacity-80">
+            <span className="flex items-center gap-1">
+              <ShieldAlert size={12} className="text-[var(--warm-accent)]" />
+              自動停止上限 (Cost Cap Circuit Breaker):
+            </span>
+            <span className="font-mono font-bold">
+              ${costCapUsd.toFixed(2)} USD / 約 ¥{costCapJpy} JPY ({costPercent}%)
+            </span>
           </div>
         </div>
       </div>

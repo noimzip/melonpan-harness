@@ -86,6 +86,11 @@ export interface ContextMetrics {
   prunedChars: number;
   compactionCount: number;
   compactionLogs: string[];
+  estimatedCostUsd?: number;
+  estimatedCostJpy?: number;
+  savedCostUsd?: number;
+  savedCostJpy?: number;
+  activeModel?: string;
 }
 
 export interface Session {
