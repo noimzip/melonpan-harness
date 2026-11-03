@@ -800,12 +800,124 @@ describe('Token Bloat Prevention & Fuel Efficiency Improvements', () => {
       const res3 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
       expect(res3.output).toContain('console.log("hello");');
 
-      // 4th call: Blocked by loop guard with guidance
+      // 4th call: Blocked by loop guard with guidance and isError: true
       const res4 = await registry.execute('read_file', { path: 'game.js' }, dummyCtx);
+      expect(res4.isError).toBe(true);
       expect(res4.output).toContain('[LOOP_GUARD_WARNING]');
       expect(res4.output).toContain('read_file("game.js") 4 times in succession');
       expect(res4.output).toContain('Proceed immediately to edit_file(path, search, replace)');
       expect(res4.metadata?.loopGuardTriggered).toBe(true);
+    });
+
+    it('createRepetitiveCallGuardMiddleware allows reading different line ranges of a large file and resets recentWindow after edit_file', async () => {
+      const vfs = new VirtualFS();
+      const lines = Array.from({ length: 100 }, (_, i) => `const x_${i} = ${i};`).join('\n');
+      await vfs.writeFile('game.js', lines);
+      const tools = createBuiltinTools();
+      const registry = new ToolRegistry(tools);
+      const { createRepetitiveCallGuardMiddleware } = await import('../src/safety/index.js');
+      registry.use(createRepetitiveCallGuardMiddleware({ maxConsecutiveCalls: 2 }));
+
+      const dummyCtx = { fs: vfs, emit: vi.fn() } as any;
+
+      // Reading 4 different line ranges sequentially must NOT trigger the loop guard
+      const r1 = await registry.execute('read_file', { path: 'game.js', start_line: 1, end_line: 20 }, dummyCtx);
+      const r2 = await registry.execute('read_file', { path: 'game.js', start_line: 21, end_line: 40 }, dummyCtx);
+      const r3 = await registry.execute('read_file', { path: 'game.js', start_line: 41, end_line: 60 }, dummyCtx);
+      const r4 = await registry.execute('read_file', { path: 'game.js', start_line: 61, end_line: 80 }, dummyCtx);
+      expect(r1.isError).toBeFalsy();
+      expect(r2.isError).toBeFalsy();
+      expect(r3.isError).toBeFalsy();
+      expect(r4.isError).toBeFalsy();
+
+      // Reading the exact same range 2 times is allowed (maxConsecutiveCalls = 2)
+      const same1 = await registry.execute('read_file', { path: 'game.js', start_line: 1, end_line: 10 }, dummyCtx);
+      const same2 = await registry.execute('read_file', { path: 'game.js', start_line: 1, end_line: 10 }, dummyCtx);
+      expect(same1.isError).toBeFalsy();
+      expect(same2.isError).toBeFalsy();
+
+      // Now call edit_file -> must clear recentWindow so post-edit verification read is allowed!
+      const editRes = await registry.execute(
+        'edit_file',
+        { path: 'game.js', search: 'const x_0 = 0;', replace: 'const x_0 = 999;' },
+        dummyCtx
+      );
+      expect(editRes.isError).toBe(false);
+
+      // Post-edit verification reads of the same range (1-10) should be allowed again
+      const postEditRead1 = await registry.execute('read_file', { path: 'game.js', start_line: 1, end_line: 10 }, dummyCtx);
+      const postEditRead2 = await registry.execute('read_file', { path: 'game.js', start_line: 1, end_line: 10 }, dummyCtx);
+      expect(postEditRead1.isError).toBeFalsy();
+      expect(postEditRead2.isError).toBeFalsy();
+    });
+
+    it('ReactAgent deduplicates identical tool_call chunks emitted across streaming chunks in a single turn', async () => {
+      const vfs = new VirtualFS();
+      await vfs.writeFile('index.html', '<html><body>Hello</body></html>');
+
+      let readCallCount = 0;
+      const customTools = createBuiltinTools().map((t) => {
+        if (t.name === 'read_file') {
+          return {
+            ...t,
+            execute: async (args: any, ctx: any) => {
+              readCallCount++;
+              return t.execute(args, ctx);
+            },
+          };
+        }
+        return t;
+      });
+
+      let turn = 0;
+      const duplicateStreamProvider: ILLMProvider = {
+        id: 'dup-stream-provider',
+        async *streamChat() {
+          turn++;
+          if (turn === 1) {
+            // Simulate a streaming provider emitting the same functionCall across 3 chunks
+            const duplicateTc = {
+              id: 'call_dup_1',
+              name: 'read_file',
+              args: { path: 'index.html' },
+            };
+            yield { type: 'tool_call', toolCall: duplicateTc };
+            yield { type: 'tool_call', toolCall: duplicateTc };
+            yield { type: 'tool_call', toolCall: duplicateTc };
+          } else {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call_done',
+                name: 'complete_task',
+                args: { summary: 'Done without duplicate execution' },
+              },
+            };
+          }
+          yield {
+            type: 'usage',
+            usage: { promptTokens: 200, completionTokens: 50, totalTokens: 250 },
+          };
+          yield { type: 'done' };
+        },
+      };
+
+      const agent = new ReactAgent({
+        provider: duplicateStreamProvider,
+        tools: customTools,
+      });
+
+      const events: AgentEvent[] = [];
+      for await (const ev of agent.execute('Check index.html', undefined, vfs)) {
+        events.push(ev);
+      }
+
+      // Must only execute read_file ONCE in turn 1 despite 3 duplicate streaming chunks
+      expect(readCallCount).toBe(1);
+      const readToolCallEvents = events.filter(
+        (e) => e.type === 'TOOL_CALL' && e.payload.name === 'read_file'
+      );
+      expect(readToolCallEvents).toHaveLength(1);
     });
 
     it('EditFileTool includes applied diff preview so model does not need confirmation read_file', async () => {

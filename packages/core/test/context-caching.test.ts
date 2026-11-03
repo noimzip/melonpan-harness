@@ -339,6 +339,9 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     const agent = new ReactAgent({
       provider: mockProvider,
       maxContextTokens: 128000,
+      contextStrategies: [
+        new ToolOutputPruningStrategy({ preservePrefixCache: true }),
+      ],
     });
 
     for await (const _ev of agent.execute('Build game', undefined, vfs)) {

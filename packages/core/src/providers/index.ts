@@ -271,6 +271,7 @@ export class GeminiProvider implements ILLMProvider {
       let cachedPromptTokens = 0;
       let turnThoughtSignature: string | undefined = undefined;
       const turnToolCalls: LLMToolCall[] = [];
+      const emittedToolCallKeys = new Set<string>();
 
       for await (const chunk of streamResp) {
         if (signal?.aborted) {
@@ -316,6 +317,13 @@ export class GeminiProvider implements ILLMProvider {
 
         const toolCalls = extractGeminiFunctionCalls(chunk, turnThoughtSignature);
         for (const tc of toolCalls) {
+          const argsJson = JSON.stringify(tc.args || {});
+          const dedupKey = tc.id ? `id:${tc.id}` : `call:${tc.name}:${argsJson}`;
+          if (emittedToolCallKeys.has(dedupKey)) {
+            continue;
+          }
+          emittedToolCallKeys.add(dedupKey);
+
           if (!tc.thoughtSignature && turnThoughtSignature) {
             tc.thoughtSignature = turnThoughtSignature;
             tc.thought_signature = turnThoughtSignature;
@@ -324,7 +332,6 @@ export class GeminiProvider implements ILLMProvider {
           }
           turnToolCalls.push(tc);
 
-          const argsJson = JSON.stringify(tc.args || {});
           yield {
             type: 'tool_call_delta',
             delta: argsJson,

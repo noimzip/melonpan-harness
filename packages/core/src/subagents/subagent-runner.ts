@@ -15,6 +15,7 @@ import { ToolRegistry } from '../tools/tool-registry.js';
 import { createBuiltinTools } from '../tools/builtin-tools.js';
 import { VirtualFS } from '../vfs/virtual-fs.js';
 import { inspectHtmlGameQuality } from '../safety/quality-gate.js';
+import { pruneChatHistory } from '../session/context-strategy.js';
 
 export type { SubagentDefinition };
 
@@ -465,8 +466,17 @@ export class SubagentRunner implements ISubagentSpawner {
         }
         turns++;
 
+        pruneChatHistory(messages, {
+          writeThresholdChars: 200,
+          editThresholdChars: 300,
+          outputThresholdChars: 400,
+          preserveRecentMessages: 2,
+          prunePastThoughts: true,
+        });
+
         let turnText = '';
         const toolCalls: LLMToolCall[] = [];
+        const seenToolCallKeys = new Set<string>();
 
         let turnThoughtSignature: string | undefined = undefined;
 
@@ -497,7 +507,14 @@ export class SubagentRunner implements ISubagentSpawner {
           } else if (chunk.type === 'text_delta' && chunk.delta) {
             turnText += chunk.delta;
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-            toolCalls.push(chunk.toolCall);
+            const tc = chunk.toolCall;
+            const dedupKey = tc.id
+              ? `id:${tc.id}`
+              : `call:${tc.name}:${JSON.stringify(tc.args || {})}`;
+            if (!seenToolCallKeys.has(dedupKey)) {
+              seenToolCallKeys.add(dedupKey);
+              toolCalls.push(tc);
+            }
           } else if (chunk.type === 'usage' && chunk.usage) {
             totalPrompt += chunk.usage.promptTokens || chunk.usage.rawPromptTokens || 0;
             totalCompletion += chunk.usage.completionTokens || 0;
@@ -632,6 +649,16 @@ export class SubagentRunner implements ISubagentSpawner {
         throw new Error(`Subagent "${agentType}" aborted.`);
       }
       turns++;
+
+      if (Array.isArray((chat as any).history)) {
+        pruneChatHistory((chat as any).history, {
+          writeThresholdChars: 200,
+          editThresholdChars: 300,
+          outputThresholdChars: 400,
+          preserveRecentMessages: 2,
+          prunePastThoughts: true,
+        });
+      }
 
       const response = await chat.sendMessage({
         message: currentMsg,

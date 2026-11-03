@@ -29,7 +29,7 @@ export function createRepetitiveCallGuardMiddleware(
     if (toolName === 'read_file' || toolName === 'grep_search') {
       const currentKey =
         toolName === 'read_file'
-          ? `read_file:${ctx.args.path ?? ''}`
+          ? `read_file:${ctx.args.path ?? ''}:${ctx.args.start_line ?? ''}:${ctx.args.end_line ?? ''}`
           : `grep_search:${ctx.args.query ?? ''}:${ctx.args.path ?? ''}`;
 
       recentWindow.push(currentKey);
@@ -48,15 +48,20 @@ export function createRepetitiveCallGuardMiddleware(
       const windowCount = recentWindow.filter((k) => k === currentKey).length;
 
       if (consecutiveCount > maxConsecutive || windowCount > maxConsecutive + 1) {
+        const rangeSuffix =
+          toolName === 'read_file' &&
+          (ctx.args.start_line !== undefined || ctx.args.end_line !== undefined)
+            ? ` (lines ${ctx.args.start_line ?? 1}-${ctx.args.end_line ?? 'end'})`
+            : '';
         const targetDesc =
           toolName === 'read_file'
-            ? `read_file("${ctx.args.path ?? ''}")`
+            ? `read_file("${ctx.args.path ?? ''}"${rangeSuffix})`
             : `grep_search("${ctx.args.query ?? ''}")`;
 
         const totalAttempts = Math.max(consecutiveCount, windowCount);
         return {
           output: `[LOOP_GUARD_WARNING] You have called ${targetDesc} ${totalAttempts} times in succession. The file/search contents are already fully available in your recent context history. Do NOT re-read or repeat this query. Proceed immediately to edit_file(path, search, replace) or complete_task(summary).`,
-          isError: false,
+          isError: true,
           metadata: {
             loopGuardTriggered: true,
             toolName,
@@ -68,6 +73,9 @@ export function createRepetitiveCallGuardMiddleware(
       // 変更操作（write_file, edit_file等）や他のツールが呼ばれたら、同一リードの連続カウントをリセット
       lastKey = '';
       consecutiveCount = 0;
+      if (toolName === 'write_file' || toolName === 'edit_file' || toolName === 'delete_file') {
+        recentWindow.length = 0;
+      }
     }
 
     return next();

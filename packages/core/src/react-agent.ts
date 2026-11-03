@@ -954,6 +954,7 @@ export class ReactAgent {
         let turnTextAcc = '';
         let turnThoughtSignature: string | undefined = undefined;
         const turnToolCalls: LLMToolCall[] = [];
+        const seenToolCallKeys = new Set<string>();
 
         const effectiveThinkingLevel = resolveAdaptiveThinkingLevel({
           configuredLevel: this.thinkingLevel,
@@ -1011,7 +1012,14 @@ export class ReactAgent {
               timestamp: Date.now(),
             };
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-            turnToolCalls.push(chunk.toolCall);
+            const tc = chunk.toolCall;
+            const dedupKey = tc.id
+              ? `id:${tc.id}`
+              : `call:${tc.name}:${JSON.stringify(tc.args || {})}`;
+            if (!seenToolCallKeys.has(dedupKey)) {
+              seenToolCallKeys.add(dedupKey);
+              turnToolCalls.push(tc);
+            }
           } else if (chunk.type === 'usage' && chunk.usage) {
             lastContextTokens = chunk.usage.promptTokens;
             totalPromptTokens += chunk.usage.promptTokens;
