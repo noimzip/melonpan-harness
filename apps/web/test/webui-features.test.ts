@@ -15,6 +15,7 @@ import {
 } from '../src/services/provider-factory';
 import { Session, Message, PlanState, SubagentTrace, ProviderConfig } from '../src/types';
 import { SimulatedProvider, MelonpanCore } from '@melonpan/core';
+import { inlineVfsAssets } from '../src/components/SandboxViewer';
 import JSZip from 'jszip';
 
 describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
@@ -860,6 +861,31 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       } finally {
         process.cwd = originalCwd;
       }
+    });
+
+    it('inlineVfsAssets resolves and inlines relative VFS scripts and stylesheets while preserving CDN scripts', () => {
+      const files: Record<string, string> = {
+        'js/aircraft-models.js': 'window.AIRCRAFT_MODELS = { fighter: { speed: 12 } };',
+        'css/style.css': 'body { background: #050510; color: #00ffcc; }',
+      };
+      const rawHtml = [
+        '<!DOCTYPE html><html><head>',
+        '<link rel="stylesheet" href="./css/style.css">',
+        '<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>',
+        '<script src="js/aircraft-models.js"></script>',
+        '</head><body><script>console.log(window.AIRCRAFT_MODELS.fighter.speed);</script></body></html>',
+      ].join('\n');
+
+      const bundled = inlineVfsAssets(rawHtml, files);
+
+      // VFS JS and CSS must be inlined
+      expect(bundled).toContain('window.AIRCRAFT_MODELS = { fighter: { speed: 12 } };');
+      expect(bundled).toContain('data-vfs-inlined="js/aircraft-models.js"');
+      expect(bundled).toContain('body { background: #050510; color: #00ffcc; }');
+      expect(bundled).toContain('data-vfs-inlined="./css/style.css"');
+
+      // External CDN script must remain untouched
+      expect(bundled).toContain('src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"');
     });
   });
 });

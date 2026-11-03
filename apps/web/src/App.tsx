@@ -487,6 +487,7 @@ export function App() {
               {activeRightTab === 'sandbox' && (
                 <SandboxViewer
                   htmlContent={currentHtml}
+                  files={activeSession.files}
                   onFixError={handleFixError}
                 />
               )}

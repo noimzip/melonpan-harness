@@ -13,10 +13,89 @@ import { WobblyButton } from './WobblyButton';
 
 interface SandboxViewerProps {
   htmlContent: string;
+  files?: Record<string, string>;
   onFixError: (errorDetails: string) => void;
 }
 
-export function SandboxViewer({ htmlContent, onFixError }: SandboxViewerProps) {
+/**
+ * Normalize relative VFS path and look up matching content in the VFS files map.
+ */
+function lookupVfsAsset(
+  rawUrl: string,
+  files?: Record<string, string>
+): string | undefined {
+  if (!files || !rawUrl) return undefined;
+  const trimmed = rawUrl.trim();
+  if (
+    /^(https?:|data:|blob:|\/\/)/i.test(trimmed)
+  ) {
+    return undefined;
+  }
+  const cleanPath = trimmed
+    .split(/[?#]/)[0]
+    .replace(/^(\.\/|\/)+/, '');
+  if (!cleanPath) return undefined;
+
+  if (files[cleanPath] !== undefined) return files[cleanPath];
+  if (files[`./${cleanPath}`] !== undefined) return files[`./${cleanPath}`];
+  if (files[`/${cleanPath}`] !== undefined) return files[`/${cleanPath}`];
+  return undefined;
+}
+
+/**
+ * Inline external VFS scripts (<script src="...">) and stylesheets (<link rel="stylesheet" href="...">)
+ * directly into the HTML string so that iframe srcDoc does not fail with 404 errors on multi-file VFS projects.
+ */
+export function inlineVfsAssets(
+  html: string,
+  files?: Record<string, string>
+): string {
+  if (!html || !files || Object.keys(files).length === 0) {
+    return html;
+  }
+
+  let result = html;
+
+  // 1. Inline <script ... src="path/to/file.js" ...></script>
+  result = result.replace(
+    /<script\b([^>]*?)\bsrc=(["'])([^"']+)\2([^>]*?)>\s*<\/script>/gi,
+    (fullMatch, beforeSrc, _quote, srcUrl, afterSrc) => {
+      const jsContent = lookupVfsAsset(srcUrl, files);
+      if (jsContent === undefined) {
+        return fullMatch;
+      }
+      const attrs = `${beforeSrc} ${afterSrc}`.replace(/\s+/g, ' ').trim();
+      const attrSuffix = attrs ? ` ${attrs}` : '';
+      // Escape any accidental </script> inside JS string literals so HTML parser doesn't break prematurely
+      const safeJs = jsContent.replace(/<\/script>/gi, '<\\/script>');
+      return `<script${attrSuffix} data-vfs-inlined="${srcUrl}">\n${safeJs}\n</script>`;
+    }
+  );
+
+  // 2. Inline <link ... rel="stylesheet" ... href="path/to/file.css" ...>
+  result = result.replace(
+    /<link\b([^>]*?)>/gi,
+    (fullMatch, attrsText) => {
+      if (!/\brel=(["']?)stylesheet\1/i.test(attrsText)) {
+        return fullMatch;
+      }
+      const hrefMatch = attrsText.match(/\bhref=(["'])([^"']+)\1/i);
+      if (!hrefMatch) {
+        return fullMatch;
+      }
+      const hrefUrl = hrefMatch[2];
+      const cssContent = lookupVfsAsset(hrefUrl, files);
+      if (cssContent === undefined) {
+        return fullMatch;
+      }
+      return `<style data-vfs-inlined="${hrefUrl}">\n${cssContent}\n</style>`;
+    }
+  );
+
+  return result;
+}
+
+export function SandboxViewer({ htmlContent, files, onFixError }: SandboxViewerProps) {
   const [key, setKey] = useState(0);
   const [caughtError, setCaughtError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -57,10 +136,13 @@ export function SandboxViewer({ htmlContent, onFixError }: SandboxViewerProps) {
     </script>
   `;
 
+  // Resolve and inline VFS external scripts and stylesheets before injecting into srcDoc
+  const bundledHtml = inlineVfsAssets(htmlContent, files);
+
   // Inject error capture script right after <head> or at top
-  const injectedHtml = htmlContent.includes('<head>')
-    ? htmlContent.replace('<head>', `<head>${errorCaptureScript}`)
-    : `${errorCaptureScript}${htmlContent}`;
+  const injectedHtml = bundledHtml.includes('<head>')
+    ? bundledHtml.replace('<head>', `<head>${errorCaptureScript}`)
+    : `${errorCaptureScript}${bundledHtml}`;
 
   const handleRestart = () => {
     setCaughtError(null);
@@ -68,7 +150,7 @@ export function SandboxViewer({ htmlContent, onFixError }: SandboxViewerProps) {
   };
 
   const handleOpenPopup = () => {
-    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const blob = new Blob([bundledHtml], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     window.open(url, '_blank');
   };
