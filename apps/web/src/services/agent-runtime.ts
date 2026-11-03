@@ -6,6 +6,7 @@ import {
   RuleBasedPermissionPolicy,
   ILLMProvider,
   calculateTokenCost,
+  AgentEvent,
 } from '@melonpan/core';
 import {
   Message,
@@ -29,6 +30,7 @@ export interface RuntimeCallbacks {
   onSubagentUpdate: (subagent: SubagentTrace) => void;
   onPermissionRequest: (request: PermissionRequest) => void;
   onMetricsUpdate: (updater: (prev: any) => any) => void;
+  onEvent?: (event: AgentEvent) => void;
 }
 
 export function parsePlanTasks(markdown: string): PlanTask[] {
@@ -236,6 +238,8 @@ export class AgentRuntime {
         mode: session.mode,
         signal,
       })) {
+        callbacks.onEvent?.(event);
+
         switch (event.type) {
           case 'THOUGHT':
             assistantMsg.thought =

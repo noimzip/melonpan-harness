@@ -24,6 +24,7 @@ export function createInitialSession(name = '新しいゲーム開発'): Session
     files: {},
     activeFile: '',
     subagents: [],
+    events: [],
     metrics: {
       billedInputTokens: 0,
       billedOutputTokens: 0,

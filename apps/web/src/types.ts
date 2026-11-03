@@ -1,3 +1,5 @@
+import type { AgentEvent } from '@melonpan/core';
+
 export interface WebToolCall {
   id: string;
   name: string;
@@ -105,6 +107,7 @@ export interface Session {
   plan?: PlanState;
   subagents: SubagentTrace[];
   metrics: ContextMetrics;
+  events?: AgentEvent[];
 }
 
 export type ProviderType =

@@ -378,6 +378,7 @@ export class WebCommandRegistry {
           messages: [],
           plan: undefined,
           subagents: [],
+          events: [],
           metrics: {
             ...prev.metrics,
             currentContextTokens: 0,

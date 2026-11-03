@@ -8,6 +8,7 @@ import {
   Gauge,
   Trophy,
   Menu,
+  ScrollText,
 } from 'lucide-react';
 import {
   Session,
@@ -17,7 +18,9 @@ import {
   PermissionRequest,
   ProviderConfig,
   PermissionPolicyConfig,
+  WebToolCall,
 } from './types';
+import type { AgentEvent } from '@melonpan/core';
 import {
   loadSessions,
   saveSessions,
@@ -37,6 +40,7 @@ import { SubagentTree } from './components/SubagentTree';
 import { SkillInspector } from './components/SkillInspector';
 import { ContextGauge } from './components/ContextGauge';
 import { ArtifactGallery } from './components/ArtifactGallery';
+import { AuditLogViewer } from './components/AuditLogViewer';
 import { PermissionModal } from './components/PermissionModal';
 import { SettingsModal } from './components/SettingsModal';
 import { KioskOverlay } from './components/KioskOverlay';
@@ -44,7 +48,7 @@ import { KioskOverlay } from './components/KioskOverlay';
 import { webCommandRegistry, WebCommandContext } from './services/command-registry';
 import { getStoredApiKeys, saveStoredApiKey } from './services/provider-factory';
 
-type RightTab = 'sandbox' | 'vfs' | 'plan' | 'subagents' | 'skills' | 'context' | 'gallery';
+type RightTab = 'sandbox' | 'vfs' | 'plan' | 'subagents' | 'skills' | 'context' | 'gallery' | 'logs';
 
 export function App() {
   const [sessions, setSessions] = useState<Session[]>(() => loadSessions());
@@ -274,6 +278,12 @@ export function App() {
           metrics: updater(prev.metrics),
         }));
       },
+      onEvent: (event: AgentEvent) => {
+        updateActiveSession((prev) => ({
+          ...prev,
+          events: [...(prev.events || []), event],
+        }));
+      },
     };
 
     try {
@@ -400,6 +410,7 @@ export function App() {
               { id: 'subagents', label: 'サブエージェント', icon: <Bot size={13} /> },
               { id: 'skills', label: 'スキル', icon: <Sparkles size={13} /> },
               { id: 'context', label: '燃費/ゲージ', icon: <Gauge size={13} /> },
+              { id: 'logs', label: '実行ログ', icon: <ScrollText size={13} /> },
               { id: 'gallery', label: 'ギャラリー', icon: <Trophy size={13} /> },
             ].map((tab) => (
               <button
@@ -529,6 +540,9 @@ export function App() {
                   metrics={activeSession.metrics}
                   onManualCompact={handleManualCompact}
                 />
+              )}
+              {activeRightTab === 'logs' && (
+                <AuditLogViewer session={activeSession} />
               )}
               {activeRightTab === 'gallery' && (
                 <ArtifactGallery
