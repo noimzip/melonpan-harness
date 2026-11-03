@@ -22,6 +22,13 @@ export const exportCommand: CommandDefinition = {
 
     const targetDir = args[0]?.trim() || './output/';
 
+    if (targetDir === 'logs' || targetDir === './.melonpan/logs/' || targetDir === '.melonpan/logs') {
+      const logsDir = path.resolve('.melonpan/logs');
+      ctx.logActivity(`Session logs directory: ${logsDir}`);
+      ctx.logThought(`📜 Session transcripts and JSONL logs are saved in: "${logsDir}" (Latest: latest.log)`);
+      return;
+    }
+
     try {
       let writtenPaths: string[] = [];
       if (typeof (ctx.vfs as any).flushToDisk === 'function') {

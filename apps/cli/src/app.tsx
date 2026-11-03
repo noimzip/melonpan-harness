@@ -19,6 +19,7 @@ import {
   fetchDiscoveredModels,
   DiscoveredModel,
   ProviderApiKeys,
+  FileSessionLogger,
 } from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
@@ -355,16 +356,28 @@ export const App: React.FC<AppProps> = ({
     abortControllerRef.current = abortController;
 
     let hasError = false; // #5: Prevent stale closure bug
+    let sessionLogger: FileSessionLogger | null = null;
 
     try {
       const core = getOrCreateCore(currentRunMode);
       let turnCounter = 0;
+
+      sessionLogger = new FileSessionLogger({
+        sessionId: core.getSession().sessionId,
+        model,
+        mode: currentRunMode,
+        prompt: promptToRun,
+      });
+      await sessionLogger.init();
 
       for await (const event of core.run(promptToRun, {
         mode: currentRunMode,
         signal: abortController.signal,
       })) {
         setEvents((prev) => [...prev, event]);
+        if (sessionLogger) {
+          sessionLogger.appendEvent(event).catch(() => {});
+        }
 
         switch (event.type) {
           case 'SKILL_INDEXED':
@@ -582,6 +595,17 @@ export const App: React.FC<AppProps> = ({
       setStatus('error');
       setCurrentActivity(`Runtime Error: ${err.message || String(err)}`);
     } finally {
+      if (sessionLogger) {
+        try {
+          const logRes = await sessionLogger.finish();
+          if (logRes.logFilePath) {
+            const shortPath = logRes.logFilePath.includes('.melonpan')
+              ? logRes.logFilePath.slice(logRes.logFilePath.indexOf('.melonpan'))
+              : logRes.logFilePath;
+            setCurrentActivity((prev) => `${prev} (Log: ${shortPath})`);
+          }
+        } catch {}
+      }
       isRunningRef.current = false;
       abortControllerRef.current = null;
     }
