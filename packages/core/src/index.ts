@@ -309,4 +309,5 @@ export * from './git/index.js';
 export * from './safety/index.js';
 export * from './providers/index.js';
 export * from './pricing/index.js';
+export * from './logging/index.js';
 export * from './react-agent.js';
