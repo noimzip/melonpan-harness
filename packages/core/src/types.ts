@@ -310,6 +310,14 @@ export interface TokenUsage {
   contextWindowUtilization?: number;
   /** モデルの最大コンテキストウィンドウ上限 */
   maxContextWindowTokens?: number;
+  /** 推定累計費用 (USD) */
+  estimatedCostUsd?: number;
+  /** 推定累計費用 (JPY) */
+  estimatedCostJpy?: number;
+  /** キャッシュヒットによる節約額 (USD) */
+  savedCostUsd?: number;
+  /** キャッシュヒットによる節約額 (JPY) */
+  savedCostJpy?: number;
 }
 
 export interface ContextCompactionResult {
@@ -556,6 +564,10 @@ export interface UsagePayload {
   turn?: number;
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
+  estimatedCostUsd?: number;
+  estimatedCostJpy?: number;
+  savedCostUsd?: number;
+  savedCostJpy?: number;
 }
 
 export interface CompletePayload {
@@ -565,6 +577,7 @@ export interface CompletePayload {
   durationMs: number;
   usage?: TokenUsage;
   aborted?: boolean;
+  costCapReached?: boolean;
 }
 
 export interface SerializedError {
@@ -884,4 +897,6 @@ export interface MelonpanCoreOptions {
   enableStreaming?: boolean;
   /** 最大コンテキストウィンドウサイズ (デフォルト: 128000) */
   maxContextTokens?: number;
+  /** セッションあたりの累計費用上限 (USD, デフォルト: 2.00) */
+  maxCostUsd?: number;
 }

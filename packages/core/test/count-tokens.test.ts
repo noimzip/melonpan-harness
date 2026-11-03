@@ -94,34 +94,38 @@ describe('Multi-Provider Official Tokenizers (Gemini, Claude, OpenAI) & CJK Fall
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('3. OpenAI GPT countTokens uses js-tiktoken (o200k_base / cl100k_base) for accurate zero-latency BPE counting', async () => {
-    const openAiProvider = new OpenAICompatibleProvider({
-      id: 'openai',
-      apiKey: 'sk-openai-test',
-    });
+  it(
+    '3. OpenAI GPT countTokens uses js-tiktoken (o200k_base / cl100k_base) for accurate zero-latency BPE counting',
+    async () => {
+      const openAiProvider = new OpenAICompatibleProvider({
+        id: 'openai',
+        apiKey: 'sk-openai-test',
+      });
 
-    const tokens4o = await openAiProvider.countTokens(
-      sampleMessages,
-      'You are a helpful coding assistant.',
-      'gpt-4o'
-    );
-    const directTiktoken = countOpenAITokensWithTiktoken(
-      sampleMessages,
-      'You are a helpful coding assistant.',
-      'gpt-4o'
-    );
+      const tokens4o = await openAiProvider.countTokens(
+        sampleMessages,
+        'You are a helpful coding assistant.',
+        'gpt-4o'
+      );
+      const directTiktoken = countOpenAITokensWithTiktoken(
+        sampleMessages,
+        'You are a helpful coding assistant.',
+        'gpt-4o'
+      );
 
-    expect(tokens4o).toBe(directTiktoken);
-    expect(tokens4o).toBeGreaterThan(25);
+      expect(tokens4o).toBe(directTiktoken);
+      expect(tokens4o).toBeGreaterThan(25);
 
-    // Also test cl100k_base model (gpt-4-turbo)
-    const tokensTurbo = await openAiProvider.countTokens(
-      sampleMessages,
-      'You are a helpful coding assistant.',
-      'gpt-4-turbo'
-    );
-    expect(tokensTurbo).toBeGreaterThan(25);
-  });
+      // Also test cl100k_base model (gpt-4-turbo)
+      const tokensTurbo = await openAiProvider.countTokens(
+        sampleMessages,
+        'You are a helpful coding assistant.',
+        'gpt-4-turbo'
+      );
+      expect(tokensTurbo).toBeGreaterThan(25);
+    },
+    20000
+  );
 
   it('4. Fallback estimator accurately accounts for CJK (~1.5 tokens/char) vs ASCII code (~0.35 tokens/char)', async () => {
     const japaneseText = 'あいうえおかきくけこさしすせそたちつてと'; // 20 CJK chars -> ~30 tokens

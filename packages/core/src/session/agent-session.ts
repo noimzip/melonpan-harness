@@ -393,6 +393,7 @@ export class AgentSession implements IAgentRuntime {
         : estimateMessagesTokens(this.messages);
 
     return createDetailedTokenUsage({
+      model: this.model,
       billedPromptTokens: this.billedPromptTokens,
       rawPromptTokens: this.rawPromptTokens > 0 ? this.rawPromptTokens : undefined,
       billedCompletionTokens: this.billedCompletionTokens,

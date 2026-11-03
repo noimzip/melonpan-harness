@@ -37,6 +37,10 @@ import {
   createQualityGateMiddleware,
   createRepetitiveCallGuardMiddleware,
 } from './safety/index.js';
+import {
+  calculateTokenCost,
+  DEFAULT_COST_CAP_USD,
+} from './pricing/model-pricing.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
 
@@ -124,6 +128,8 @@ export interface ReactAgentOptions {
   maxContextTokens?: number;
   /** コンテキストキャッシュマネージャー */
   cacheManager?: ContextCacheManager;
+  /** セッションあたりの累計費用上限 (USD, デフォルト: 2.00) */
+  maxCostUsd?: number;
 }
 
 export interface ReactAgentExecuteOptions {
@@ -160,6 +166,7 @@ export class ReactAgent {
   private enableStreaming: boolean;
   private maxContextTokens: number;
   private cacheManager: ContextCacheManager;
+  private maxCostUsd: number;
 
   constructor(options: ReactAgentOptions = {}) {
     const envApiKey =
@@ -175,6 +182,7 @@ export class ReactAgent {
     this.enableStreaming = options.enableStreaming ?? Boolean(options.provider);
     this.maxContextTokens = options.maxContextTokens ?? 128000;
     this.cacheManager = options.cacheManager || new ContextCacheManager();
+    this.maxCostUsd = options.maxCostUsd ?? DEFAULT_COST_CAP_USD;
 
     if (options.toolRegistry) {
       this.toolRegistry = options.toolRegistry;
@@ -598,6 +606,13 @@ export class ReactAgent {
         }
 
         const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+        const turnCost = calculateTokenCost({
+          model: this.model,
+          billedPromptTokens,
+          rawPromptTokens: totalPromptTokens,
+          cachedPromptTokens: totalCachedPromptTokens,
+          completionTokens: totalCompletionTokens,
+        });
 
         yield {
           type: 'USAGE',
@@ -611,9 +626,43 @@ export class ReactAgent {
             turn: turns,
             contextWindowTokens: lastPromptTokens,
             maxContextWindowTokens: this.maxContextTokens,
+            estimatedCostUsd: turnCost.totalCostUsd,
+            estimatedCostJpy: turnCost.totalCostJpy,
+            savedCostUsd: turnCost.savedCostUsd,
+            savedCostJpy: turnCost.savedCostJpy,
           },
           timestamp: Date.now(),
         };
+
+        if (this.maxCostUsd > 0 && turnCost.totalCostUsd >= this.maxCostUsd) {
+          const capMsg = `⚠️ 累計費用が上限 ($${this.maxCostUsd.toFixed(2)} USD / 約 ¥${Math.round(turnCost.totalCostJpy)} JPY) に達したため、安全のため自動一時停止しました。続行しますか？`;
+          yield {
+            type: 'THOUGHT',
+            payload: { thought: capMsg },
+            timestamp: Date.now(),
+          };
+          yield {
+            type: 'COMPLETE',
+            payload: {
+              summary: capMsg,
+              files: this.getFilesSnapshot(vfs),
+              turns,
+              durationMs: Date.now() - startTime,
+              costCapReached: true,
+              usage: createDetailedTokenUsage({
+                model: this.model,
+                billedPromptTokens,
+                billedCompletionTokens: totalCompletionTokens,
+                cachedPromptTokens: totalCachedPromptTokens,
+                rawPromptTokens: totalPromptTokens,
+                contextWindowTokens: lastPromptTokens,
+                maxContextWindowTokens: this.maxContextTokens,
+              }),
+            },
+            timestamp: Date.now(),
+          };
+          return;
+        }
 
         // Issue #4: candidates?.[0]?.content?.parts から part.thought === true を抽出
         const { thoughts, texts } = extractGeminiResponseParts(response);
@@ -776,6 +825,7 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
+                  model: this.model,
                   billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
@@ -806,6 +856,7 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
+                  model: this.model,
                   billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
@@ -834,6 +885,7 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
+            model: this.model,
             billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,
@@ -1221,6 +1273,13 @@ export class ReactAgent {
           messages.push({ role: 'user', parts: responseParts });
 
           const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+          const turnCost = calculateTokenCost({
+            model: this.model,
+            billedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
+            cachedPromptTokens: totalCachedPromptTokens,
+            completionTokens: totalCompletionTokens,
+          });
 
           yield {
             type: 'USAGE',
@@ -1235,6 +1294,10 @@ export class ReactAgent {
               contextWindowTokens:
                 lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
               maxContextWindowTokens: this.maxContextTokens,
+              estimatedCostUsd: turnCost.totalCostUsd,
+              estimatedCostJpy: turnCost.totalCostJpy,
+              savedCostUsd: turnCost.savedCostUsd,
+              savedCostJpy: turnCost.savedCostJpy,
             },
             timestamp: Date.now(),
           };
@@ -1248,7 +1311,39 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
+                  model: this.model,
                   billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
+                  billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
+                  contextWindowTokens:
+                    lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
+              },
+              timestamp: Date.now(),
+            };
+            return;
+          }
+
+          if (this.maxCostUsd > 0 && turnCost.totalCostUsd >= this.maxCostUsd) {
+            const capMsg = `⚠️ 累計費用が上限 ($${this.maxCostUsd.toFixed(2)} USD / 約 ¥${Math.round(turnCost.totalCostJpy)} JPY) に達したため、安全のため自動一時停止しました。続行しますか？`;
+            yield {
+              type: 'THOUGHT',
+              payload: { thought: capMsg },
+              timestamp: Date.now(),
+            };
+            yield {
+              type: 'COMPLETE',
+              payload: {
+                summary: capMsg,
+                files: this.getFilesSnapshot(vfs),
+                turns,
+                durationMs: Date.now() - startTime,
+                costCapReached: true,
+                usage: createDetailedTokenUsage({
+                  model: this.model,
+                  billedPromptTokens,
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
                   rawPromptTokens: totalPromptTokens,
@@ -1263,6 +1358,13 @@ export class ReactAgent {
           }
         } else {
           const billedPromptTokens = Math.max(0, totalPromptTokens - totalCachedPromptTokens);
+          const turnCost = calculateTokenCost({
+            model: this.model,
+            billedPromptTokens,
+            rawPromptTokens: totalPromptTokens,
+            cachedPromptTokens: totalCachedPromptTokens,
+            completionTokens: totalCompletionTokens,
+          });
           const naturalSummary = turnTextAcc.trim();
           const currentFiles = this.getFilesSnapshot(vfs);
 
@@ -1283,6 +1385,10 @@ export class ReactAgent {
                 contextWindowTokens:
                   lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
                 maxContextWindowTokens: this.maxContextTokens,
+                estimatedCostUsd: turnCost.totalCostUsd,
+                estimatedCostJpy: turnCost.totalCostJpy,
+                savedCostUsd: turnCost.savedCostUsd,
+                savedCostJpy: turnCost.savedCostJpy,
               },
               timestamp: Date.now(),
             };
@@ -1295,6 +1401,7 @@ export class ReactAgent {
                 turns,
                 durationMs: Date.now() - startTime,
                 usage: createDetailedTokenUsage({
+                  model: this.model,
                   billedPromptTokens,
                   billedCompletionTokens: totalCompletionTokens,
                   cachedPromptTokens: totalCachedPromptTokens,
@@ -1331,9 +1438,44 @@ export class ReactAgent {
               contextWindowTokens:
                 lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
               maxContextWindowTokens: this.maxContextTokens,
+              estimatedCostUsd: turnCost.totalCostUsd,
+              estimatedCostJpy: turnCost.totalCostJpy,
+              savedCostUsd: turnCost.savedCostUsd,
+              savedCostJpy: turnCost.savedCostJpy,
             },
             timestamp: Date.now(),
           };
+
+          if (this.maxCostUsd > 0 && turnCost.totalCostUsd >= this.maxCostUsd) {
+            const capMsg = `⚠️ 累計費用が上限 ($${this.maxCostUsd.toFixed(2)} USD / 約 ¥${Math.round(turnCost.totalCostJpy)} JPY) に達したため、安全のため自動一時停止しました。続行しますか？`;
+            yield {
+              type: 'THOUGHT',
+              payload: { thought: capMsg },
+              timestamp: Date.now(),
+            };
+            yield {
+              type: 'COMPLETE',
+              payload: {
+                summary: capMsg,
+                files: this.getFilesSnapshot(vfs),
+                turns,
+                durationMs: Date.now() - startTime,
+                costCapReached: true,
+                usage: createDetailedTokenUsage({
+                  model: this.model,
+                  billedPromptTokens,
+                  billedCompletionTokens: totalCompletionTokens,
+                  cachedPromptTokens: totalCachedPromptTokens,
+                  rawPromptTokens: totalPromptTokens,
+                  contextWindowTokens:
+                    lastContextTokens || estimateMessagesTokens(messages, activeSystemInstruction),
+                  maxContextWindowTokens: this.maxContextTokens,
+                }),
+              },
+              timestamp: Date.now(),
+            };
+            return;
+          }
         }
       }
 
@@ -1345,6 +1487,7 @@ export class ReactAgent {
           turns,
           durationMs: Date.now() - startTime,
           usage: createDetailedTokenUsage({
+            model: this.model,
             billedPromptTokens: Math.max(0, totalPromptTokens - totalCachedPromptTokens),
             billedCompletionTokens: totalCompletionTokens,
             cachedPromptTokens: totalCachedPromptTokens,

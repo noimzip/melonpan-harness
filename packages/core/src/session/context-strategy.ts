@@ -4,6 +4,7 @@ import {
   ILLMProvider,
   TokenUsage,
 } from '../types.js';
+import { calculateTokenCost } from '../pricing/model-pricing.js';
 
 export interface PruneHistoryResult {
   prunedCallsCount: number;
@@ -96,6 +97,7 @@ export function createDetailedTokenUsage(params: {
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
   rawPromptTokens?: number;
+  model?: string;
 }): TokenUsage {
   const cachedPromptTokens = params.cachedPromptTokens ?? 0;
   const rawPromptTokens =
@@ -111,6 +113,14 @@ export function createDetailedTokenUsage(params: {
   const currentContext = params.contextWindowTokens ?? promptTokens;
   const utilization = maxContext > 0 ? Math.min(1, Number((currentContext / maxContext).toFixed(4))) : 0;
 
+  const cost = calculateTokenCost({
+    model: params.model,
+    billedPromptTokens,
+    rawPromptTokens,
+    cachedPromptTokens,
+    completionTokens: billedCompletionTokens,
+  });
+
   return {
     promptTokens,
     completionTokens,
@@ -124,6 +134,10 @@ export function createDetailedTokenUsage(params: {
     contextWindowTokens: currentContext,
     contextWindowUtilization: utilization,
     maxContextWindowTokens: maxContext,
+    estimatedCostUsd: cost.totalCostUsd,
+    estimatedCostJpy: cost.totalCostJpy,
+    savedCostUsd: cost.savedCostUsd,
+    savedCostJpy: cost.savedCostJpy,
   };
 }
 
