@@ -201,6 +201,20 @@ export class AgentRuntime {
         permissionPolicy.setToolRule(tool, 'allow');
       }
 
+      // Compute remaining cost budget across previous turns in this session (default session cap: $2.00 USD)
+      const priorCost = calculateTokenCost({
+        model: providerConfig.model,
+        billedPromptTokens: baseBilledInput,
+        rawPromptTokens: baseBilledInput + baseCached,
+        cachedPromptTokens: baseCached,
+        completionTokens: baseBilledOutput,
+      });
+      const priorCostUsd = Math.max(
+        session.metrics?.estimatedCostUsd || 0,
+        priorCost.totalCostUsd
+      );
+      const remainingCostCapUsd = Math.max(0.000001, 2.0 - priorCostUsd);
+
       // Create MelonpanCore ReAct agent
       const core = new MelonpanCore({
         apiKey: effectiveKey,
@@ -214,6 +228,7 @@ export class AgentRuntime {
         permissionPolicy,
         enableStreaming: true,
         maxTurns: 300,
+        maxCostUsd: remainingCostCapUsd,
       });
       this.core = core;
 

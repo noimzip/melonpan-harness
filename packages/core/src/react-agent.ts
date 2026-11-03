@@ -702,9 +702,18 @@ export class ReactAgent {
           }
         }
 
-        const functionCalls = response.functionCalls;
+        const rawFunctionCalls = response.functionCalls;
 
-        if (functionCalls && functionCalls.length > 0) {
+        if (rawFunctionCalls && rawFunctionCalls.length > 0) {
+          const seenFcKeys = new Set<string>();
+          const functionCalls = rawFunctionCalls.filter((c: any) => {
+            const k = c?.id
+              ? `id:${c.id}`
+              : `call:${c?.name || 'unknown'}:${JSON.stringify(c?.args || {})}`;
+            if (seenFcKeys.has(k)) return false;
+            seenFcKeys.add(k);
+            return true;
+          });
           hasExecutedTools = true;
           lastToolNames = functionCalls.map((c: any) => c.name || 'unknown');
           lastTurnHadError = false;

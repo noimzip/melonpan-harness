@@ -186,14 +186,15 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(ctx.executePrompt).toHaveBeenCalledWith('完全なゲーム実装とテスト', 'goal');
     });
 
-    it('executes /cost command and calculates billed usage & context occupation', async () => {
+    it('executes /cost command and calculates billed usage & context occupation accurately without double-subtracting cached tokens', async () => {
       const { ctx, loggedMessages } = createTestContext();
+      // billedInputTokens is already uncached fresh tokens (50,000), cachedTokens is 20,000 -> raw input is 70,000
       ctx.session.metrics = {
         ...ctx.session.metrics,
         billedInputTokens: 50000,
         billedOutputTokens: 10000,
         cachedTokens: 20000,
-        totalTokens: 60000,
+        totalTokens: 80000,
         currentContextTokens: 15000,
         contextWindowLimit: 128000,
       };
@@ -203,7 +204,9 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(loggedMessages[0]).toContain('/cost');
       expect(loggedMessages[0]).toContain('USD');
       expect(loggedMessages[0]).toContain('JPY');
-      expect(loggedMessages[0]).toContain('キャッシュヒット');
+      expect(loggedMessages[0]).toContain('キャッシュヒット  : 20,000 tokens');
+      expect(loggedMessages[0]).toContain('新規入力 (Billed) : 50,000 tokens');
+      expect(loggedMessages[0]).toContain('入力トークン (Raw)  : 70,000 tokens');
     });
 
     it('executes /permissions command and toggles policy', async () => {
@@ -217,7 +220,7 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(ctx.permissionPolicy.write).toBe('ask');
     });
 
-    it('executes /clear command and resets session and context window tokens to 0', async () => {
+    it('executes /clear command and resets session, context window tokens, and estimated costs to 0', async () => {
       const { ctx, loggedMessages, activeSession } = createTestContext();
       activeSession.messages.push({
         id: 'msg_1',
@@ -227,12 +230,16 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       });
       activeSession.metrics.currentContextTokens = 5000;
       activeSession.metrics.billedInputTokens = 10000;
+      activeSession.metrics.estimatedCostUsd = 0.45;
+      activeSession.metrics.estimatedCostJpy = 71.1;
 
       await webCommandRegistry.executeCommand('/clear', ctx);
       expect(loggedMessages[loggedMessages.length - 1]).toContain('リセットしました');
       expect(activeSession.messages.length).toBe(0);
       expect(activeSession.metrics.currentContextTokens).toBe(0);
       expect(activeSession.metrics.billedInputTokens).toBe(0);
+      expect(activeSession.metrics.estimatedCostUsd).toBe(0);
+      expect(activeSession.metrics.estimatedCostJpy).toBe(0);
     });
 
     it('executes /compact command with small history and reports already compact', async () => {

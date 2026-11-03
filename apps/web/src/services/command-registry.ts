@@ -1,8 +1,11 @@
 import { CommandSuggestion, Session, ProviderConfig, PermissionPolicyConfig } from '../types';
 import {
-  ALL_SUPPORTED_MODELS,
-  MODEL_PRICING,
+  calculateTokenCost,
+  DEFAULT_COST_CAP_USD,
   USD_TO_JPY_RATE,
+} from '@melonpan/core';
+import {
+  ALL_SUPPORTED_MODELS,
   maskApiKey,
   saveStoredApiKey,
   clearAllStoredApiKeys,
@@ -322,21 +325,24 @@ export class WebCommandRegistry {
           compactionCount,
         } = ctx.session.metrics;
 
-        const pricing = MODEL_PRICING[ctx.providerConfig.model] || {
-          inputPerMillion: 0.1,
-          outputPerMillion: 0.4,
-        };
+        const cost = calculateTokenCost({
+          model: ctx.providerConfig.model,
+          billedPromptTokens: billedInputTokens,
+          rawPromptTokens: billedInputTokens + cachedTokens,
+          cachedPromptTokens: cachedTokens,
+          completionTokens: billedOutputTokens,
+          usdToJpyRate: USD_TO_JPY_RATE,
+        });
 
-        const cachedInputRate = pricing.inputPerMillion * 0.25;
-        const freshPromptTokens = Math.max(0, billedInputTokens - cachedTokens);
-        const inputCostUsd =
-          (freshPromptTokens / 1_000_000) * pricing.inputPerMillion +
-          (cachedTokens / 1_000_000) * cachedInputRate;
-        const outputCostUsd = (billedOutputTokens / 1_000_000) * pricing.outputPerMillion;
-        const totalCostUsd = inputCostUsd + outputCostUsd;
-        const totalCostJpy = totalCostUsd * USD_TO_JPY_RATE;
+        const pricing = cost.pricing;
+        const rawInputTokens = cost.freshInputTokens + cost.cachedInputTokens;
+        const freshPromptTokens = cost.freshInputTokens;
+        const totalCostUsd = cost.totalCostUsd;
+        const totalCostJpy = cost.totalCostJpy;
+        const savedCostUsd = cost.savedCostUsd;
+        const savedCostJpy = cost.savedCostJpy;
 
-        const cachePercent = billedInputTokens > 0 ? Math.round((cachedTokens / billedInputTokens) * 100) : 0;
+        const cachePercent = rawInputTokens > 0 ? Math.round((cachedTokens / rawInputTokens) * 100) : 0;
         const ctxPercent = contextWindowLimit > 0
           ? Math.min(100, Math.round((currentContextTokens / contextWindowLimit) * 100))
           : 0;
@@ -344,12 +350,13 @@ export class WebCommandRegistry {
         const lines = [
           '💰 **セッション累計トークン消費 & 推定費用 (/cost)**:',
           `  • 使用モデル          : **${ctx.providerConfig.model}**`,
-          `  • 入力トークン        : ${billedInputTokens.toLocaleString()} tokens ($${pricing.inputPerMillion.toFixed(3)} / 1M)`,
-          `    └ キャッシュヒット  : ${cachedTokens.toLocaleString()} tokens (${cachePercent}% 割引適用)`,
-          `    └ 新規入力          : ${freshPromptTokens.toLocaleString()} tokens`,
+          `  • 入力トークン (Raw)  : ${rawInputTokens.toLocaleString()} tokens ($${pricing.inputPerMillion.toFixed(3)} / 1M)`,
+          `    └ キャッシュヒット  : ${cachedTokens.toLocaleString()} tokens (${cachePercent}% 割引適用, $${pricing.cachedInputPerMillion.toFixed(4)} / 1M)`,
+          `    └ 新規入力 (Billed) : ${freshPromptTokens.toLocaleString()} tokens`,
+          `    └ キャッシュ節約額  : -$${savedCostUsd.toFixed(5)} USD (約 ¥${savedCostJpy.toFixed(2)} JPY)`,
           `  • 出力トークン        : ${billedOutputTokens.toLocaleString()} tokens ($${pricing.outputPerMillion.toFixed(3)} / 1M)`,
           `  • 累計トークン        : ${totalTokens.toLocaleString()} tokens`,
-          `  • **推定コスト**      : **$${totalCostUsd.toFixed(5)} USD** (約 **¥${totalCostJpy.toFixed(2)} JPY**)`,
+          `  • **推定コスト**      : **$${totalCostUsd.toFixed(5)} USD** (約 **¥${totalCostJpy.toFixed(2)} JPY**) / 上限: $${DEFAULT_COST_CAP_USD.toFixed(2)} USD`,
           '  ───────────────────────────────────────────',
           '🧠 **Context Window (コンテキスト占有率)**:',
           `  • 現在の占有量        : ${currentContextTokens.toLocaleString()} / ${contextWindowLimit.toLocaleString()} tokens (${ctxPercent}%)`,
@@ -378,6 +385,10 @@ export class WebCommandRegistry {
             billedOutputTokens: 0,
             cachedTokens: 0,
             totalTokens: 0,
+            estimatedCostUsd: 0,
+            estimatedCostJpy: 0,
+            savedCostUsd: 0,
+            savedCostJpy: 0,
           },
         }));
         ctx.logMessage('🧹 セッションの会話履歴とコンテキストをリセットしました。');

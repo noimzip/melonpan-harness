@@ -721,10 +721,20 @@ export class SubagentRunner implements ISubagentSpawner {
         finalReport = response.text.trim();
       }
 
-      const functionCalls = response.functionCalls;
-      if (!functionCalls || functionCalls.length === 0) {
+      const rawFunctionCalls = response.functionCalls;
+      if (!rawFunctionCalls || rawFunctionCalls.length === 0) {
         break;
       }
+
+      const seenFcKeys = new Set<string>();
+      const functionCalls = rawFunctionCalls.filter((c: any) => {
+        const k = c?.id
+          ? `id:${c.id}`
+          : `call:${c?.name || 'unknown'}:${JSON.stringify(c?.args || {})}`;
+        if (seenFcKeys.has(k)) return false;
+        seenFcKeys.add(k);
+        return true;
+      });
 
       const functionResponses: any[] = [];
       let isDone = false;
