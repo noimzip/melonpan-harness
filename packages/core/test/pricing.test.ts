@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveModelPricing,
+  resolveModelContextWindow,
   calculateTokenCost,
   DEFAULT_COST_CAP_USD,
   USD_TO_JPY_RATE,
@@ -13,12 +14,31 @@ import {
 
 describe('Model Pricing & Cost Calculation Engine', () => {
   it('resolves pricing for Gemini, OpenAI, and Claude models (including provider-prefixed names)', () => {
-    expect(resolveModelPricing('gemini-3.8-flash').inputPerMillion).toBe(0.1);
+    expect(resolveModelPricing('gemini-3.8-flash').inputPerMillion).toBe(0.75);
+    expect(resolveModelPricing('gemini-3.8-flash').outputPerMillion).toBe(3.75);
+    expect(resolveModelPricing('gemini-3.8-flash').cachedInputPerMillion).toBe(0.075);
     expect(resolveModelPricing('gpt-4o').inputPerMillion).toBe(2.5);
     expect(resolveModelPricing('openai/gpt-4o-mini').inputPerMillion).toBe(0.15);
     expect(resolveModelPricing('anthropic/claude-3-7-sonnet-20250219').inputPerMillion).toBe(3.0);
     expect(resolveModelPricing('claude-3-5-haiku-latest').inputPerMillion).toBe(0.8);
-    expect(resolveModelPricing('unknown-custom-model').inputPerMillion).toBe(0.1);
+    expect(resolveModelPricing('unknown-custom-model').inputPerMillion).toBe(0.75);
+  });
+
+  it('resolves accurate contextWindowTokens dynamically per model', () => {
+    expect(resolveModelContextWindow('gemini-3.8-flash')).toBe(1_048_576);
+    expect(resolveModelContextWindow('gemini-3.5-flash-lite')).toBe(1_048_576);
+    expect(resolveModelContextWindow('gemini-4-argon')).toBe(1_048_576);
+    expect(resolveModelContextWindow('gemma-4-31b-it')).toBe(131_072);
+    expect(resolveModelContextWindow('google/gemma-4-31b')).toBe(131_072);
+    expect(resolveModelContextWindow('gpt-4o')).toBe(128_000);
+    expect(resolveModelContextWindow('openai/gpt-4-turbo-2024-04-09')).toBe(128_000);
+    expect(resolveModelContextWindow('o3-mini')).toBe(200_000);
+    expect(resolveModelContextWindow('openai/o1-preview')).toBe(200_000);
+    expect(resolveModelContextWindow('claude-3-7-sonnet')).toBe(200_000);
+    expect(resolveModelContextWindow('meta-llama/llama-3.2-3b-instruct:free')).toBe(131_072);
+    expect(resolveModelContextWindow('deepseek/deepseek-r1:free')).toBe(131_072);
+    expect(resolveModelContextWindow('unknown-custom-model')).toBe(1_048_576);
+    expect(resolveModelContextWindow()).toBe(1_048_576);
   });
 
   it('calculates fresh input, cached input discount, output cost, and USD/JPY conversion accurately', () => {

@@ -142,4 +142,57 @@ describe('ReactAgent', () => {
       })
     ).toBe('minimal');
   });
+
+  it('dynamically resolves maxContextTokens from model catalog and updates on setModel', () => {
+    const flashAgent = new ReactAgent({ model: 'gemini-3.8-flash', simulate: true });
+    expect((flashAgent as any).maxContextTokens).toBe(1_048_576);
+
+    const gptAgent = new ReactAgent({ model: 'gpt-4o', simulate: true });
+    expect((gptAgent as any).maxContextTokens).toBe(128_000);
+
+    gptAgent.setModel('claude-3-7-sonnet');
+    expect((gptAgent as any).maxContextTokens).toBe(200_000);
+
+    // Explicit override is preserved across setModel
+    const overrideAgent = new ReactAgent({ model: 'gemini-3.8-flash', maxContextTokens: 64_000, simulate: true });
+    expect((overrideAgent as any).maxContextTokens).toBe(64_000);
+    overrideAgent.setModel('gpt-4o');
+    expect((overrideAgent as any).maxContextTokens).toBe(64_000);
+  });
+
+  it('deep clones TOOL_CALL event args to prevent mutation from corrupting audit logs', async () => {
+    const mutableArgs = { path: 'index.html', content: 'initial content' };
+    const mockProvider = {
+      name: 'mutating-mock',
+      async *streamChat() {
+        yield {
+          type: 'tool_call' as const,
+          toolCall: {
+            id: 'call-1',
+            name: 'write_file',
+            args: mutableArgs,
+          },
+        };
+        yield {
+          type: 'usage' as const,
+          usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, cachedPromptTokens: 0 },
+        };
+      },
+    };
+
+    const agent = new ReactAgent({ provider: mockProvider as any, maxTurns: 1 });
+    const vfs = new VirtualFS();
+    const toolCallEvents: any[] = [];
+
+    for await (const ev of agent.execute('test', undefined, vfs)) {
+      if (ev.type === 'TOOL_CALL') {
+        toolCallEvents.push(ev);
+        // Mutate original args object right after emission
+        mutableArgs.content = 'MUTATED LATER';
+      }
+    }
+
+    expect(toolCallEvents.length).toBe(1);
+    expect(toolCallEvents[0].payload.args.content).toBe('initial content');
+  });
 });

@@ -19,6 +19,19 @@ import { pruneChatHistory } from '../session/context-strategy.js';
 
 export type { SubagentDefinition };
 
+function deepCloneToolArgs(args: any): any {
+  if (args === null || args === undefined) return {};
+  try {
+    return structuredClone(args);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(args));
+    } catch {
+      return typeof args === 'object' ? { ...args } : args;
+    }
+  }
+}
+
 /**
  * ファイルパスまたは内容から適切な Markdown コードフェンス言語タグを動的に推論する (Issue #12)
  */
@@ -559,7 +572,7 @@ export class SubagentRunner implements ISubagentSpawner {
         for (const call of toolCalls) {
           emitHierarchical({
             type: 'TOOL_CALL',
-            payload: { name: call.name, args: call.args || {}, callId: call.id },
+            payload: { name: call.name, args: deepCloneToolArgs(call.args || {}), callId: call.id },
             timestamp: Date.now(),
           });
 
@@ -743,7 +756,7 @@ export class SubagentRunner implements ISubagentSpawner {
         const callName = call.name || 'unknown';
         emitHierarchical({
           type: 'TOOL_CALL',
-          payload: { name: callName, args: call.args || {}, callId: call.id },
+          payload: { name: callName, args: deepCloneToolArgs(call.args || {}), callId: call.id },
           timestamp: Date.now(),
         });
 

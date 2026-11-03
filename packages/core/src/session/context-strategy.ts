@@ -4,7 +4,10 @@ import {
   ILLMProvider,
   TokenUsage,
 } from '../types.js';
-import { calculateTokenCost } from '../pricing/model-pricing.js';
+import {
+  calculateTokenCost,
+  resolveModelContextWindow,
+} from '../pricing/model-pricing.js';
 
 export interface PruneHistoryResult {
   prunedCallsCount: number;
@@ -109,7 +112,9 @@ export function createDetailedTokenUsage(params: {
   const promptTokens = rawPromptTokens;
   const completionTokens = billedCompletionTokens;
   const totalTokens = promptTokens + completionTokens;
-  const maxContext = params.maxContextWindowTokens ?? 128000;
+  const maxContext =
+    params.maxContextWindowTokens ??
+    (params.model ? resolveModelContextWindow(params.model) : resolveModelContextWindow('gemini-3.8-flash'));
   const currentContext = params.contextWindowTokens ?? promptTokens;
   const utilization = maxContext > 0 ? Math.min(1, Number((currentContext / maxContext).toFixed(4))) : 0;
 
@@ -465,7 +470,7 @@ export class ToolOutputPruningStrategy implements IContextStrategy {
       outputThresholdChars: options.outputThresholdChars ?? 400,
       preserveRecentMessages: options.preserveRecentMessages ?? 2,
       prunePastThoughts: options.prunePastThoughts ?? true,
-      preservePrefixCache: options.preservePrefixCache ?? false,
+      preservePrefixCache: options.preservePrefixCache ?? true,
       triggerUtilization: options.triggerUtilization ?? 0.85,
     };
   }
@@ -550,7 +555,9 @@ export class LlmSummaryCompactionStrategy implements IContextStrategy {
   private model: string;
 
   constructor(options: LlmSummaryCompactionOptions = {}) {
-    this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.maxContextTokens =
+      options.maxContextTokens ??
+      (options.model ? resolveModelContextWindow(options.model) : resolveModelContextWindow('gemini-3.8-flash'));
     // Issue #58: 実運用（maxContextTokens > 4000）では Prefix Cache を長く維持するため triggerUtilization = 0.85, keepRecentMessages = 6 に設定。
     // 小規模テスト用の極小 maxContextTokens (<= 4000) が明示的閾値なしで渡された場合は従来互換の 0.3 / 2 を適用。
     const isTinyTestWindow = this.maxContextTokens <= 4000;

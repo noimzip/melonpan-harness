@@ -20,6 +20,7 @@ import {
   DiscoveredModel,
   ProviderApiKeys,
   FileSessionLogger,
+  resolveModelContextWindow,
 } from '@melonpan/core';
 import { Header } from './components/header.js';
 import { EventList } from './components/event-list.js';
@@ -286,7 +287,7 @@ export const App: React.FC<AppProps> = ({
     completionTokens: 0,
     totalTokens: 0,
     contextWindowTokens: 0,
-    maxContextTokens: 128_000,
+    maxContextTokens: resolveModelContextWindow(defaultModel),
     savedTokens: 0,
   });
   const baseSessionUsageRef = useRef<SessionUsage>(sessionUsage);
@@ -325,6 +326,7 @@ export const App: React.FC<AppProps> = ({
       });
     } else {
       coreRef.current.getAgent().setModel(model, thinkingLevel);
+      coreRef.current.getSession().setModel(model, thinkingLevel);
       coreRef.current.getAgent().setMode(currentRunMode);
       coreRef.current.getAgent().setProvider(currentProvider);
       coreRef.current.getSession().setMode(currentRunMode);
@@ -629,7 +631,7 @@ export const App: React.FC<AppProps> = ({
       completionTokens: 0,
       totalTokens: 0,
       contextWindowTokens: 0,
-      maxContextTokens: 128_000,
+      maxContextTokens: resolveModelContextWindow(model),
       savedTokens: 0,
     };
     setSessionUsage(clearedUsage);
@@ -685,8 +687,12 @@ export const App: React.FC<AppProps> = ({
     model,
     setModel: (m) => {
       setModel(m);
+      const newMax = resolveModelContextWindow(m);
+      setSessionUsage((prev) => ({ ...prev, maxContextTokens: newMax }));
+      baseSessionUsageRef.current = { ...baseSessionUsageRef.current, maxContextTokens: newMax };
       if (coreRef.current) {
         coreRef.current.getAgent().setModel(m, thinkingLevel);
+        coreRef.current.getSession().setModel(m, thinkingLevel);
       }
     },
     provider,
@@ -853,6 +859,9 @@ export const App: React.FC<AppProps> = ({
           selectedId={model}
           onSelect={(selectedModel, selectedItem) => {
             setModel(selectedModel);
+            const newMax = resolveModelContextWindow(selectedModel);
+            setSessionUsage((prev) => ({ ...prev, maxContextTokens: newMax }));
+            baseSessionUsageRef.current = { ...baseSessionUsageRef.current, maxContextTokens: newMax };
             const targetProv = selectedItem.providerId || provider;
             if (selectedItem.providerId) {
               setProvider(selectedItem.providerId);
@@ -862,6 +871,7 @@ export const App: React.FC<AppProps> = ({
                 ? undefined
                 : createProviderInstance(targetProv, selectedModel, apiKey);
               coreRef.current.getAgent().setModel(selectedModel, thinkingLevel);
+              coreRef.current.getSession().setModel(selectedModel, thinkingLevel);
               coreRef.current.getAgent().setProvider(nextProviderInst);
             }
             setActivePicker('none');

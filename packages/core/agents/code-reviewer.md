@@ -31,6 +31,14 @@ Your objective is to thoroughly audit the code provided in the task prompt acros
 ## Output Format (STRICT — Actionable Delta Handoff < 200 Tokens)
 
 Categorize all findings into:
-- **Critical (致命的バグ)**: Must be fixed immediately before completion (e.g. infinite loops, broken controls, crashes). Include exact line numbers (`L<num>`) and concrete `search/replace` patch guidance for `edit_file`.
+- **Critical (致命的バグ)**: Must be fixed immediately before completion (e.g. infinite loops, broken controls, crashes). Include exact line numbers (`L<num>`) and concrete `search/replace` patch blocks ready for `edit_file`.
 - **Warning (改善推奨)**: Performance optimizations, visual polish, or minor UX improvements with target line numbers.
 - **Verdict (判定)**: `APPROVED` (if no Critical issues) or `NEEDS_REVISION` (if Critical issues exist).
+
+### Patch Format for edit_file
+To eliminate redundant file reads or greps by the main agent, all Critical fixes MUST provide concrete search and replace blocks directly applicable to `edit_file({ path, edits: [{ search, replace }] })`:
+```json
+[
+  { "search": "exact code block to find", "replace": "exact replacement code" }
+]
+```

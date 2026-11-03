@@ -12,6 +12,7 @@ import {
   clearAllStoredApiKeys,
   maskApiKey,
   createProviderInstance,
+  MODEL_PRICING,
 } from '../src/services/provider-factory';
 import { Session, Message, PlanState, SubagentTrace, ProviderConfig } from '../src/types';
 import { SimulatedProvider, MelonpanCore } from '@melonpan/core';
@@ -44,6 +45,8 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(session.activeFile).toBe('');
       expect(session.messages.length).toBeGreaterThan(0);
       expect(session.metrics.currentContextTokens).toBeGreaterThan(0);
+      expect(session.metrics.contextWindowLimit).toBe(1_048_576);
+      expect(session.metrics.activeModel).toBe('gemini-3.8-flash');
     });
 
     it('persists sessions to localStorage and loads them accurately', () => {
@@ -148,10 +151,35 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       // Switch to gpt-4o
       await webCommandRegistry.executeCommand('/model gpt-4o', ctx);
       expect(loggedMessages[loggedMessages.length - 1]).toContain('gpt-4o');
+      expect(ctx.session.metrics.contextWindowLimit).toBe(128_000);
+      expect(ctx.session.metrics.activeModel).toBe('gpt-4o');
 
       // Switch to gemini-4-argon
       await webCommandRegistry.executeCommand('/model gemini-4-argon', ctx);
       expect(loggedMessages[loggedMessages.length - 1]).toContain('gemini-4-argon');
+      expect(ctx.session.metrics.contextWindowLimit).toBe(1_048_576);
+      expect(ctx.session.metrics.activeModel).toBe('gemini-4-argon');
+
+      // Switch to claude-3-7-sonnet
+      await webCommandRegistry.executeCommand('/model claude-3-7-sonnet', ctx);
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('claude-3-7-sonnet');
+      expect(ctx.session.metrics.contextWindowLimit).toBe(200_000);
+      expect(ctx.session.metrics.activeModel).toBe('claude-3-7-sonnet');
+
+      // Autocomplete suggestions show context size formatTokens and support /boost alias
+      const suggestions = webCommandRegistry.getAutocompleteSuggestions('/model gemini');
+      expect(suggestions.length).toBeGreaterThan(0);
+      expect(suggestions[0].description).toMatch(/\b1(\.05)?M\b/);
+
+      const boostSuggestions = webCommandRegistry.getAutocompleteSuggestions('/boost gemini');
+      expect(boostSuggestions.length).toBeGreaterThan(0);
+      expect(boostSuggestions[0].text).toContain('/boost ');
+    });
+
+    it('synchronizes MODEL_PRICING with official Gemini 3.8 Flash rates ($0.75 / $3.75)', () => {
+      expect(MODEL_PRICING['gemini-3.8-flash']).toBeDefined();
+      expect(MODEL_PRICING['gemini-3.8-flash'].inputPerMillion).toBe(0.75);
+      expect(MODEL_PRICING['gemini-3.8-flash'].outputPerMillion).toBe(3.75);
     });
 
     it('executes /effort command and validates levels', async () => {
@@ -207,6 +235,19 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(loggedMessages[0]).toContain('キャッシュヒット  : 20,000 tokens');
       expect(loggedMessages[0]).toContain('新規入力 (Billed) : 50,000 tokens');
       expect(loggedMessages[0]).toContain('入力トークン (Raw)  : 70,000 tokens');
+      expect(loggedMessages[0]).toContain('残余トークン空間    : 113,000 tokens');
+    });
+
+    it('/cost dynamically resolves contextWindowLimit from active model when omitted or 0', async () => {
+      const { ctx, loggedMessages } = createTestContext();
+      ctx.session.metrics = {
+        ...ctx.session.metrics,
+        currentContextTokens: 5000,
+        contextWindowLimit: 0,
+      };
+      await webCommandRegistry.executeCommand('/cost', ctx);
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('5,000 / 1,048,576 tokens');
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('残余トークン空間    : 1,043,576 tokens');
     });
 
     it('executes /permissions command and toggles policy', async () => {

@@ -21,6 +21,7 @@ import {
   formatEventAsText,
   formatTranscriptMarkdown,
   formatTranscriptJsonl,
+  formatTokens,
 } from '@melonpan/core';
 import { WobblyButton } from './WobblyButton';
 
@@ -293,7 +294,7 @@ export function AuditLogViewer({ session }: AuditLogViewerProps) {
                   {ev.type === 'FILE_CHANGED' &&
                     `${ev.payload?.action || 'write'} ${ev.payload?.path} (${ev.payload?.content?.length || 0} chars)`}
                   {ev.type === 'USAGE' &&
-                    `Input: ${ev.payload?.billedPromptTokens || ev.payload?.promptTokens} | Output: ${ev.payload?.completionTokens} | Total: ${ev.payload?.totalTokens}${ev.payload?.cost ? ` | Cost: $${ev.payload.cost.totalCostUsd.toFixed(4)}` : ''}`}
+                    `Input: ${ev.payload?.billedPromptTokens || ev.payload?.promptTokens} | Output: ${ev.payload?.completionTokens} | Total: ${ev.payload?.totalTokens}${ev.payload?.contextWindowTokens !== undefined ? ` | Ctx: ${formatTokens(ev.payload.contextWindowTokens)}/${formatTokens(ev.payload.maxContextWindowTokens || 0)}` : ''}${ev.payload?.cost ? ` | Cost: $${ev.payload.cost.totalCostUsd.toFixed(4)}` : ''}`}
                   {ev.type === 'COMPLETE' &&
                     `Turns: ${ev.payload?.turns} | Time: ${ev.payload?.durationMs}ms | ${ev.payload?.summary}`}
                   {ev.type === 'ERROR' && String(ev.payload?.message || '')}

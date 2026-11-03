@@ -48,11 +48,12 @@ export class ToolingRulesSection implements PromptSection {
     return [
       `YOUR WORKSPACE TOOLS: ${toolNames}`,
       '',
-      'TOKEN & CLEAN-ROOM RULES:',
+      'TOKEN & TOOL EFFICIENCY RULES:',
       '1. Initial Creation: Use write_file(path, content) ONCE per new file.',
-      '2. Incremental Edits: NEVER rewrite an entire existing file with write_file. Always use edit_file(path, search, replace) (or edits array) for targeted modifications.',
-      '3. Clean-Room Subagents: NEVER paste full code files into task_prompt; pass file_path or files array instead.',
-      '4. Inspection Efficiency: Use start_line/end_line with read_file and avoid re-reading files after edit_file.',
+      '2. Batch Edits: NEVER edit one hunk at a time. When applying fixes or audits, ALWAYS batch all changes into a single edit_file call using the `edits: Array<{search, replace}>` parameter.',
+      '3. Avoid Redundant Reads: Do NOT re-read or grep files you just edited. Trust your edits and move directly to execution or next step.',
+      '4. Inspection Efficiency: Use line ranges (start_line/end_line) with read_file; do not dump whole files when checking a specific section.',
+      '5. Clean-Room Subagents: NEVER paste full code files into task_prompt; pass file_path or files array instead.',
     ].join('\n');
   }
 }

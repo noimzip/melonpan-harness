@@ -11,6 +11,8 @@ import {
   calculateTokenCost,
   DEFAULT_COST_CAP_USD,
   USD_TO_JPY_RATE,
+  resolveModelContextWindow,
+  formatTokens,
 } from '@melonpan/core';
 import { ContextMetrics } from '../types';
 import { WobblyButton } from './WobblyButton';
@@ -21,10 +23,16 @@ interface ContextGaugeProps {
 }
 
 export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
-  const usagePercent = Math.min(
-    100,
-    Math.round((metrics.currentContextTokens / metrics.contextWindowLimit) * 100)
-  );
+  const contextWindowLimit =
+    metrics.contextWindowLimit && metrics.contextWindowLimit > 0
+      ? metrics.contextWindowLimit
+      : resolveModelContextWindow(metrics.activeModel || 'gemini-3.8-flash');
+
+  const usagePercent = contextWindowLimit > 0
+    ? Math.min(100, Math.round((metrics.currentContextTokens / contextWindowLimit) * 100))
+    : 0;
+
+  const remainingTokens = Math.max(0, contextWindowLimit - metrics.currentContextTokens);
 
   const computedCost = calculateTokenCost({
     model: metrics.activeModel || 'gemini-3.8-flash',
@@ -60,9 +68,16 @@ export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
       {/* Context Window Gauge Card */}
       <div className="p-4 rounded-2xl border-2 border-[var(--stroke)] bg-[var(--background)] rough-shadow-sm space-y-3">
         <div className="flex justify-between items-center">
-          <span className="font-bold">Context Window 使用率</span>
+          <span className="font-bold flex items-center gap-1.5">
+            <span>Context Window 使用率</span>
+            {metrics.activeModel && (
+              <span className="text-[10px] font-mono font-normal opacity-70">
+                ({metrics.activeModel})
+              </span>
+            )}
+          </span>
           <span className="font-mono font-bold text-sm text-[var(--accent)]">
-            {usagePercent}%
+            {formatTokens(metrics.currentContextTokens)} / {formatTokens(contextWindowLimit)} ({usagePercent}%)
           </span>
         </div>
 
@@ -74,9 +89,10 @@ export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
           />
         </div>
 
-        <div className="flex justify-between text-[11px] opacity-70 font-mono">
-          <span>現在: {metrics.currentContextTokens.toLocaleString()} tokens</span>
-          <span>上限: {metrics.contextWindowLimit.toLocaleString()} tokens</span>
+        <div className="flex flex-wrap justify-between gap-y-1 text-[11px] opacity-70 font-mono">
+          <span>現在: {metrics.currentContextTokens.toLocaleString()} tokens ({formatTokens(metrics.currentContextTokens)})</span>
+          <span>残余: {remainingTokens.toLocaleString()} tokens ({formatTokens(remainingTokens)})</span>
+          <span>上限: {contextWindowLimit.toLocaleString()} tokens ({formatTokens(contextWindowLimit)})</span>
         </div>
       </div>
 
@@ -91,24 +107,36 @@ export function ContextGauge({ metrics, onManualCompact }: ContextGaugeProps) {
           <div className="p-2.5 rounded-xl bg-[var(--card)] border border-[var(--stroke)]/30">
             <div className="text-[10px] opacity-60">入力 (Input)</div>
             <div className="font-bold font-mono text-sm mt-0.5">
+              {formatTokens(metrics.billedInputTokens)}
+            </div>
+            <div className="text-[10px] opacity-50 font-mono mt-0.5">
               {metrics.billedInputTokens.toLocaleString()}
             </div>
           </div>
           <div className="p-2.5 rounded-xl bg-[var(--card)] border border-[var(--stroke)]/30">
             <div className="text-[10px] opacity-60">出力 (Output)</div>
             <div className="font-bold font-mono text-sm mt-0.5">
+              {formatTokens(metrics.billedOutputTokens)}
+            </div>
+            <div className="text-[10px] opacity-50 font-mono mt-0.5">
               {metrics.billedOutputTokens.toLocaleString()}
             </div>
           </div>
           <div className="p-2.5 rounded-xl bg-[var(--card)] border border-[var(--stroke)]/30">
             <div className="text-[10px] opacity-60">キャッシュ (Cached)</div>
             <div className="font-bold font-mono text-sm mt-0.5 text-[var(--warm-success)]">
+              {formatTokens(metrics.cachedTokens)}
+            </div>
+            <div className="text-[10px] opacity-50 font-mono mt-0.5">
               {metrics.cachedTokens.toLocaleString()}
             </div>
           </div>
           <div className="p-2.5 rounded-xl bg-[var(--card)] border border-[var(--stroke)]/30">
             <div className="text-[10px] opacity-60">合計 (Total)</div>
             <div className="font-bold font-mono text-sm mt-0.5 text-[var(--accent)]">
+              {formatTokens(metrics.totalTokens)}
+            </div>
+            <div className="text-[10px] opacity-50 font-mono mt-0.5">
               {metrics.totalTokens.toLocaleString()}
             </div>
           </div>

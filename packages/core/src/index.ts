@@ -27,6 +27,7 @@ import {
   LlmSummaryCompactionStrategy,
   ToolOutputPruningStrategy,
 } from './session/context-strategy.js';
+import { resolveModelContextWindow } from './pricing/model-pricing.js';
 
 /**
  * MelonpanCore - Agent Skills標準仕様準拠・モジュラーReAct自律エージェントハーネス (Core-M1 〜 Core-M4)
@@ -49,10 +50,12 @@ export class MelonpanCore implements IAgentRuntime {
   private providerRegistry: ProviderRegistry;
 
   constructor(options: MelonpanCoreOptions = {}) {
-    const maxContextTokens = options.maxContextTokens ?? 128000;
+    const maxContextTokens =
+      options.maxContextTokens ??
+      resolveModelContextWindow(options.model ?? 'gemini-3.8-flash');
     const sharedStrategies =
       options.contextStrategies ?? [
-        new ToolOutputPruningStrategy(),
+        new ToolOutputPruningStrategy({ preservePrefixCache: true }),
         new LlmSummaryCompactionStrategy({ maxContextTokens }),
       ];
 
@@ -60,7 +63,7 @@ export class MelonpanCore implements IAgentRuntime {
       mode: options.mode ?? 'act',
       model: options.model ?? 'gemini-3.8-flash',
       thinkingLevel: options.thinkingLevel ?? 'high',
-      maxContextTokens,
+      maxContextTokens: options.maxContextTokens,
       workspaceDir: options.workspaceDir,
       fs: options.vfs,
       store: options.sessionStore,
@@ -121,7 +124,7 @@ export class MelonpanCore implements IAgentRuntime {
       contextStrategies: sharedStrategies,
       provider: options.provider,
       enableStreaming: options.enableStreaming,
-      maxContextTokens,
+      maxContextTokens: options.maxContextTokens,
       cacheManager: options.cacheManager,
       maxCostUsd: options.maxCostUsd,
     });

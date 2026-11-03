@@ -21,6 +21,7 @@ import { Message, ProviderConfig } from '../types';
 import { ToolCard } from './ToolCard';
 import { webCommandRegistry } from '../services/command-registry';
 import { ALL_SUPPORTED_MODELS } from '../services/provider-factory';
+import { resolveModelContextWindow, formatTokens } from '@melonpan/core';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -517,7 +518,7 @@ export function ChatTimeline({
                   >
                     <Bot size={13} className="text-[var(--accent)] shrink-0" />
                     <span className="truncate">
-                      {providerConfig.model}
+                      {providerConfig.model} ({formatTokens(resolveModelContextWindow(providerConfig.model))})
                     </span>
                     <ChevronDown size={12} className="shrink-0" />
                   </button>
@@ -552,6 +553,7 @@ export function ChatTimeline({
                         {filteredModels.length > 0 ? (
                           filteredModels.map((m) => {
                             const isSelected = providerConfig.model === m.id;
+                            const ctxTokens = resolveModelContextWindow(m.id);
                             return (
                               <button
                                 key={m.id}
@@ -569,7 +571,16 @@ export function ChatTimeline({
                               >
                                 <div className="flex items-center justify-between">
                                   <span className="font-mono text-xs">{m.label}</span>
-                                  {isSelected && <Check size={13} />}
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                                        isSelected ? 'bg-white/20 text-white' : 'bg-black/5 opacity-70'
+                                      }`}
+                                    >
+                                      {formatTokens(ctxTokens)}
+                                    </span>
+                                    {isSelected && <Check size={13} />}
+                                  </div>
                                 </div>
                                 <span
                                   className={`text-[10px] leading-tight ${

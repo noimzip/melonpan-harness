@@ -5,6 +5,8 @@ import {
   OpenRouterProvider,
   OrcaRouterProvider,
   GroqProvider,
+  DEFAULT_MODEL_PRICING,
+  USD_TO_JPY_RATE as CORE_USD_TO_JPY_RATE,
 } from '@melonpan/core';
 import { ProviderType } from '../types';
 
@@ -103,19 +105,17 @@ export interface ModelPricing {
   outputPerMillion: number;
 }
 
-export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'gemini-3.5-flash-lite': { inputPerMillion: 0.075, outputPerMillion: 0.3 },
-  'gemini-3.8-flash': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
-  'gemini-4-argon': { inputPerMillion: 1.25, outputPerMillion: 5.0 },
-  'gemma-4-31b-it': { inputPerMillion: 0.2, outputPerMillion: 0.5 },
-  'gpt-4o': { inputPerMillion: 2.5, outputPerMillion: 10.0 },
-  'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
-  'o3-mini': { inputPerMillion: 1.1, outputPerMillion: 4.4 },
-  'claude-3-7-sonnet': { inputPerMillion: 3.0, outputPerMillion: 15.0 },
-  'claude-3-5-haiku': { inputPerMillion: 0.8, outputPerMillion: 4.0 },
-};
+export const USD_TO_JPY_RATE = CORE_USD_TO_JPY_RATE;
 
-export const USD_TO_JPY_RATE = 158;
+export const MODEL_PRICING: Record<string, ModelPricing> = Object.fromEntries(
+  Object.entries(DEFAULT_MODEL_PRICING).map(([id, spec]) => [
+    id,
+    {
+      inputPerMillion: spec.inputPerMillion,
+      outputPerMillion: spec.outputPerMillion,
+    },
+  ])
+);
 
 const API_KEYS_STORAGE_KEY = 'melonpan_web_api_keys_v1';
 

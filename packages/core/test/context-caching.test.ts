@@ -358,6 +358,46 @@ describe('End-to-End Cache Savings & Usage Telemetry in MelonpanCore', () => {
     expect(turnSnapshots[2]![2]).toBe(turnSnapshots[1]![2]);
   });
 
+  it('ToolOutputPruningStrategy defaults to preservePrefixCache: true and preserves history below trigger utilization', () => {
+    const strategy = new ToolOutputPruningStrategy();
+    const history = [
+      {
+        role: 'user',
+        parts: [{ text: 'build something' }],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: {
+              name: 'write_file',
+              args: { path: 'a.js', content: 'x'.repeat(500) },
+            },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              name: 'write_file',
+              response: { success: true },
+            },
+          },
+        ],
+      },
+    ];
+
+    const cloned = JSON.parse(JSON.stringify(history));
+    // maxContextTokens = 1_000_000, history is ~500 chars (well below 85% utilization)
+    const result = strategy.apply(cloned, { maxContextTokens: 1_000_000 });
+    expect(result.compacted).toBe(false);
+    expect(result.savedTokens).toBe(0);
+    // History should remain unmasked
+    expect(cloned[1].parts[0].functionCall.args.content).toBe('x'.repeat(500));
+  });
+
   it('Issue #55: compacts large EditFileTool diffs and RunCommandTool outputs at ingestion time while preserving full metadata/events', async () => {
     const { createBuiltinTools, compactOutputAtIngestion } = await import('../src/tools/builtin-tools.js');
     const vfs = new VirtualFS();

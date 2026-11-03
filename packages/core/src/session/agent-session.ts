@@ -28,6 +28,7 @@ import {
   ToolOutputPruningStrategy,
 } from './context-strategy.js';
 import { InMemorySessionStore } from './session-store.js';
+import { resolveModelContextWindow } from '../pricing/model-pricing.js';
 
 export interface AgentSessionOptions {
   sessionId?: string;
@@ -82,6 +83,7 @@ export class AgentSession implements IAgentRuntime {
   private billedCompletionTokens: number = 0;
   private cachedPromptTokens: number = 0;
   private currentContextTokens: number = 0;
+  private explicitMaxContextTokens: boolean = false;
 
   // Issue #62: マルチターン対話（複数の run 呼び出し）で各 run の USAGE 累計が前の run を上書き・消失させないためのベースライン
   private runBaseBilledPromptTokens: number = 0;
@@ -99,7 +101,9 @@ export class AgentSession implements IAgentRuntime {
     this.mode = options.mode || 'act';
     this.model = options.model || 'gemini-3.8-flash';
     this.thinkingLevel = options.thinkingLevel || 'high';
-    this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.explicitMaxContextTokens = options.maxContextTokens !== undefined;
+    this.maxContextTokens =
+      options.maxContextTokens ?? resolveModelContextWindow(this.model);
     this.enableGit = options.enableGit ?? true;
 
     // セッション専用物理ディレクトリの設定（VFSから実ディスクへ移行）
@@ -125,7 +129,7 @@ export class AgentSession implements IAgentRuntime {
         : new VirtualFS());
     this.store = options.store ?? new InMemorySessionStore();
     this.contextStrategies = options.contextStrategies ?? [
-      new ToolOutputPruningStrategy(),
+      new ToolOutputPruningStrategy({ preservePrefixCache: true }),
       new LlmSummaryCompactionStrategy({ maxContextTokens: this.maxContextTokens }),
     ];
     this.eventBus =
@@ -241,6 +245,9 @@ export class AgentSession implements IAgentRuntime {
     this.model = model;
     if (thinkingLevel) {
       this.thinkingLevel = thinkingLevel;
+    }
+    if (!this.explicitMaxContextTokens) {
+      this.maxContextTokens = resolveModelContextWindow(model);
     }
     this.updatedAt = Date.now();
   }

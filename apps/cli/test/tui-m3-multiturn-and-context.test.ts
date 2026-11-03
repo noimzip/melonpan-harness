@@ -97,6 +97,22 @@ describe('TUI-M3: Multi-Turn Conversation View, Context Gauge & Compaction UI', 
       expect(loggedThoughts.some((t) => t.includes('Cached (Hit)    : 15,000 tokens (75% hit rate'))).toBe(true);
       expect(loggedThoughts.some((t) => t.includes('Fresh (Uncached): 5,000 tokens'))).toBe(true);
     });
+
+    it('/cost dynamically resolves maxContextTokens from active model when omitted from sessionUsage', async () => {
+      ctx.model = 'gemini-3.8-flash';
+      ctx.sessionUsage = {
+        promptTokens: 10000,
+        completionTokens: 1000,
+        totalTokens: 11000,
+        contextWindowTokens: 5000,
+        savedTokens: 0,
+      };
+      await extendedCommandRegistry.executeCommand('/cost', ctx);
+
+      // Should dynamically resolve Gemini 3.8 Flash's 1,048,576 tokens
+      expect(loggedThoughts.some((t) => t.includes('5,000 / 1,048,576 tokens'))).toBe(true);
+      expect(loggedThoughts.some((t) => t.includes('Remaining Space   : 1,043,576 tokens'))).toBe(true);
+    });
   });
 });
 

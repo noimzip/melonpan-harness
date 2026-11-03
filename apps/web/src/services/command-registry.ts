@@ -3,6 +3,8 @@ import {
   calculateTokenCost,
   DEFAULT_COST_CAP_USD,
   USD_TO_JPY_RATE,
+  resolveModelContextWindow,
+  formatTokens,
 } from '@melonpan/core';
 import {
   ALL_SUPPORTED_MODELS,
@@ -150,11 +152,12 @@ export class WebCommandRegistry {
         const targetModel = args[0]?.trim();
 
         if (!targetModel) {
+          const currentLimit = resolveModelContextWindow(ctx.providerConfig.model);
           const modelsList = ALL_SUPPORTED_MODELS.map(
-            (m) => `  • \`${m.id}\` (${m.provider}) - ${m.description}`
+            (m) => `  • \`${m.id}\` (${m.provider}, Context: ${formatTokens(resolveModelContextWindow(m.id))}) - ${m.description}`
           ).join('\n');
           ctx.logMessage(
-            `🤖 **現在のアクティブモデル**: \`${ctx.providerConfig.model}\` (${ctx.providerConfig.provider})\n\n**利用可能な推奨モデル一覧**:\n${modelsList}\n\n切り替え例: \`/model gemini-4-argon\` または \`/model gpt-4o\``
+            `🤖 **現在のアクティブモデル**: \`${ctx.providerConfig.model}\` (${ctx.providerConfig.provider}, Context: ${formatTokens(currentLimit)})\n\n**利用可能な推奨モデル一覧**:\n${modelsList}\n\n切り替え例: \`/model gemini-4-argon\` または \`/model gpt-4o\``
           );
           return;
         }
@@ -172,8 +175,17 @@ export class WebCommandRegistry {
             provider: found.provider,
             apiKey: targetKey,
           }));
+          const newLimit = resolveModelContextWindow(found.id);
+          ctx.updateActiveSession((prev) => ({
+            ...prev,
+            metrics: {
+              ...prev.metrics,
+              activeModel: found.id,
+              contextWindowLimit: newLimit,
+            },
+          }));
           ctx.logMessage(
-            `✔ モデルを \`${found.id}\` (${found.provider}) に切り替えました。\n説明: ${found.description}`
+            `✔ モデルを \`${found.id}\` (${found.provider}, Context: ${formatTokens(newLimit)}) に切り替えました。\n説明: ${found.description}`
           );
         } else {
           // Custom model name
@@ -181,20 +193,32 @@ export class WebCommandRegistry {
             ...prev,
             model: targetModel,
           }));
-          ctx.logMessage(`✔ モデルを \`${targetModel}\` に設定しました。`);
+          const newLimit = resolveModelContextWindow(targetModel);
+          ctx.updateActiveSession((prev) => ({
+            ...prev,
+            metrics: {
+              ...prev.metrics,
+              activeModel: targetModel,
+              contextWindowLimit: newLimit,
+            },
+          }));
+          ctx.logMessage(`✔ モデルを \`${targetModel}\` (Context: ${formatTokens(newLimit)}) に設定しました。`);
         }
       },
       getSuggestions: (input) => {
-        const prefix = '/model ';
-        if (!input.startsWith(prefix)) return [];
-        const rem = input.slice(prefix.length).trim().toLowerCase();
+        const matchedPrefix = ['/model ', '/boost '].find((p) => input.startsWith(p));
+        if (!matchedPrefix) return [];
+        const rem = input.slice(matchedPrefix.length).trim().toLowerCase();
         return ALL_SUPPORTED_MODELS.filter((m) =>
           m.id.toLowerCase().includes(rem) || m.provider.toLowerCase().includes(rem)
-        ).map((m) => ({
-          text: `/model ${m.id}`,
-          display: m.id,
-          description: `(${m.provider}) ${m.description}`,
-        }));
+        ).map((m) => {
+          const ctxTokens = resolveModelContextWindow(m.id);
+          return {
+            text: `${matchedPrefix}${m.id}`,
+            display: m.id,
+            description: `(${m.provider}, ${formatTokens(ctxTokens)}) ${m.description}`,
+          };
+        });
       },
     });
 
@@ -325,6 +349,11 @@ export class WebCommandRegistry {
           compactionCount,
         } = ctx.session.metrics;
 
+        const maxContextTokens =
+          contextWindowLimit && contextWindowLimit > 0
+            ? contextWindowLimit
+            : resolveModelContextWindow(ctx.providerConfig.model);
+
         const cost = calculateTokenCost({
           model: ctx.providerConfig.model,
           billedPromptTokens: billedInputTokens,
@@ -343,8 +372,8 @@ export class WebCommandRegistry {
         const savedCostJpy = cost.savedCostJpy;
 
         const cachePercent = rawInputTokens > 0 ? Math.round((cachedTokens / rawInputTokens) * 100) : 0;
-        const ctxPercent = contextWindowLimit > 0
-          ? Math.min(100, Math.round((currentContextTokens / contextWindowLimit) * 100))
+        const ctxPercent = maxContextTokens > 0
+          ? Math.min(100, Math.round((currentContextTokens / maxContextTokens) * 100))
           : 0;
 
         const lines = [
@@ -359,7 +388,8 @@ export class WebCommandRegistry {
           `  • **推定コスト**      : **$${totalCostUsd.toFixed(5)} USD** (約 **¥${totalCostJpy.toFixed(2)} JPY**) / 上限: $${DEFAULT_COST_CAP_USD.toFixed(2)} USD`,
           '  ───────────────────────────────────────────',
           '🧠 **Context Window (コンテキスト占有率)**:',
-          `  • 現在の占有量        : ${currentContextTokens.toLocaleString()} / ${contextWindowLimit.toLocaleString()} tokens (${ctxPercent}%)`,
+          `  • 現在の占有量        : ${currentContextTokens.toLocaleString()} / ${maxContextTokens.toLocaleString()} tokens (${formatTokens(currentContextTokens)} / ${formatTokens(maxContextTokens)}, ${ctxPercent}%)`,
+          `  • 残余トークン空間    : ${(Math.max(0, maxContextTokens - currentContextTokens)).toLocaleString()} tokens (${formatTokens(Math.max(0, maxContextTokens - currentContextTokens))})`,
           `  • プルーニング削減    : ${prunedChars.toLocaleString()} chars`,
           `  • 要約圧縮実行回数    : ${compactionCount} 回`,
         ];
@@ -373,6 +403,7 @@ export class WebCommandRegistry {
       syntax: '/clear',
       description: '会話履歴・コンテキストウィンドウを初期化（セッションリセット）',
       execute: (_args, ctx) => {
+        const resolvedLimit = resolveModelContextWindow(ctx.providerConfig.model);
         ctx.updateActiveSession((prev) => ({
           ...prev,
           messages: [],
@@ -381,6 +412,8 @@ export class WebCommandRegistry {
           events: [],
           metrics: {
             ...prev.metrics,
+            activeModel: ctx.providerConfig.model,
+            contextWindowLimit: resolvedLimit,
             currentContextTokens: 0,
             billedInputTokens: 0,
             billedOutputTokens: 0,

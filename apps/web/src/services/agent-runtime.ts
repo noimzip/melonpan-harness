@@ -7,6 +7,7 @@ import {
   ILLMProvider,
   calculateTokenCost,
   AgentEvent,
+  resolveModelContextWindow,
 } from '@melonpan/core';
 import {
   Message,
@@ -436,6 +437,9 @@ export class AgentRuntime {
                 cachedPromptTokens: cachedTokens,
                 completionTokens: billedOutputTokens,
               });
+              const contextWindowLimit =
+                event.payload.maxContextWindowTokens ||
+                resolveModelContextWindow(providerConfig.model);
               return {
                 ...prev,
                 billedInputTokens,
@@ -444,6 +448,7 @@ export class AgentRuntime {
                 totalTokens,
                 currentContextTokens:
                   event.payload.contextWindowTokens || prev.currentContextTokens,
+                contextWindowLimit,
                 estimatedCostUsd: cost.totalCostUsd,
                 estimatedCostJpy: cost.totalCostJpy,
                 savedCostUsd: cost.savedCostUsd,

@@ -31,4 +31,23 @@ describe('MelonpanCore Facade', () => {
     expect(vfsFiles['index.html']).toBeDefined();
     expect(vfsFiles['index.html']).toContain('<!DOCTYPE html>');
   });
+
+  it('dynamically resolves and updates context window on setModel without explicit override', () => {
+    const core = new MelonpanCore({
+      model: 'gemini-3.8-flash',
+      simulate: true,
+    });
+    expect((core.getAgent() as any).maxContextTokens).toBe(1_048_576);
+    expect((core.getSession() as any).maxContextTokens).toBe(1_048_576);
+
+    core.getAgent().setModel('gpt-4o');
+    core.getSession().setModel('gpt-4o');
+    expect((core.getAgent() as any).maxContextTokens).toBe(128_000);
+    expect((core.getSession() as any).maxContextTokens).toBe(128_000);
+
+    core.getAgent().setModel('claude-3-7-sonnet');
+    core.getSession().setModel('claude-3-7-sonnet');
+    expect((core.getAgent() as any).maxContextTokens).toBe(200_000);
+    expect((core.getSession() as any).maxContextTokens).toBe(200_000);
+  });
 });

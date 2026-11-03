@@ -1,5 +1,10 @@
 import { CommandDefinition } from '../types.js';
-import { calculateTokenCost, DEFAULT_COST_CAP_USD, USD_TO_JPY_RATE } from '@melonpan/core';
+import {
+  calculateTokenCost,
+  DEFAULT_COST_CAP_USD,
+  resolveModelContextWindow,
+  USD_TO_JPY_RATE,
+} from '@melonpan/core';
 
 export const costCommand: CommandDefinition = {
   name: 'cost',
@@ -12,9 +17,12 @@ export const costCommand: CommandDefinition = {
       totalTokens,
       cachedPromptTokens = 0,
       contextWindowTokens = 0,
-      maxContextTokens = 128_000,
       savedTokens = 0,
     } = ctx.sessionUsage;
+
+    const maxContextTokens =
+      ctx.sessionUsage.maxContextTokens ??
+      resolveModelContextWindow(ctx.model);
 
     const rawPromptTokens = ctx.sessionUsage.rawPromptTokens ?? promptTokens;
     const freshPromptTokens =

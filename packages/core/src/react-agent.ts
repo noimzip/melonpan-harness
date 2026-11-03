@@ -40,9 +40,23 @@ import {
 import {
   calculateTokenCost,
   DEFAULT_COST_CAP_USD,
+  resolveModelContextWindow,
 } from './pricing/model-pricing.js';
 
 export { pruneChatHistory, type PruneHistoryResult };
+
+function deepCloneToolArgs(args: any): any {
+  if (args === null || args === undefined) return {};
+  try {
+    return structuredClone(args);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(args));
+    } catch {
+      return typeof args === 'object' ? { ...args } : args;
+    }
+  }
+}
 
 export interface AdaptiveThinkingContext {
   configuredLevel?: string;
@@ -165,6 +179,7 @@ export class ReactAgent {
   private provider?: ILLMProvider;
   private enableStreaming: boolean;
   private maxContextTokens: number;
+  private explicitMaxContextTokens: boolean;
   private cacheManager: ContextCacheManager;
   private maxCostUsd: number;
 
@@ -180,7 +195,9 @@ export class ReactAgent {
     this.simulate = options.simulate ?? (!this.apiKey && !options.provider);
     this.mode = options.mode || 'act';
     this.enableStreaming = options.enableStreaming ?? Boolean(options.provider);
-    this.maxContextTokens = options.maxContextTokens ?? 128000;
+    this.explicitMaxContextTokens = options.maxContextTokens !== undefined;
+    this.maxContextTokens =
+      options.maxContextTokens ?? resolveModelContextWindow(this.model);
     this.cacheManager = options.cacheManager || new ContextCacheManager();
     this.maxCostUsd = options.maxCostUsd ?? DEFAULT_COST_CAP_USD;
 
@@ -210,7 +227,7 @@ export class ReactAgent {
     this.skillManager = options.skillManager;
     this.contextStrategies =
       options.contextStrategies ?? [
-        new ToolOutputPruningStrategy(),
+        new ToolOutputPruningStrategy({ preservePrefixCache: true }),
         new LlmSummaryCompactionStrategy({ maxContextTokens: this.maxContextTokens }),
       ];
     this.provider = options.provider;
@@ -246,6 +263,9 @@ export class ReactAgent {
     this.model = model;
     if (thinkingLevel) {
       this.thinkingLevel = thinkingLevel;
+    }
+    if (!this.explicitMaxContextTokens) {
+      this.maxContextTokens = resolveModelContextWindow(model);
     }
   }
 
@@ -729,7 +749,7 @@ export class ReactAgent {
               type: 'TOOL_CALL',
               payload: {
                 name: callName,
-                args: callArgs,
+                args: deepCloneToolArgs(callArgs),
                 callId: call.id,
               },
               timestamp: Date.now(),
@@ -1173,7 +1193,7 @@ export class ReactAgent {
               type: 'TOOL_CALL',
               payload: {
                 name: call.name,
-                args: call.args || {},
+                args: deepCloneToolArgs(call.args || {}),
                 callId: call.id,
               },
               timestamp: Date.now(),
@@ -1574,7 +1594,7 @@ export class ReactAgent {
         type: 'TOOL_CALL',
         payload: {
           name,
-          args,
+          args: deepCloneToolArgs(args),
           callId,
         },
         timestamp: Date.now(),
@@ -1713,7 +1733,7 @@ export class ReactAgent {
         type: 'TOOL_CALL',
         payload: {
           name: 'complete_task',
-          args: { summary: planSummary },
+          args: deepCloneToolArgs({ summary: planSummary }),
           callId: 'sim-plan-complete',
         },
         timestamp: Date.now(),

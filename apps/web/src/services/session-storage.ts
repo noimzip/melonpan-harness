@@ -1,10 +1,13 @@
 import { Session, Message } from '../types';
-import { estimateMessagesTokens } from '@melonpan/core';
+import { estimateMessagesTokens, resolveModelContextWindow } from '@melonpan/core';
 
 const STORAGE_KEY = 'melonpan_web_sessions_v1';
 const ACTIVE_SESSION_ID_KEY = 'melonpan_active_session_id_v1';
 
-export function createInitialSession(name = '新しいゲーム開発'): Session {
+export function createInitialSession(
+  name = '新しいゲーム開発',
+  initialModel = 'gemini-3.8-flash'
+): Session {
   const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   return {
     id,
@@ -30,7 +33,7 @@ export function createInitialSession(name = '新しいゲーム開発'): Session
       billedOutputTokens: 0,
       cachedTokens: 0,
       totalTokens: 0,
-      contextWindowLimit: 128000,
+      contextWindowLimit: resolveModelContextWindow(initialModel),
       currentContextTokens: estimateMessagesTokens([
         {
           role: 'assistant',
@@ -45,7 +48,7 @@ export function createInitialSession(name = '新しいゲーム開発'): Session
       estimatedCostJpy: 0,
       savedCostUsd: 0,
       savedCostJpy: 0,
-      activeModel: 'gemini-3.8-flash',
+      activeModel: initialModel,
     },
   };
 }
@@ -65,7 +68,21 @@ export function loadSessions(): Session[] {
       saveSessions([initial]);
       return [initial];
     }
-    return parsed;
+    return parsed.map((s: Session) => {
+      const activeModel = s.metrics?.activeModel || 'gemini-3.8-flash';
+      const resolvedLimit = resolveModelContextWindow(activeModel);
+      return {
+        ...s,
+        metrics: {
+          ...s.metrics,
+          activeModel,
+          contextWindowLimit:
+            s.metrics?.contextWindowLimit && s.metrics.contextWindowLimit !== 128000
+              ? s.metrics.contextWindowLimit
+              : resolvedLimit,
+        },
+      };
+    });
   } catch {
     const initial = createInitialSession('はじめてのメロンパンゲーム');
     return [initial];

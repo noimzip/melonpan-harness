@@ -21,6 +21,7 @@ import {
   WebToolCall,
 } from './types';
 import type { AgentEvent } from '@melonpan/core';
+import { resolveModelContextWindow, formatTokens } from '@melonpan/core';
 import {
   loadSessions,
   saveSessions,
@@ -107,10 +108,20 @@ export function App() {
   const handleSelectSession = (id: string) => {
     setActiveSessionIdState(id);
     setActiveSessionId(id);
+    const targetSession = sessions.find((s) => s.id === id);
+    if (targetSession?.metrics?.activeModel) {
+      setProviderConfig((prev) => ({
+        ...prev,
+        model: targetSession.metrics.activeModel!,
+      }));
+    }
   };
 
   const handleNewSession = () => {
-    const newSession = createInitialSession(`新しいゲーム開発 #${sessions.length + 1}`);
+    const newSession = createInitialSession(
+      `新しいゲーム開発 #${sessions.length + 1}`,
+      providerConfig.model
+    );
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionIdState(newSession.id);
     setActiveSessionId(newSession.id);
@@ -119,7 +130,7 @@ export function App() {
   const handleDeleteSession = (id: string) => {
     const remaining = sessions.filter((s) => s.id !== id);
     if (remaining.length === 0) {
-      const fresh = createInitialSession('はじめてのメロンパンゲーム');
+      const fresh = createInitialSession('はじめてのメロンパンゲーム', providerConfig.model);
       setSessions([fresh]);
       setActiveSessionIdState(fresh.id);
       setActiveSessionId(fresh.id);
@@ -358,6 +369,16 @@ export function App() {
   const currentHtml = activeSession.files['index.html'] || '';
   const lastThought = activeSession.messages[activeSession.messages.length - 1]?.thought;
 
+  const resolvedMaxContext =
+    activeSession.metrics?.contextWindowLimit && activeSession.metrics.contextWindowLimit > 0
+      ? activeSession.metrics.contextWindowLimit
+      : resolveModelContextWindow(providerConfig.model);
+  const currentCtx = activeSession.metrics?.currentContextTokens || 0;
+  const ctxPercent =
+    resolvedMaxContext > 0
+      ? Math.min(100, Math.round((currentCtx / resolvedMaxContext) * 100))
+      : 0;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)] font-sans antialiased">
       {/* SVG Hand-Drawn Filter */}
@@ -398,6 +419,15 @@ export function App() {
             </span>
             <span className="hidden sm:inline-block px-2 py-0.5 rounded-full bg-[var(--background)] border border-[var(--stroke)]/40 text-[11px] font-mono opacity-80">
               {activeSession.name}
+            </span>
+            <span
+              className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[var(--background)] border border-[var(--stroke)]/40 text-[11px] font-mono opacity-80"
+              title={`Context Window: ${currentCtx.toLocaleString()} / ${resolvedMaxContext.toLocaleString()} tokens (${ctxPercent}%)`}
+            >
+              <Gauge size={12} className="text-[var(--accent)]" />
+              <span>
+                Ctx: {formatTokens(currentCtx)}/{formatTokens(resolvedMaxContext)} ({ctxPercent}%)
+              </span>
             </span>
           </div>
 
@@ -440,9 +470,18 @@ export function App() {
               onSendMessage={handleSendMessage}
               onCancelTask={handleCancelTask}
               providerConfig={providerConfig}
-              onSelectModel={(model) =>
-                setProviderConfig((prev) => ({ ...prev, model }))
-              }
+              onSelectModel={(model) => {
+                setProviderConfig((prev) => ({ ...prev, model }));
+                const newLimit = resolveModelContextWindow(model);
+                updateActiveSession((prev) => ({
+                  ...prev,
+                  metrics: {
+                    ...prev.metrics,
+                    activeModel: model,
+                    contextWindowLimit: newLimit,
+                  },
+                }));
+              }}
               onSelectThinkingEffort={(effort) =>
                 setProviderConfig((prev) => ({ ...prev, thinkingEffort: effort }))
               }
@@ -580,6 +619,15 @@ export function App() {
         config={providerConfig}
         onSaveConfig={(newConfig) => {
           setProviderConfig(newConfig);
+          const newLimit = resolveModelContextWindow(newConfig.model);
+          updateActiveSession((prev) => ({
+            ...prev,
+            metrics: {
+              ...prev.metrics,
+              activeModel: newConfig.model,
+              contextWindowLimit: newLimit,
+            },
+          }));
           if (newConfig.apiKey) {
             saveStoredApiKey(newConfig.provider, newConfig.apiKey);
           }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import chalk from 'chalk';
+import { resolveModelContextWindow, formatTokens } from '@melonpan/core';
 
 export interface HeaderProps {
   status:
@@ -25,16 +26,6 @@ export interface HeaderProps {
   cachedPromptTokens?: number;
 }
 
-function formatTokens(num: number): string {
-  if (num >= 1_000_000) {
-    return `${(num / 1_000_000).toFixed(1)}M`;
-  }
-  if (num >= 1_000) {
-    return `${(num / 1_000).toFixed(1)}k`;
-  }
-  return num.toString();
-}
-
 export const Header: React.FC<HeaderProps> = ({
   status,
   mode,
@@ -47,10 +38,12 @@ export const Header: React.FC<HeaderProps> = ({
   maxTurns = 300,
   fsMode = 'vfs',
   contextWindowTokens = 0,
-  maxContextTokens = 128_000,
+  maxContextTokens,
   promptTokens = 0,
   cachedPromptTokens = 0,
 }) => {
+  const resolvedMaxContextTokens =
+    maxContextTokens ?? resolveModelContextWindow(model);
   const activeKey =
     provider === 'openai'
       ? (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '')
@@ -91,8 +84,8 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   // Context window gauge & Prefix Cache Hit Rate calculation (#36, #63)
-  const ctxPercent = maxContextTokens > 0
-    ? Math.min(100, Math.round((contextWindowTokens / maxContextTokens) * 100))
+  const ctxPercent = resolvedMaxContextTokens > 0
+    ? Math.min(100, Math.round((contextWindowTokens / resolvedMaxContextTokens) * 100))
     : 0;
   const ctxColor =
     ctxPercent >= 90 ? 'red' : ctxPercent >= 70 ? 'yellow' : 'cyan';
@@ -156,7 +149,7 @@ export const Header: React.FC<HeaderProps> = ({
         <Box>
           <Text color="gray">Ctx: </Text>
           <Text color={ctxColor} bold>
-            {formatTokens(contextWindowTokens)}/{formatTokens(maxContextTokens)} ({ctxPercent}%)
+            {formatTokens(contextWindowTokens)}/{formatTokens(resolvedMaxContextTokens)} ({ctxPercent}%)
           </Text>
           <Text color="gray">  |  Cache: </Text>
           <Text color={cacheColor} bold>
