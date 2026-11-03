@@ -408,7 +408,7 @@ export interface LLMStreamChunk {
 export interface ILLMProvider {
   readonly id: string;
   streamChat(request: LLMChatRequest, signal?: AbortSignal): AsyncGenerator<LLMStreamChunk, void, unknown>;
-  countTokens?(messages: LLMMessage[], systemInstruction?: string): Promise<number>;
+  countTokens?(messages: LLMMessage[], systemInstruction?: string, model?: string): Promise<number>;
 }
 
 // ----------------------------------------------------

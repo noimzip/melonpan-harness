@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { getEncoding } from 'js-tiktoken';
 import {
   ILLMProvider,
   LLMChatRequest,
@@ -14,6 +15,64 @@ import {
   normalizeJsonSchemaType,
 } from '../tools/schema-converter.js';
 import { ContextCacheManager } from '../cache/context-cache-manager.js';
+
+let cachedO200kEncoding: ReturnType<typeof getEncoding> | undefined;
+let cachedCl100kEncoding: ReturnType<typeof getEncoding> | undefined;
+
+/**
+ * OpenAI 公式互換 BPE トークナイザ (`js-tiktoken`) を用いた高速・高精度トークンカウント
+ * - `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `o1` 等は `o200k_base`
+ * - `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo` 等は `cl100k_base`
+ */
+export function countOpenAITokensWithTiktoken(
+  messages: LLMMessage[],
+  systemInstruction?: string,
+  model: string = 'gpt-4o'
+): number {
+  try {
+    const lowerModel = model.toLowerCase();
+    const useCl100k =
+      lowerModel.includes('gpt-4-turbo') ||
+      lowerModel === 'gpt-4' ||
+      lowerModel.includes('gpt-3.5');
+
+    const enc = useCl100k
+      ? (cachedCl100kEncoding ??= getEncoding('cl100k_base'))
+      : (cachedO200kEncoding ??= getEncoding('o200k_base'));
+
+    let tokens = 3; // reply priming overhead
+    if (systemInstruction) {
+      tokens += 4 + enc.encode(systemInstruction).length;
+    }
+
+    if (Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (!msg) continue;
+        tokens += 4; // per-message role/formatting overhead
+        if (typeof (msg as any).content === 'string') {
+          tokens += enc.encode((msg as any).content).length;
+        }
+        if (Array.isArray(msg.parts)) {
+          for (const part of msg.parts) {
+            if (typeof part?.text === 'string' && !part.thought) {
+              tokens += enc.encode(part.text).length;
+            } else if (part?.functionCall) {
+              const fcStr = `${part.functionCall.name || ''}:${JSON.stringify(part.functionCall.args || {})}`;
+              tokens += 3 + enc.encode(fcStr).length;
+            } else if (part?.functionResponse) {
+              const frStr = `${part.functionResponse.name || ''}:${JSON.stringify(part.functionResponse.response || {})}`;
+              tokens += 3 + enc.encode(frStr).length;
+            }
+          }
+        }
+      }
+    }
+
+    return Math.max(1, tokens);
+  } catch {
+    return estimateMessagesTokens(messages, systemInstruction);
+  }
+}
 
 
 /**
@@ -133,6 +192,8 @@ export interface GeminiProviderOptions {
   useStreamingApi?: boolean;
   cacheManager?: ContextCacheManager;
   enableContextCache?: boolean;
+  aiClient?: any;
+  defaultModel?: string;
 }
 
 /**
@@ -148,6 +209,8 @@ export class GeminiProvider implements ILLMProvider {
   private useStreamingApi: boolean;
   private cacheManager: ContextCacheManager;
   private enableContextCache: boolean;
+  private aiClient?: any;
+  private defaultModel: string;
 
   constructor(options: GeminiProviderOptions = {}) {
     const envApiKey =
@@ -158,6 +221,8 @@ export class GeminiProvider implements ILLMProvider {
     this.useStreamingApi = options.useStreamingApi ?? false;
     this.cacheManager = options.cacheManager || new ContextCacheManager();
     this.enableContextCache = options.enableContextCache ?? true;
+    this.aiClient = options.aiClient;
+    this.defaultModel = options.defaultModel || 'gemini-3.8-flash';
   }
 
   async *streamChat(
@@ -168,7 +233,7 @@ export class GeminiProvider implements ILLMProvider {
       throw new Error('GeminiProvider streamChat aborted.');
     }
 
-    const ai = new GoogleGenAI({ apiKey: this.apiKey });
+    const ai = this.aiClient || new GoogleGenAI({ apiKey: this.apiKey });
 
     const config: Record<string, any> = {};
 
@@ -460,7 +525,48 @@ export class GeminiProvider implements ILLMProvider {
     };
   }
 
-  async countTokens(messages: LLMMessage[], systemInstruction?: string): Promise<number> {
+  async countTokens(
+    messages: LLMMessage[],
+    systemInstruction?: string,
+    model?: string
+  ): Promise<number> {
+    if (this.apiKey || this.aiClient) {
+      try {
+        const ai = this.aiClient || new GoogleGenAI({ apiKey: this.apiKey });
+        if (typeof (ai.models as any)?.countTokens === 'function') {
+          const contents = (messages || []).map((m) => ({
+            role: m.role === 'tool' ? 'user' : m.role === 'system' ? 'user' : m.role,
+            parts: Array.isArray(m.parts) && m.parts.length > 0
+              ? m.parts.map((p) => {
+                  const partObj: Record<string, any> = {};
+                  if (typeof p.text === 'string') partObj.text = p.text;
+                  if (p.functionCall) partObj.functionCall = p.functionCall;
+                  if (p.functionResponse) partObj.functionResponse = p.functionResponse;
+                  return Object.keys(partObj).length > 0 ? partObj : { text: '' };
+                })
+              : [{ text: typeof (m as any).content === 'string' ? (m as any).content : '' }],
+          }));
+
+          const resp = await (ai.models as any).countTokens({
+            model: model || this.defaultModel,
+            contents,
+            ...(systemInstruction
+              ? { config: { systemInstruction } }
+              : {}),
+          });
+
+          const total =
+            resp?.totalTokens ??
+            resp?.total_tokens ??
+            resp?.promptTokenCount;
+          if (typeof total === 'number' && total > 0) {
+            return total;
+          }
+        }
+      } catch {
+        // Fallback to local CJK/Code aware estimator on offline/rate-limit/auth errors
+      }
+    }
     return estimateMessagesTokens(messages, systemInstruction);
   }
 }
@@ -473,6 +579,7 @@ export interface OpenAICompatibleProviderOptions {
   fetchImpl?: typeof fetch;
   cacheManager?: ContextCacheManager;
   enablePromptCaching?: boolean;
+  defaultModel?: string;
 }
 
 /**
@@ -486,19 +593,23 @@ export class OpenAICompatibleProvider implements ILLMProvider {
   private fetchImpl: typeof fetch;
   private cacheManager: ContextCacheManager;
   private enablePromptCaching: boolean;
+  private defaultModel?: string;
 
   constructor(options: OpenAICompatibleProviderOptions = {}) {
     this.id = options.id || 'openai-compat';
     this.baseUrl = (options.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
     const envKey =
       typeof (globalThis as any).process !== 'undefined'
-        ? (globalThis as any).process.env?.OPENAI_API_KEY || ''
+        ? (this.id === 'anthropic'
+            ? (globalThis as any).process.env?.ANTHROPIC_API_KEY
+            : (globalThis as any).process.env?.OPENAI_API_KEY) || ''
         : '';
     this.apiKey = options.apiKey ?? envKey;
     this.extraHeaders = options.headers || {};
     this.fetchImpl = options.fetchImpl || fetch;
     this.cacheManager = options.cacheManager || new ContextCacheManager();
     this.enablePromptCaching = options.enablePromptCaching ?? true;
+    this.defaultModel = options.defaultModel;
   }
 
   private convertMessages(request: LLMChatRequest): any[] {
@@ -770,7 +881,87 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     yield { type: 'done' };
   }
 
-  async countTokens(messages: LLMMessage[], systemInstruction?: string): Promise<number> {
+  async countTokens(
+    messages: LLMMessage[],
+    systemInstruction?: string,
+    model?: string
+  ): Promise<number> {
+    const targetModel = model || this.defaultModel || '';
+    const isAnthropicTarget =
+      this.id === 'anthropic' ||
+      this.baseUrl.includes('anthropic.com') ||
+      targetModel.toLowerCase().includes('claude');
+
+    if (isAnthropicTarget && this.apiKey) {
+      try {
+        const anthropicBase = this.baseUrl.includes('anthropic.com')
+          ? this.baseUrl.replace(/\/v1\/?$/, '') + '/v1'
+          : 'https://api.anthropic.com/v1';
+
+        const anthropicMessages = (messages || []).map((m) => {
+          const textParts: string[] = [];
+          for (const p of m.parts || []) {
+            if (typeof p.text === 'string' && !p.thought) {
+              textParts.push(p.text);
+            } else if (p.functionCall) {
+              textParts.push(
+                `[tool_use: ${p.functionCall.name}(${JSON.stringify(p.functionCall.args || {})})]`
+              );
+            } else if (p.functionResponse) {
+              textParts.push(
+                `[tool_result: ${p.functionResponse.name} -> ${JSON.stringify(p.functionResponse.response || {})}]`
+              );
+            }
+          }
+          const contentStr =
+            textParts.join('\n') ||
+            (typeof (m as any).content === 'string' ? (m as any).content : '');
+          return {
+            role: m.role === 'model' || m.role === 'assistant' ? 'assistant' : 'user',
+            content: contentStr || ' ',
+          };
+        });
+
+        const resp = await this.fetchImpl(`${anthropicBase}/messages/count_tokens`, {
+          method: 'POST',
+          headers: {
+            'x-api-key': this.apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+            ...this.extraHeaders,
+          },
+          body: JSON.stringify({
+            model: targetModel || 'claude-3-7-sonnet-20250219',
+            ...(systemInstruction ? { system: systemInstruction } : {}),
+            messages: anthropicMessages,
+          }),
+        });
+
+        if (resp.ok) {
+          const data: any = await resp.json();
+          if (typeof data?.input_tokens === 'number' && data.input_tokens > 0) {
+            return data.input_tokens;
+          }
+        }
+      } catch {
+        // Fallback below on network/CORS/auth failure
+      }
+    }
+
+    const isOpenAITarget =
+      this.id === 'openai' ||
+      this.id === 'openai-compat' ||
+      this.baseUrl.includes('openai.com') ||
+      /^(gpt-|o1|o3|o4)/i.test(targetModel);
+
+    if (isOpenAITarget && !isAnthropicTarget) {
+      return countOpenAITokensWithTiktoken(
+        messages,
+        systemInstruction,
+        targetModel || 'gpt-4o'
+      );
+    }
+
     return estimateMessagesTokens(messages, systemInstruction);
   }
 }

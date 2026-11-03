@@ -34,25 +34,54 @@ export interface PruneChatHistoryOptions {
 }
 
 /**
- * メッセージ配列の概算トークン数を算出する (1 token ≈ 4 chars)
+ * 単一テキストのトークン数を CJK（日本語・中国語・韓国語: 約 1.5 tokens/文字）および
+ * 英数字・コード記号（約 0.35 tokens/文字）の比率から高精度に推計するヘルパー
+ */
+export function estimateTextTokens(text: string): number {
+  if (!text) return 0;
+  let cjkCount = 0;
+  let asciiCount = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x3000 && code <= 0x9fff) || // CJK Punctuation, Hiragana, Katakana, Kanji
+      (code >= 0xac00 && code <= 0xd7af) || // Hangul
+      (code >= 0xff00 && code <= 0xffef)    // Full-width forms
+    ) {
+      cjkCount++;
+    } else {
+      asciiCount++;
+    }
+  }
+  return Math.ceil(cjkCount * 1.5 + asciiCount * 0.35);
+}
+
+/**
+ * メッセージ配列の概算トークン数を算出する (CJK: 1.5 tokens/字, Code/ASCII: 0.35 tokens/字)
  */
 export function estimateMessagesTokens(messages: any[], systemInstruction?: string): number {
-  let chars = systemInstruction ? systemInstruction.length : 0;
+  let totalTokens = systemInstruction ? estimateTextTokens(systemInstruction) : 0;
   if (Array.isArray(messages)) {
     for (const msg of messages) {
-      if (!msg?.parts || !Array.isArray(msg.parts)) continue;
+      if (!msg) continue;
+      if (typeof msg.content === 'string') {
+        totalTokens += estimateTextTokens(msg.content);
+      }
+      if (!msg.parts || !Array.isArray(msg.parts)) continue;
       for (const part of msg.parts) {
         if (typeof part?.text === 'string') {
-          chars += part.text.length;
+          totalTokens += estimateTextTokens(part.text);
         } else if (part?.functionCall) {
-          chars += (part.functionCall.name?.length || 0) + JSON.stringify(part.functionCall.args || {}).length;
+          const fcStr = `${part.functionCall.name || ''}:${JSON.stringify(part.functionCall.args || {})}`;
+          totalTokens += estimateTextTokens(fcStr);
         } else if (part?.functionResponse) {
-          chars += (part.functionResponse.name?.length || 0) + JSON.stringify(part.functionResponse.response || {}).length;
+          const frStr = `${part.functionResponse.name || ''}:${JSON.stringify(part.functionResponse.response || {})}`;
+          totalTokens += estimateTextTokens(frStr);
         }
       }
     }
   }
-  return Math.max(1, Math.ceil(chars / 4));
+  return Math.max(1, totalTokens);
 }
 
 /**
