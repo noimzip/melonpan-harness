@@ -43,7 +43,7 @@ export class ToolingRulesSection implements PromptSection {
     const toolNames =
       tools.length > 0
         ? tools.map((t) => t.name).join(', ')
-        : 'write_file, edit_file, read_file, list_files, grep_search, run_command, activate_skill, dispatch_subagent, complete_task';
+        : 'write_file, edit_file, read_file, list_files, grep_search, web_search, fetch_url, run_command, activate_skill, dispatch_subagent, complete_task';
 
     return [
       `YOUR WORKSPACE TOOLS: ${toolNames}`,
@@ -71,7 +71,8 @@ export class ModeSection implements PromptSection {
         'OPERATIONAL MODE: [GOAL AUTONOMOUS PURSUIT MODE]',
         '- High-autonomy, thorough goal pursuit mode.',
         '- Specialized subagents are FULLY ENABLED: You can dispatch clean-room subagents ("researcher", "code-reviewer") via dispatch_subagent.',
-        '- Phase 1 (Execute): Implement requested deliverables according to active skill guidelines.',
+        '- Phase 0 (Deep Research & Planning): Before jumping into coding, thoroughly investigate technical specifications, browser APIs, formulas, and edge cases using web_search, fetch_url, or dispatching the "researcher" subagent. If the objective is complex or touches multiple systems, formulate a comprehensive and detailed plan in "plan.md" (covering architecture, data models, state machine, sub-systems, and checklists) to guide your implementation.',
+        '- Phase 1 (Execute): Implement requested deliverables according to plan.md and active skill guidelines with precision.',
         '- Phase 2 (Test & Audit): Run verification commands, dispatch "code-reviewer" to audit quality, and fix issues via edit_file.',
         '- Iterate relentlessly until the goal is completely achieved, then call complete_task.',
       ].join('\n');
@@ -79,11 +80,27 @@ export class ModeSection implements PromptSection {
 
     if (ctx.mode === 'plan') {
       return [
-        'OPERATIONAL MODE: [PLAN MODE]',
-        '- Your goal is strictly to analyze requirements and produce a thorough implementation plan.',
-        '- Use read_file / list_files / grep_search to investigate architecture and specifications.',
-        '- Use write_file("plan.md", content) to draft the structured technical plan.',
-        '- Once plan.md is saved, call complete_task(summary) with the plan summary. Do NOT create implementation deliverables in plan mode.',
+        'OPERATIONAL MODE: [PLAN MODE] - Deep Research & Comprehensive Technical Planning',
+        '- Your objective is to formulate an exhaustive, highly detailed technical plan ("plan.md") before any implementation begins. The success and quality of downstream coding depends entirely on the depth of this plan.',
+        '- Phase 1 (Deep Research & Pre-Thinking):',
+        '  * DO NOT jump directly to drafting plan.md without thorough investigation.',
+        '  * Conduct deep technical research: Use web_search / fetch_url to investigate official API docs, physics equations, modern Web standards (Canvas 2D, Web Audio API, Pointer Events), or industry best practices.',
+        '  * Inspect workspace files: Use read_file / list_files / grep_search to inspect existing codebase constraints.',
+        '  * Subagent delegation: If needed, dispatch the "researcher" subagent via dispatch_subagent to gather clean-room algorithmic or formula recommendations.',
+        '  * Deliberate carefully on architecture, state management, and edge cases before writing.',
+        '- Phase 2 (Exhaustive & Detailed plan.md Generation):',
+        '  * Write a comprehensive, highly specific technical design document to "plan.md" using write_file("plan.md", content).',
+        '  * Avoid vague, brief, or generic summaries. Do not write filler tutorials, but make the plan as thorough, concrete, and deeply detailed as possible.',
+        '  * Mandatory Structure for plan.md:',
+        '    1. # Executive Summary & Technical Objectives: Problem statement, target environment, technical stack, key constraints.',
+        '    2. ## Deep Research & Architecture Findings: Summaries from web search / subagent research, exact API methods, mathematical formulas, and design patterns.',
+        '    3. ## Core Architecture & State Machine: State transitions (e.g. READY -> PLAYING -> GAMEOVER), state interfaces, global constants (resolution, FPS, physics params).',
+        '    4. ## Data Structures & TypeScript/JS Interfaces: Complete type signatures, entity state schemas, event payloads, configuration shapes.',
+        '    5. ## Subsystem Specifications: Detailed breakdown of each component (e.g. Render engine, physics/collision algorithm, input handling [touch/keyboard], Web Audio synthesizer, UI overlay).',
+        '    6. ## Edge Cases, Performance & Mobile Considerations: Garbage collection prevention (object pooling), responsive canvas scaling, pointer coordinate normalization, audio unlock on user gesture.',
+        '    7. ## Step-by-Step Implementation Checklist: Highly granular, actionable checklist items (`- [ ] Step X: ...`) ordered by dependency.',
+        '    8. ## Verification & Quality Criteria: Specific test scenarios, manual verification steps, performance targets (e.g. steady 60 FPS).',
+        '- Phase 3 (Finalize): Once plan.md is written to VFS, conclude by invoking complete_task(summary) with a clear summary of the plan. Do NOT create implementation deliverables in plan mode.',
       ].join('\n');
     }
 

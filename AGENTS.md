@@ -113,14 +113,30 @@ To avoid exponential token inflation across 20+ turns, two optimizations are str
   - The subagent runs in a completely separate chat session.
   - It does **NOT** inherit the parent's noisy trial-and-error chat history.
   - It receives only the current target file content from VFS and the specific `task_prompt`.
-  - Its output is condensed into an actionable summary (100–200 tokens) returned to the parent agent.
+  - Its output is condensed into high-density technical specifications (API methods, exact formulas, schemas) returned to the parent agent.
 
 ### E. In-Memory Virtual File System (`packages/core/src/vfs/`)
 - All files generated or edited by the agent are held in a `Map<string, string>` via `VirtualFS`.
 - Zero disk pollution occurs during reasoning and generation loops.
 - File export to disk occurs only upon explicit user request (e.g. `/export` in TUI or programmatic export).
 
-### F. Ink TUI & Slash Command System (`apps/cli/`)
+### F. Pre-Planning Deep Research & Detailed Technical Plan Standard (`plan.md`)
+The quality of implementation heavily depends on the rigor of the initial architectural plan. In `plan` and `goal` modes:
+1. **Mandatory Deep Pre-Research**:
+   - The agent MUST NOT write `plan.md` immediately without investigation.
+   - It MUST first conduct external and internal technical research using `web_search`, `fetch_url`, `read_file`, `grep_search`, or `dispatch_subagent("researcher")`.
+2. **Comprehensive 8-Section Plan Standard**:
+   - Plans must be highly concrete, technical, and exhaustive (no generic fluff):
+     1. Executive Summary & Technical Objectives
+     2. Deep Research & Architecture Findings
+     3. Core Architecture & State Machine
+     4. Data Structures & TypeScript/JS Interfaces
+     5. Subsystem Specifications (Rendering, Physics, Audio, Input, Particles)
+     6. Edge Cases, Performance & Mobile Considerations
+     7. Step-by-Step Implementation Milestones & Checklist (`- [ ]`)
+     8. Verification & Quality Criteria
+
+### G. Ink TUI & Slash Command System (`apps/cli/`)
 - Built with [Ink](https://github.com/vadimdemedes/ink) (React 19 for terminal interfaces).
 - **9 Active Slash Commands**:
   - `/key`: Interactive API key configuration (`/key <key>`, `/key save <key>`, `/key status`).
