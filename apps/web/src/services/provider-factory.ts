@@ -5,6 +5,7 @@ import {
   OpenRouterProvider,
   OrcaRouterProvider,
   GroqProvider,
+  SurplusProvider,
   DEFAULT_MODEL_PRICING,
   USD_TO_JPY_RATE as CORE_USD_TO_JPY_RATE,
 } from '@melonpan/core';
@@ -98,6 +99,21 @@ export const ALL_SUPPORTED_MODELS: ModelCatalogItem[] = [
     label: 'llama-3.3-70b-versatile',
     description: 'Ultra-low latency inference on LPU (Groq)',
   },
+  // Surplus Intelligence
+  {
+    id: 'surplus/deepseek/deepseek-chat',
+    provider: 'surplus',
+    label: 'surplus/deepseek/deepseek-chat',
+    description: 'DeepSeek Chat on Surplus Intelligence decentralized market',
+    isFree: false,
+  },
+  {
+    id: 'surplus/claude-3-5-sonnet',
+    provider: 'surplus',
+    label: 'surplus/claude-3-5-sonnet',
+    description: 'Claude 3.5 Sonnet on Surplus Intelligence decentralized market',
+    isFree: false,
+  },
 ];
 
 export interface ModelPricing {
@@ -164,6 +180,12 @@ export function createProviderInstance(
 ): ILLMProvider | undefined {
   const effectiveKey = apiKey || getStoredApiKeys()[providerId.toLowerCase()] || '';
 
+  if (providerId === 'surplus' || modelName.startsWith('surplus/')) {
+    return new SurplusProvider({
+      apiKey: effectiveKey,
+      baseUrl: baseUrl || undefined,
+    });
+  }
   if (providerId === 'openrouter' || modelName.startsWith('openrouter/')) {
     return new OpenRouterProvider({
       apiKey: effectiveKey,

@@ -117,6 +117,7 @@ export type ProviderType =
   | 'openrouter'
   | 'orcarouter'
   | 'groq'
+  | 'surplus'
   | 'bridge';
 
 export interface ProviderConfig {

@@ -39,8 +39,8 @@ export async function saveKeyToEnv(
 export const keyCommand: CommandDefinition = {
   name: 'key',
   aliases: ['apikey', 'api-key'],
-  syntax: '/key [api-key | clear | save <api-key> | status | openai <key> | anthropic <key> | openrouter <key> | orcarouter <key> | groq <key>]',
-  description: 'マルチプロバイダーAPIキー (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq) の設定・確認・.env保存',
+  syntax: '/key [api-key | clear | save <api-key> | status | openai <key> | anthropic <key> | openrouter <key> | orcarouter <key> | groq <key> | surplus <key>]',
+  description: 'マルチプロバイダーAPIキー (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq, Surplus) の設定・確認・.env保存',
   execute: async (args, ctx) => {
     const sub = args[0]?.trim();
 
@@ -52,6 +52,7 @@ export const keyCommand: CommandDefinition = {
       const openrouterKey = typeof process !== 'undefined' ? process.env?.OPENROUTER_API_KEY : '';
       const orcarouterKey = typeof process !== 'undefined' ? process.env?.ORCAROUTER_API_KEY : '';
       const groqKey = typeof process !== 'undefined' ? process.env?.GROQ_API_KEY : '';
+      const surplusKey = typeof process !== 'undefined' ? process.env?.SURPLUS_API_KEY : '';
 
       const maskedGemini = maskApiKey(geminiKey);
       const maskedOpenAI = maskApiKey(openaiKey);
@@ -59,6 +60,7 @@ export const keyCommand: CommandDefinition = {
       const maskedOpenRouter = maskApiKey(openrouterKey);
       const maskedOrcaRouter = maskApiKey(orcarouterKey);
       const maskedGroq = maskApiKey(groqKey);
+      const maskedSurplus = maskApiKey(surplusKey);
 
       const isLive = Boolean(ctx.apiKey) && !ctx.isSimulate;
       const engineMode = isLive
@@ -73,6 +75,7 @@ export const keyCommand: CommandDefinition = {
       ctx.logThought(`  • OpenRouter    : ${maskedOpenRouter}`);
       ctx.logThought(`  • OrcaRouter    : ${maskedOrcaRouter}`);
       ctx.logThought(`  • Groq          : ${maskedGroq}`);
+      ctx.logThought(`  • Surplus (SI)  : ${maskedSurplus}`);
       ctx.logThought(`  • Engine Mode   : ${engineMode}`);
 
       ctx.logThought(`  ───────────────────────────────────────────`);
@@ -83,6 +86,7 @@ export const keyCommand: CommandDefinition = {
       ctx.logThought(`  • /key openrouter <api-key>  : OpenRouter APIキーを設定`);
       ctx.logThought(`  • /key orcarouter <api-key>  : OrcaRouter APIキーを設定`);
       ctx.logThought(`  • /key groq <api-key>        : Groq APIキーを設定`);
+      ctx.logThought(`  • /key surplus <api-key>     : Surplus Intelligence APIキーを設定`);
       ctx.logThought(`  • /key save <api-key>        : APIキーを設定してカレントディレクトリの .env に永続保存`);
       ctx.logThought(`  • /key clear                 : 全APIキーを破棄しシミュレーションモードに戻す`);
       return;
@@ -100,6 +104,7 @@ export const keyCommand: CommandDefinition = {
         delete process.env.OPENROUTER_API_KEY;
         delete process.env.ORCAROUTER_API_KEY;
         delete process.env.GROQ_API_KEY;
+        delete process.env.SURPLUS_API_KEY;
       }
       if (ctx.setSimulate) {
         ctx.setSimulate(true);
@@ -112,25 +117,34 @@ export const keyCommand: CommandDefinition = {
       return;
     }
 
-    // 3. Provider-specific key set (e.g. /key openai sk-..., /key anthropic sk-ant-..., /key openrouter sk-or-...)
-    const knownProviders = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq'];
+    // 3. Provider-specific key set (e.g. /key openai sk-..., /key anthropic sk-ant-..., /key surplus inf_...)
+    const knownProviders = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq', 'surplus'];
+    const envMap: Record<string, string> = {
+      gemini: 'GEMINI_API_KEY',
+      openai: 'OPENAI_API_KEY',
+      anthropic: 'ANTHROPIC_API_KEY',
+      openrouter: 'OPENROUTER_API_KEY',
+      orcarouter: 'ORCAROUTER_API_KEY',
+      groq: 'GROQ_API_KEY',
+      surplus: 'SURPLUS_API_KEY',
+    };
+
     if (knownProviders.includes(sub.toLowerCase())) {
       const provider = sub.toLowerCase();
-      const targetKey = args[1]?.trim();
+      let targetKey = args[1]?.trim();
+      let shouldSave = false;
+
+      if (targetKey?.toLowerCase() === 'save') {
+        shouldSave = true;
+        targetKey = args[2]?.trim();
+      }
+
       if (!targetKey) {
-        ctx.logActivity(`Usage: /key ${provider} <api-key>`);
-        ctx.logThought(`⚠️ Please provide an API key: /key ${provider} <your-api-key>`);
+        ctx.logActivity(`Usage: /key ${provider} [save] <api-key>`);
+        ctx.logThought(`⚠️ Please provide an API key: /key ${provider} [save] <your-api-key>`);
         return;
       }
 
-      const envMap: Record<string, string> = {
-        gemini: 'GEMINI_API_KEY',
-        openai: 'OPENAI_API_KEY',
-        anthropic: 'ANTHROPIC_API_KEY',
-        openrouter: 'OPENROUTER_API_KEY',
-        orcarouter: 'ORCAROUTER_API_KEY',
-        groq: 'GROQ_API_KEY',
-      };
       const envVar = envMap[provider] || `${provider.toUpperCase()}_API_KEY`;
       if (typeof process !== 'undefined' && process.env) {
         process.env[envVar] = targetKey;
@@ -139,43 +153,68 @@ export const keyCommand: CommandDefinition = {
         if (ctx.setApiKey) ctx.setApiKey(targetKey);
         if (ctx.setSimulate) ctx.setSimulate(false);
       }
+      if (shouldSave) {
+        try {
+          await saveKeyToEnv(targetKey, process.cwd(), envVar);
+        } catch (err: any) {
+          ctx.logThought(`❌ Error writing .env: ${err.message}`);
+        }
+      }
       if (ctx.refreshModels) {
         await ctx.refreshModels();
       }
       const masked = maskApiKey(targetKey);
-      ctx.logActivity(`${provider.toUpperCase()} API key set (${masked})`);
-      ctx.logThought(`🔑 ${provider.toUpperCase()} API key configured: [${masked}]`);
+      ctx.logActivity(`${provider.toUpperCase()} API key set${shouldSave ? ' and saved' : ''} (${masked})`);
+      ctx.logThought(`🔑 ${provider.toUpperCase()} API key configured${shouldSave ? ' and saved to .env' : ''}: [${masked}]`);
       return;
     }
 
-    // 4. Save API Key to .env
+    // 4. Save API Key to .env (/key save [provider] <api-key>)
     if (sub.toLowerCase() === 'save') {
-      const targetKey = args[1]?.trim() || ctx.apiKey;
+      const secondArg = args[1]?.trim();
+      const thirdArg = args[2]?.trim();
+      let targetProvider = 'gemini';
+      let targetKey: string | undefined = secondArg;
+
+      if (secondArg && knownProviders.includes(secondArg.toLowerCase())) {
+        targetProvider = secondArg.toLowerCase();
+        targetKey = thirdArg;
+      }
+      if (!targetKey && targetProvider === 'gemini') {
+        targetKey = ctx.apiKey;
+      }
+
       if (!targetKey) {
-        ctx.logActivity('Usage: /key save <api-key>');
-        ctx.logThought('⚠️ Please provide an API key to save: /key save <your-api-key>');
+        ctx.logActivity('Usage: /key save [provider] <api-key>');
+        ctx.logThought('⚠️ Please provide an API key to save: /key save [provider] <your-api-key>');
         return;
       }
 
-      if (ctx.setApiKey) {
-        ctx.setApiKey(targetKey);
-      }
+      const envVar = envMap[targetProvider] || 'GEMINI_API_KEY';
+
       if (typeof process !== 'undefined' && process.env) {
-        process.env.GEMINI_API_KEY = targetKey;
+        process.env[envVar] = targetKey;
       }
-      if (ctx.setSimulate) {
-        ctx.setSimulate(false);
+      if (targetProvider === 'gemini') {
+        if (ctx.setApiKey) {
+          ctx.setApiKey(targetKey);
+        }
+        if (ctx.setSimulate) {
+          ctx.setSimulate(false);
+        }
       }
 
       try {
-        await saveKeyToEnv(targetKey);
+        await saveKeyToEnv(targetKey, process.cwd(), envVar);
         if (ctx.refreshModels) {
           await ctx.refreshModels();
         }
         const masked = maskApiKey(targetKey);
-        ctx.logActivity(`API key saved to .env (${masked})`);
-        ctx.logThought(`💾 API key [${masked}] saved to .env file in current directory.`);
-        ctx.logThought(`⚡ Live Gemini API mode activated.`);
+        ctx.logActivity(`${targetProvider.toUpperCase()} API key saved to .env (${masked})`);
+        ctx.logThought(`💾 ${targetProvider.toUpperCase()} API key [${masked}] saved to .env file in current directory.`);
+        if (targetProvider === 'gemini') {
+          ctx.logThought(`⚡ Live Gemini API mode activated.`);
+        }
       } catch (err: any) {
         ctx.logActivity(`Failed to save .env: ${err.message}`);
         ctx.logThought(`❌ Error writing .env: ${err.message}`);
@@ -265,6 +304,11 @@ export const keyCommand: CommandDefinition = {
         text: `${matchedPrefix}groq `,
         display: 'groq <key>',
         description: 'Groq APIキーを設定',
+      },
+      {
+        text: `${matchedPrefix}surplus `,
+        display: 'surplus <key>',
+        description: 'Surplus Intelligence APIキーを設定',
       },
     ];
 

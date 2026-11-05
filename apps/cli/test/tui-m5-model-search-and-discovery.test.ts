@@ -57,8 +57,8 @@ describe('TUI-M5: Model Search, API Routing, and Free Model Prioritization', () 
     process.env = { ...originalEnv };
   });
 
-  describe('1. Routing to OpenRouter, OrcaRouter, and Groq', () => {
-    it('/key supports openrouter, orcarouter, and groq API key configuration', async () => {
+  describe('1. Routing to OpenRouter, OrcaRouter, Groq, and Surplus', () => {
+    it('/key supports openrouter, orcarouter, groq, and surplus API key configuration', async () => {
       await extendedCommandRegistry.executeCommand(
         '/key openrouter sk-or-v1-abcdef1234567890',
         ctx
@@ -76,20 +76,35 @@ describe('TUI-M5: Model Search, API Routing, and Free Model Prioritization', () 
       await extendedCommandRegistry.executeCommand('/key groq gsk-1234567890abcdef', ctx);
       expect(process.env.GROQ_API_KEY).toBe('gsk-1234567890abcdef');
       expect(loggedActivities.some((a) => a.includes('GROQ API key set'))).toBe(true);
+
+      await extendedCommandRegistry.executeCommand('/key surplus inf_test_key_1234567890', ctx);
+      expect(process.env.SURPLUS_API_KEY).toBe('inf_test_key_1234567890');
+      expect(loggedActivities.some((a) => a.includes('SURPLUS API key set'))).toBe(true);
+
+      // Verify /key save surplus and /key surplus save
+      await extendedCommandRegistry.executeCommand('/key save surplus inf_saved_key_1111', ctx);
+      expect(process.env.SURPLUS_API_KEY).toBe('inf_saved_key_1111');
+      expect(loggedActivities.some((a) => a.includes('SURPLUS API key saved to .env'))).toBe(true);
+
+      await extendedCommandRegistry.executeCommand('/key surplus save inf_saved_key_2222', ctx);
+      expect(process.env.SURPLUS_API_KEY).toBe('inf_saved_key_2222');
+      expect(loggedActivities.some((a) => a.includes('SURPLUS API key set and saved'))).toBe(true);
     });
 
-    it('/key status displays OpenRouter, OrcaRouter, and Groq statuses', async () => {
+    it('/key status displays OpenRouter, OrcaRouter, Groq, and Surplus statuses', async () => {
       process.env.OPENROUTER_API_KEY = 'sk-or-test12345678';
       process.env.ORCAROUTER_API_KEY = 'sk-orca-test12345678';
       process.env.GROQ_API_KEY = 'gsk-test12345678';
+      process.env.SURPLUS_API_KEY = 'inf_test12345678';
 
       await extendedCommandRegistry.executeCommand('/key status', ctx);
       expect(loggedThoughts.some((t) => t.includes('OpenRouter'))).toBe(true);
       expect(loggedThoughts.some((t) => t.includes('OrcaRouter'))).toBe(true);
       expect(loggedThoughts.some((t) => t.includes('Groq'))).toBe(true);
+      expect(loggedThoughts.some((t) => t.includes('Surplus'))).toBe(true);
     });
 
-    it('/model switches provider seamlessly to openrouter, orcarouter, and groq', async () => {
+    it('/model switches provider seamlessly to openrouter, orcarouter, groq, and surplus', async () => {
       // OpenRouter
       await extendedCommandRegistry.executeCommand(
         '/model meta-llama/llama-3.2-3b-instruct:free',
@@ -110,6 +125,16 @@ describe('TUI-M5: Model Search, API Routing, and Free Model Prioritization', () 
       await extendedCommandRegistry.executeCommand('/model llama-3.3-70b-versatile', ctx);
       expect(currentModel).toBe('llama-3.3-70b-versatile');
       expect(currentProvider).toBe('groq');
+
+      // Surplus (prefix routing)
+      await extendedCommandRegistry.executeCommand('/model surplus/deepseek/deepseek-chat', ctx);
+      expect(currentModel).toBe('surplus/deepseek/deepseek-chat');
+      expect(currentProvider).toBe('surplus');
+
+      // Surplus (custom model with surplus/ prefix)
+      await extendedCommandRegistry.executeCommand('/model surplus/some-custom-model', ctx);
+      expect(currentModel).toBe('surplus/some-custom-model');
+      expect(currentProvider).toBe('surplus');
     });
   });
 

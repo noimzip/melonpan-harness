@@ -3,10 +3,12 @@ import {
   OpenRouterProvider,
   OrcaRouterProvider,
   GroqProvider,
+  SurplusProvider,
   ProviderRegistry,
   fetchOpenRouterModels,
   fetchOrcaRouterModels,
   fetchGroqModels,
+  fetchSurplusModels,
   fetchDiscoveredModels,
   sortModelsWithFreeOnTop,
   DiscoveredModel,
@@ -37,14 +39,29 @@ describe('Providers Routing and Discovery (Core)', () => {
       expect((p as any).apiKey).toBe('gsk-test');
     });
 
-    it('registers openrouter, orcarouter, and groq in ProviderRegistry by default', () => {
+    it('creates SurplusProvider with default baseUrl, minDiscount routing, and apiKey', () => {
+      const p1 = new SurplusProvider({ apiKey: 'inf_test_key_123' });
+      expect(p1.id).toBe('surplus');
+      expect((p1 as any).baseUrl).toBe('https://api.surplusintelligence.ai/v1');
+      expect((p1 as any).apiKey).toBe('inf_test_key_123');
+
+      const p2 = new SurplusProvider({ apiKey: 'inf_test_key_456', minDiscount: 30 });
+      expect((p2 as any).baseUrl).toBe('https://api.surplusintelligence.ai/min30/v1');
+
+      const p3 = new SurplusProvider({ baseUrl: 'https://custom.surplus.example/v1' });
+      expect((p3 as any).baseUrl).toBe('https://custom.surplus.example/v1');
+    });
+
+    it('registers openrouter, orcarouter, groq, and surplus in ProviderRegistry by default', () => {
       const registry = new ProviderRegistry();
       expect(registry.listProviders()).toContain('openrouter');
       expect(registry.listProviders()).toContain('orcarouter');
       expect(registry.listProviders()).toContain('groq');
+      expect(registry.listProviders()).toContain('surplus');
       expect(registry.getProvider('openrouter')).toBeInstanceOf(OpenRouterProvider);
       expect(registry.getProvider('orcarouter')).toBeInstanceOf(OrcaRouterProvider);
       expect(registry.getProvider('groq')).toBeInstanceOf(GroqProvider);
+      expect(registry.getProvider('surplus')).toBeInstanceOf(SurplusProvider);
     });
   });
 
@@ -102,6 +119,46 @@ describe('Providers Routing and Discovery (Core)', () => {
       expect(models).toEqual([]);
     });
 
+    it('fetches Surplus models, respects custom minDiscount, and detects free models', async () => {
+      let requestedUrl = '';
+      let authHeader = '';
+      const mockFetch = async (url: string | URL | Request, init?: RequestInit) => {
+        requestedUrl = String(url);
+        authHeader = String(init?.headers && (init.headers as any)['Authorization']);
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: 'deepseek/deepseek-chat',
+                name: 'DeepSeek Chat',
+                owned_by: 'deepseek',
+                context_window: 64000,
+              },
+              {
+                id: 'deepseek/deepseek-r1-free',
+                name: 'DeepSeek R1 Free',
+                owned_by: 'deepseek',
+                context_window: 64000,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      };
+
+      const models = await fetchSurplusModels('inf_test_key_xyz', {
+        minDiscount: 40,
+        fetchImpl: mockFetch as any,
+      });
+
+      expect(requestedUrl).toBe('https://api.surplusintelligence.ai/min40/v1/models');
+      expect(authHeader).toBe('Bearer inf_test_key_xyz');
+      expect(models.length).toBe(2);
+      expect(models[0].provider).toBe('surplus');
+      expect(models[0].isFree).toBe(false);
+      expect(models[1].isFree).toBe(true);
+    });
+
     it('fetches only from providers whose API key is configured', async () => {
       const requestedUrls: string[] = [];
       const mockFetch = async (url: string | URL | Request) => {
@@ -131,6 +188,113 @@ describe('Providers Routing and Discovery (Core)', () => {
       expect(models[0].isFree).toBe(true);
       expect(models[1].id).toBe('orcarouter/claude-3.5-sonnet');
       expect(models[1].isFree).toBe(false);
+    });
+
+    it('fetches concurrently when multiple provider API keys are configured (OrcaRouter and Surplus)', async () => {
+      const requestedUrls: string[] = [];
+      const mockFetch = async (url: string | URL | Request) => {
+        requestedUrls.push(String(url));
+        if (String(url).includes('surplusintelligence.ai')) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat' },
+                { id: 'deepseek/free-model', name: 'Free Model' },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            data: [
+              { id: 'orcarouter/deepseek/deepseek-v4-flash-free', name: 'DeepSeek V4 Free' },
+              { id: 'orcarouter/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      };
+
+      const models = await fetchDiscoveredModels(
+        { orcarouter: 'sk-orca-test', surplus: 'inf_test_key_123' },
+        { fetchImpl: mockFetch as any }
+      );
+
+      expect(requestedUrls.length).toBe(2);
+      expect(requestedUrls.some((u) => u.includes('api.orcarouter.ai'))).toBe(true);
+      expect(requestedUrls.some((u) => u.includes('api.surplusintelligence.ai'))).toBe(true);
+      expect(models.length).toBe(4);
+    });
+
+    it('SurplusProvider streamChat strips surplus/ prefix from request.model before sending payload', async () => {
+      let interceptedPayload: any = null;
+      const mockFetch = async (url: string | URL | Request, init?: RequestInit) => {
+        interceptedPayload = JSON.parse(String(init?.body || '{}'));
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'Surplus response' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      };
+
+      const surplus = new SurplusProvider({
+        apiKey: 'inf_test_key',
+        fetchImpl: mockFetch as any,
+      });
+
+      const chunks: any[] = [];
+      for await (const chunk of surplus.streamChat({
+        model: 'surplus/deepseek/deepseek-chat',
+        messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(interceptedPayload).not.toBeNull();
+      expect(interceptedPayload.model).toBe('deepseek/deepseek-chat');
+      expect(chunks.some((c) => c.type === 'text_delta' && c.delta === 'Surplus response')).toBe(true);
+    });
+
+    it('respects SURPLUS_MIN_DISCOUNT environment variable in SurplusProvider and fetchSurplusModels', async () => {
+      process.env.SURPLUS_MIN_DISCOUNT = '25';
+      try {
+        const p = new SurplusProvider({ apiKey: 'inf_test_key' });
+        expect((p as any).baseUrl).toBe('https://api.surplusintelligence.ai/min25/v1');
+
+        let requestedUrl = '';
+        const mockFetch = async (url: string | URL | Request) => {
+          requestedUrl = String(url);
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        };
+        await fetchSurplusModels('inf_test_key', { fetchImpl: mockFetch as any });
+        expect(requestedUrl).toBe('https://api.surplusintelligence.ai/min25/v1/models');
+      } finally {
+        delete process.env.SURPLUS_MIN_DISCOUNT;
+      }
+    });
+
+    it('SurplusProvider countTokens does not attempt Anthropic API call for claude models', async () => {
+      const calledUrls: string[] = [];
+      const mockFetch = async (url: string | URL | Request) => {
+        calledUrls.push(String(url));
+        return new Response('{}', { status: 200 });
+      };
+
+      const surplus = new SurplusProvider({
+        apiKey: 'inf_test_key',
+        fetchImpl: mockFetch as any,
+      });
+
+      const count = await surplus.countTokens(
+        [{ role: 'user', parts: [{ text: 'Hello world token estimation' }] }],
+        undefined,
+        'surplus/claude-3-5-sonnet'
+      );
+
+      expect(calledUrls.length).toBe(0);
+      expect(count).toBeGreaterThan(0);
     });
   });
 });

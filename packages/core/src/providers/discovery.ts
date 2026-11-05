@@ -3,7 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 export interface DiscoveredModel {
   id: string;
   name?: string;
-  provider: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'orcarouter' | 'groq' | string;
+  provider: 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'orcarouter' | 'groq' | 'surplus' | string;
   description?: string;
   isFree?: boolean;
   contextLength?: number;
@@ -17,6 +17,7 @@ export interface ProviderApiKeys {
   openrouter?: string;
   orcarouter?: string;
   groq?: string;
+  surplus?: string;
 }
 
 export interface ModelDiscoveryOptions {
@@ -29,7 +30,9 @@ export interface ModelDiscoveryOptions {
     openrouter?: string;
     orcarouter?: string;
     groq?: string;
+    surplus?: string;
   };
+  surplusMinDiscount?: number;
 }
 
 /**
@@ -213,6 +216,71 @@ export async function fetchGroqModels(
           raw: item,
         };
       });
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Surplus Intelligence: GET /v1/models (OpenAI互換)
+ */
+export async function fetchSurplusModels(
+  apiKey: string,
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; minDiscount?: number } = {}
+): Promise<DiscoveredModel[]> {
+  if (!apiKey) return [];
+  const fetchFn = options.fetchImpl || fetch;
+  const envMinDiscount =
+    typeof (globalThis as any).process !== 'undefined' &&
+    (globalThis as any).process.env?.SURPLUS_MIN_DISCOUNT
+      ? Number((globalThis as any).process.env.SURPLUS_MIN_DISCOUNT)
+      : undefined;
+  const minDiscount = options.minDiscount ?? envMinDiscount;
+  const defaultBase = minDiscount
+    ? `https://api.surplusintelligence.ai/min${minDiscount}/v1`
+    : 'https://api.surplusintelligence.ai/v1';
+  const baseUrl = (options.baseUrl || defaultBase).replace(/\/+$/, '');
+  const timeoutMs = options.timeoutMs || 5000;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetchFn(`${baseUrl}/models`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      return [];
+    }
+
+    const data: any = await res.json();
+    const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+
+    return list.map((item) => {
+      const isFree = Boolean(
+        item.id?.toLowerCase().includes('free') ||
+        (item.pricing?.prompt === 0 && item.pricing?.completion === 0)
+      );
+      return {
+        id: item.id,
+        name: item.name || item.id,
+        provider: 'surplus',
+        description:
+          item.description ||
+          (item.owned_by ? `Surplus Intelligence (${item.owned_by})` : 'Surplus Intelligence model'),
+        isFree,
+        contextLength: item.context_window || item.context_length,
+        raw: item,
+      };
+    });
   } catch {
     return [];
   } finally {
@@ -435,6 +503,17 @@ export async function fetchDiscoveredModels(
     fetchPromises.push(
       fetchGroqModels(apiKeys.groq, {
         baseUrl: options.baseUrls?.groq,
+        fetchImpl: options.fetchImpl,
+        timeoutMs: options.timeoutMs,
+      }).then(sortModelsWithFreeOnTop)
+    );
+  }
+
+  if (apiKeys.surplus) {
+    fetchPromises.push(
+      fetchSurplusModels(apiKeys.surplus, {
+        baseUrl: options.baseUrls?.surplus,
+        minDiscount: options.surplusMinDiscount,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
       }).then(sortModelsWithFreeOnTop)

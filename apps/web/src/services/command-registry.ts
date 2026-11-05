@@ -88,9 +88,11 @@ export class WebCommandRegistry {
             `  • OpenRouter Key  : \`${maskApiKey(stored.openrouter)}\``,
             `  • OrcaRouter Key  : \`${maskApiKey(stored.orcarouter)}\``,
             `  • Groq Key        : \`${maskApiKey(stored.groq)}\``,
+            `  • Surplus Key     : \`${maskApiKey(stored.surplus)}\``,
             `\n💡 **コマンド例**:`,
             `  • \`/key AIza...\` : 現在のプロバイダーにAPIキーを設定`,
             `  • \`/key openai sk-...\` : OpenAI用APIキーを設定`,
+            `  • \`/key surplus inf_...\` : Surplus用APIキーを設定`,
             `  • \`/key clear\` : 保存されている全APIキーを破棄`,
           ];
           ctx.logMessage(lines.join('\n'));
@@ -104,7 +106,7 @@ export class WebCommandRegistry {
           return;
         }
 
-        const knownProviders = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq'];
+        const knownProviders = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq', 'surplus'];
         if (knownProviders.includes(sub.toLowerCase())) {
           const provider = sub.toLowerCase();
           const targetKey = args[1]?.trim();
@@ -138,6 +140,7 @@ export class WebCommandRegistry {
           { text: '/key anthropic ', display: 'anthropic <key>', description: 'Anthropic APIキーを設定' },
           { text: '/key openrouter ', display: 'openrouter <key>', description: 'OpenRouter APIキーを設定' },
           { text: '/key groq ', display: 'groq <key>', description: 'Groq APIキーを設定' },
+          { text: '/key surplus ', display: 'surplus <key>', description: 'Surplus Intelligence APIキーを設定' },
         ];
         return base.filter((b) => b.display.toLowerCase().startsWith(rem));
       },
@@ -189,9 +192,11 @@ export class WebCommandRegistry {
           );
         } else {
           // Custom model name
+          const inferredProvider = targetModel.startsWith('surplus/') ? 'surplus' : ctx.providerConfig.provider;
           ctx.setProviderConfig((prev) => ({
             ...prev,
             model: targetModel,
+            provider: inferredProvider,
           }));
           const newLimit = resolveModelContextWindow(targetModel);
           ctx.updateActiveSession((prev) => ({
@@ -202,7 +207,7 @@ export class WebCommandRegistry {
               contextWindowLimit: newLimit,
             },
           }));
-          ctx.logMessage(`✔ モデルを \`${targetModel}\` (Context: ${formatTokens(newLimit)}) に設定しました。`);
+          ctx.logMessage(`✔ モデルを \`${targetModel}\` (${inferredProvider}, Context: ${formatTokens(newLimit)}) に設定しました。`);
         }
       },
       getSuggestions: (input) => {

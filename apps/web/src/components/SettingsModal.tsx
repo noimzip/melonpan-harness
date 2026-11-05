@@ -67,6 +67,7 @@ export function SettingsModal({
                 { id: 'openrouter', label: '🔀 OpenRouter' },
                 { id: 'orcarouter', label: '🐋 OrcaRouter' },
                 { id: 'groq', label: '⚡ Groq (Llama)' },
+                { id: 'surplus', label: '⚡ Surplus Intelligence' },
                 { id: 'bridge', label: '🔌 Local Node.js Bridge' },
               ].map((item) => (
                 <button

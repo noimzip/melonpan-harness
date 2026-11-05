@@ -16,6 +16,7 @@ import {
   OpenRouterProvider,
   OrcaRouterProvider,
   GroqProvider,
+  SurplusProvider,
   fetchDiscoveredModels,
   DiscoveredModel,
   ProviderApiKeys,
@@ -37,6 +38,16 @@ function createProviderInstance(
   modelName: string,
   apiKey?: string
 ): ILLMProvider | undefined {
+  if (providerId === 'surplus' || modelName.startsWith('surplus/')) {
+    const key = (typeof process !== 'undefined' ? process.env?.SURPLUS_API_KEY : '') || apiKey || '';
+    const minDiscountStr = typeof process !== 'undefined' ? process.env?.SURPLUS_MIN_DISCOUNT : undefined;
+    const minDiscount = minDiscountStr ? Number(minDiscountStr) : undefined;
+    return new SurplusProvider({
+      apiKey: key,
+      baseUrl: (typeof process !== 'undefined' ? process.env?.SURPLUS_BASE_URL : undefined) || undefined,
+      minDiscount,
+    });
+  }
   if (providerId === 'openrouter' || modelName.startsWith('openrouter/')) {
     const key = (typeof process !== 'undefined' ? process.env?.OPENROUTER_API_KEY : '') || apiKey || '';
     return new OpenRouterProvider({
@@ -115,6 +126,7 @@ const PROVIDER_GROUP_NAMES: Record<string, string> = {
   openrouter: 'OpenRouter',
   orcarouter: 'OrcaRouter',
   groq: 'Groq',
+  surplus: 'Surplus Intelligence',
 };
 
 export function formatDiscoveredToPickerItems(models: DiscoveredModel[]): PickerItem[] {
@@ -222,6 +234,7 @@ export const App: React.FC<AppProps> = ({
     if (env?.OPENROUTER_API_KEY) keys.openrouter = env?.OPENROUTER_API_KEY;
     if (env?.ORCAROUTER_API_KEY) keys.orcarouter = env?.ORCAROUTER_API_KEY;
     if (env?.GROQ_API_KEY) keys.groq = env?.GROQ_API_KEY;
+    if (env?.SURPLUS_API_KEY) keys.surplus = env?.SURPLUS_API_KEY;
 
     if (Object.keys(keys).length === 0) {
       setModelItems([]);
@@ -237,6 +250,7 @@ export const App: React.FC<AppProps> = ({
           groq: env?.GROQ_BASE_URL,
           openai: env?.OPENAI_BASE_URL,
           anthropic: env?.ANTHROPIC_BASE_URL,
+          surplus: env?.SURPLUS_BASE_URL,
         },
       });
       const items = formatDiscoveredToPickerItems(discovered);

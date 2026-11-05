@@ -49,6 +49,14 @@ export const Header: React.FC<HeaderProps> = ({
       ? (typeof process !== 'undefined' ? process.env?.OPENAI_API_KEY : '')
       : provider === 'anthropic'
       ? (typeof process !== 'undefined' ? process.env?.ANTHROPIC_API_KEY : '')
+      : provider === 'surplus'
+      ? (typeof process !== 'undefined' ? process.env?.SURPLUS_API_KEY : '')
+      : provider === 'openrouter'
+      ? (typeof process !== 'undefined' ? process.env?.OPENROUTER_API_KEY : '')
+      : provider === 'orcarouter'
+      ? (typeof process !== 'undefined' ? process.env?.ORCAROUTER_API_KEY : '')
+      : provider === 'groq'
+      ? (typeof process !== 'undefined' ? process.env?.GROQ_API_KEY : '')
       : hasApiKey;
 
   const isLive = Boolean(activeKey) && !isSimulate;

@@ -6,7 +6,7 @@ export const boostCommand: CommandDefinition = {
   aliases: ['model'],
   syntax: '/boost [name]',
   description:
-    '各種API (OpenRouter, OrcaRouter, Groq, Gemini, OpenAI, Anthropic) モデルの表示・検索・切り替え (/model 同等)',
+    '各種API (OpenRouter, OrcaRouter, Groq, Surplus, Gemini, OpenAI, Anthropic) モデルの表示・検索・切り替え (/model 同等)',
   execute: (args, ctx) => modelCommand.execute(args, ctx),
   getSuggestions: (input, ctx) => modelCommand.getSuggestions?.(input, ctx) || [],
 };

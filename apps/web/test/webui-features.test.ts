@@ -15,7 +15,7 @@ import {
   MODEL_PRICING,
 } from '../src/services/provider-factory';
 import { Session, Message, PlanState, SubagentTrace, ProviderConfig } from '../src/types';
-import { SimulatedProvider, MelonpanCore } from '@melonpan/core';
+import { SimulatedProvider, MelonpanCore, SurplusProvider } from '@melonpan/core';
 import { inlineVfsAssets } from '../src/components/SandboxViewer';
 import JSZip from 'jszip';
 
@@ -131,21 +131,25 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(loggedMessages[loggedMessages.length - 1]).toContain('AIzaSy...5678');
       expect(getStoredApiKeys().gemini).toBe('AIzaSyTestKey12345678');
 
-      // 2. Set key for openai
+      // 2. Set key for openai and surplus
       await webCommandRegistry.executeCommand('/key openai sk-openai-test-key-9999', ctx);
       expect(getStoredApiKeys().openai).toBe('sk-openai-test-key-9999');
+
+      await webCommandRegistry.executeCommand('/key surplus inf_surplus_test_key_1234', ctx);
+      expect(getStoredApiKeys().surplus).toBe('inf_surplus_test_key_1234');
 
       // 3. Status check
       await webCommandRegistry.executeCommand('/key status', ctx);
       expect(loggedMessages[loggedMessages.length - 1]).toContain('APIキー設定ステータス');
       expect(loggedMessages[loggedMessages.length - 1]).toContain('sk-ope...9999');
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('inf_su...1234');
 
       // 4. Clear keys
       await webCommandRegistry.executeCommand('/key clear', ctx);
       expect(Object.keys(getStoredApiKeys()).length).toBe(0);
     });
 
-    it('executes /model command and switches model and provider', async () => {
+    it('executes /model command and switches model and provider including surplus', async () => {
       const { ctx, loggedMessages } = createTestContext();
 
       // Switch to gpt-4o
@@ -166,6 +170,16 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(ctx.session.metrics.contextWindowLimit).toBe(200_000);
       expect(ctx.session.metrics.activeModel).toBe('claude-3-7-sonnet');
 
+      // Switch to surplus preset
+      await webCommandRegistry.executeCommand('/model surplus/deepseek/deepseek-chat', ctx);
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('surplus/deepseek/deepseek-chat');
+      expect(ctx.providerConfig.provider).toBe('surplus');
+
+      // Switch to custom surplus model
+      await webCommandRegistry.executeCommand('/model surplus/custom-fast-model', ctx);
+      expect(ctx.providerConfig.provider).toBe('surplus');
+      expect(ctx.providerConfig.model).toBe('surplus/custom-fast-model');
+
       // Autocomplete suggestions show context size formatTokens and support /boost alias
       const suggestions = webCommandRegistry.getAutocompleteSuggestions('/model gemini');
       expect(suggestions.length).toBeGreaterThan(0);
@@ -174,6 +188,17 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       const boostSuggestions = webCommandRegistry.getAutocompleteSuggestions('/boost gemini');
       expect(boostSuggestions.length).toBeGreaterThan(0);
       expect(boostSuggestions[0].text).toContain('/boost ');
+    });
+
+    it('instantiates SurplusProvider via createProviderInstance', () => {
+      const p1 = createProviderInstance('surplus', 'surplus/deepseek/deepseek-chat', 'inf_test_123');
+      expect(p1).toBeInstanceOf(SurplusProvider);
+      expect(p1?.id).toBe('surplus');
+      expect((p1 as any).baseUrl).toBe('https://api.surplusintelligence.ai/v1');
+
+      const p2 = createProviderInstance('custom', 'surplus/custom-model', 'inf_test_456');
+      expect(p2).toBeInstanceOf(SurplusProvider);
+      expect(p2?.id).toBe('surplus');
     });
 
     it('synchronizes MODEL_PRICING with official Gemini 3.8 Flash rates ($0.75 / $3.75)', () => {

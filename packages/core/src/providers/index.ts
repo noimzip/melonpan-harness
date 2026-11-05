@@ -688,8 +688,13 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       throw new Error('OpenAICompatibleProvider stream aborted.');
     }
 
+    let targetModel = request.model;
+    if (this.id && targetModel.startsWith(`${this.id}/`)) {
+      targetModel = targetModel.slice(this.id.length + 1);
+    }
+
     const body: Record<string, any> = {
-      model: request.model,
+      model: targetModel,
       messages: this.convertMessages(request),
     };
 
@@ -886,11 +891,14 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     systemInstruction?: string,
     model?: string
   ): Promise<number> {
-    const targetModel = model || this.defaultModel || '';
+    const rawModel = model || this.defaultModel || '';
+    const targetModel =
+      this.id && rawModel.startsWith(`${this.id}/`)
+        ? rawModel.slice(this.id.length + 1)
+        : rawModel;
     const isAnthropicTarget =
-      this.id === 'anthropic' ||
-      this.baseUrl.includes('anthropic.com') ||
-      targetModel.toLowerCase().includes('claude');
+      (this.id === 'anthropic' || this.baseUrl.includes('anthropic.com')) &&
+      (this.id === 'anthropic' || targetModel.toLowerCase().includes('claude'));
 
     if (isAnthropicTarget && this.apiKey) {
       try {
@@ -1052,8 +1060,47 @@ export class GroqProvider extends OpenAICompatibleProvider {
   }
 }
 
+export interface SurplusProviderOptions extends OpenAICompatibleProviderOptions {
+  minDiscount?: number;
+}
+
 /**
- * 6. SimulatedProvider: オフライン・テスト用の決定論的ストリーミングプロバイダー (#27)
+ * 6. SurplusProvider: Surplus Intelligence 分散型インファレンスマーケットプレイスプロバイダー
+ * - エンドポイント: https://api.surplusintelligence.ai/v1 (または /min{N}/v1)
+ * - 環境変数: SURPLUS_API_KEY / SURPLUS_BASE_URL / SURPLUS_MIN_DISCOUNT
+ */
+export class SurplusProvider extends OpenAICompatibleProvider {
+  constructor(options: SurplusProviderOptions = {}) {
+    const envKey =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.SURPLUS_API_KEY || ''
+        : '';
+    const envBase =
+      typeof (globalThis as any).process !== 'undefined'
+        ? (globalThis as any).process.env?.SURPLUS_BASE_URL || ''
+        : '';
+    const envMinDiscount =
+      typeof (globalThis as any).process !== 'undefined' &&
+      (globalThis as any).process.env?.SURPLUS_MIN_DISCOUNT
+        ? Number((globalThis as any).process.env.SURPLUS_MIN_DISCOUNT)
+        : undefined;
+    const discount = options.minDiscount ?? envMinDiscount;
+    const defaultBase = discount
+      ? `https://api.surplusintelligence.ai/min${discount}/v1`
+      : 'https://api.surplusintelligence.ai/v1';
+
+    super({
+      id: options.id || 'surplus',
+      baseUrl: options.baseUrl || envBase || defaultBase,
+      apiKey: options.apiKey ?? envKey,
+      headers: options.headers,
+      fetchImpl: options.fetchImpl,
+    });
+  }
+}
+
+/**
+ * 7. SimulatedProvider: オフライン・テスト用の決定論的ストリーミングプロバイダー (#27)
  */
 export class SimulatedProvider implements ILLMProvider {
   readonly id = 'simulated';
@@ -1135,6 +1182,7 @@ export class ProviderRegistry {
       new OpenRouterProvider(),
       new OrcaRouterProvider(),
       new GroqProvider(),
+      new SurplusProvider(),
       new SimulatedProvider(),
     ];
     for (const p of defaults) {

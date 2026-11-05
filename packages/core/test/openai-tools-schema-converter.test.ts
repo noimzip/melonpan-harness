@@ -6,6 +6,7 @@ import {
   OpenRouterProvider,
   OrcaRouterProvider,
   GroqProvider,
+  SurplusProvider,
   formatOpenAITools,
   formatToolParameters,
   normalizeJsonSchema,
@@ -531,21 +532,24 @@ describe('OpenAI Tools & JSON Schema Draft 2020-12 / OpenAPI Specification Compa
       expect(chunks.some((c) => c.type === 'tool_call' && c.toolCall?.name === 'write_file')).toBe(true);
     });
 
-    it('OpenRouterProvider, OrcaRouterProvider, and GroqProvider inherit identical tool formatting', () => {
+    it('OpenRouterProvider, OrcaRouterProvider, GroqProvider, and SurplusProvider inherit identical tool formatting', () => {
       const tools = [new WriteFileTool().declaration];
 
       const openRouter = new OpenRouterProvider({ apiKey: 'sk-or' });
       const orcaRouter = new OrcaRouterProvider({ apiKey: 'sk-orca' });
       const groq = new GroqProvider({ apiKey: 'gsk' });
+      const surplus = new SurplusProvider({ apiKey: 'inf_test' });
 
       const orFormatted = openRouter.formatTools(tools);
       const orcaFormatted = orcaRouter.formatTools(tools);
       const groqFormatted = groq.formatTools(tools);
+      const surplusFormatted = surplus.formatTools(tools);
 
       expect(orFormatted).toEqual(orcaFormatted);
       expect(orcaFormatted).toEqual(groqFormatted);
-      expect(orFormatted[0].function.parameters.type).toBe('object');
-      expect(orFormatted[0].function.parameters.properties.path.type).toBe('string');
+      expect(groqFormatted).toEqual(surplusFormatted);
+      expect(surplusFormatted[0].function.parameters.type).toBe('object');
+      expect(surplusFormatted[0].function.parameters.properties.path.type).toBe('string');
     });
   });
 });

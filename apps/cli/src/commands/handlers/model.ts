@@ -10,6 +10,7 @@ export interface ModelCatalogItem {
     | 'openrouter'
     | 'orcarouter'
     | 'groq'
+    | 'surplus'
     | 'local'
     | string;
   label: string;
@@ -138,6 +139,21 @@ export const ALL_SUPPORTED_MODELS: ModelCatalogItem[] = [
     label: 'mixtral-8x7b-32768',
     description: 'High-throughput MoE model (Groq)',
   },
+  // Surplus Intelligence
+  {
+    id: 'surplus/deepseek/deepseek-chat',
+    provider: 'surplus',
+    label: 'surplus/deepseek/deepseek-chat',
+    description: 'DeepSeek Chat on Surplus Intelligence decentralized market',
+    isFree: false,
+  },
+  {
+    id: 'surplus/claude-3-5-sonnet',
+    provider: 'surplus',
+    label: 'surplus/claude-3-5-sonnet',
+    description: 'Claude 3.5 Sonnet on Surplus Intelligence decentralized market',
+    isFree: false,
+  },
 ];
 
 // 動的にAPIから取得されたモデルのキャッシュ
@@ -156,7 +172,7 @@ export const modelCommand: CommandDefinition = {
   aliases: ['boost'],
   syntax: '/model [name] (alias: /boost [name])',
   description:
-    '各種API対応モデルの表示・検索・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq)',
+    '各種API対応モデルの表示・検索・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq, Surplus)',
   execute: (args, ctx) => {
     const targetModel = args[0]?.trim();
 
@@ -214,7 +230,9 @@ export const modelCommand: CommandDefinition = {
 
     // 4. 接頭辞ベースのルーティング推論
     let inferredProvider = 'custom';
-    if (targetModel.startsWith('openrouter/')) {
+    if (targetModel.startsWith('surplus/')) {
+      inferredProvider = 'surplus';
+    } else if (targetModel.startsWith('openrouter/')) {
       inferredProvider = 'openrouter';
     } else if (targetModel.startsWith('orcarouter/')) {
       inferredProvider = 'orcarouter';

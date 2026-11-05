@@ -12,3 +12,4 @@ plan.md
 .env.*
 .melonpan/
 .tmp-test-sessions/
+output/
