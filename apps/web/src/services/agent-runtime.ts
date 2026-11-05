@@ -232,6 +232,10 @@ export class AgentRuntime {
         enableStreaming: true,
         maxTurns: 300,
         maxCostUsd: remainingCostCapUsd,
+        maxContextTokens:
+          session.metrics?.contextWindowLimit && session.metrics.contextWindowLimit > 0
+            ? session.metrics.contextWindowLimit
+            : resolveModelContextWindow(providerConfig.model),
       });
       this.core = core;
 

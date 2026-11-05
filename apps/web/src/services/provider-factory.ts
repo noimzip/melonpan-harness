@@ -8,6 +8,11 @@ import {
   SurplusProvider,
   DEFAULT_MODEL_PRICING,
   USD_TO_JPY_RATE as CORE_USD_TO_JPY_RATE,
+  fetchDiscoveredModels,
+  DiscoveredModel,
+  ProviderApiKeys,
+  registerModelContextWindow,
+  resolveModelContextWindow,
 } from '@melonpan/core';
 import { ProviderType } from '../types';
 
@@ -17,6 +22,7 @@ export interface ModelCatalogItem {
   label: string;
   description: string;
   isFree?: boolean;
+  contextLength?: number;
 }
 
 export const ALL_SUPPORTED_MODELS: ModelCatalogItem[] = [
@@ -132,6 +138,99 @@ export const MODEL_PRICING: Record<string, ModelPricing> = Object.fromEntries(
     },
   ])
 );
+
+// 動的にAPIから取得されたモデルのWeb側キャッシュ
+let webDynamicModels: ModelCatalogItem[] = [];
+
+export function setWebDynamicModels(models: ModelCatalogItem[]): void {
+  webDynamicModels = models;
+  for (const m of models) {
+    if (m.contextLength && m.contextLength > 0) {
+      registerModelContextWindow(m.id, m.contextLength);
+    }
+  }
+}
+
+export function getWebDynamicModels(): ModelCatalogItem[] {
+  return webDynamicModels;
+}
+
+export function clearWebDynamicModels(): void {
+  webDynamicModels = [];
+}
+
+/**
+ * 指定プロバイダー（または全体）で利用可能なモデル一覧を取得する
+ * 1. APIキー設定により動的に取得されたモデルが存在する場合、それを優先
+ * 2. 無料モデル (isFree === true) を最上位に配置し、残りは既定順序を維持
+ * 3. 動的モデルがない場合は静的定義モデルにフォールバック
+ */
+export function getAvailableModels(provider?: ProviderType): ModelCatalogItem[] {
+  if (webDynamicModels.length > 0) {
+    const filtered = provider
+      ? webDynamicModels.filter((m) => m.provider === provider)
+      : webDynamicModels;
+    if (filtered.length > 0) {
+      const free = filtered.filter((m) => Boolean(m.isFree));
+      const nonFree = filtered.filter((m) => !m.isFree);
+      return [...free, ...nonFree];
+    }
+  }
+
+  const staticFiltered = provider
+    ? ALL_SUPPORTED_MODELS.filter((m) => m.provider === provider)
+    : ALL_SUPPORTED_MODELS;
+  const free = staticFiltered.filter((m) => Boolean(m.isFree));
+  const nonFree = staticFiltered.filter((m) => !m.isFree);
+  return [...free, ...nonFree];
+}
+
+/**
+ * 設定済みAPIキーを持つプロバイダーからモデルおよびコンテキスト長をAPI経由で動的取得する
+ */
+export async function loadWebDiscoveredModels(options?: {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  baseUrls?: Record<string, string | undefined>;
+}): Promise<ModelCatalogItem[]> {
+  const stored = getStoredApiKeys();
+  const keys: ProviderApiKeys = {};
+  if (stored.gemini) keys.gemini = stored.gemini;
+  if (stored.openai) keys.openai = stored.openai;
+  if (stored.anthropic) keys.anthropic = stored.anthropic;
+  if (stored.openrouter) keys.openrouter = stored.openrouter;
+  if (stored.orcarouter) keys.orcarouter = stored.orcarouter;
+  if (stored.groq) keys.groq = stored.groq;
+  if (stored.surplus) keys.surplus = stored.surplus;
+
+  if (Object.keys(keys).length === 0) {
+    clearWebDynamicModels();
+    return [];
+  }
+
+  try {
+    const discovered = await fetchDiscoveredModels(keys, {
+      fetchImpl: options?.fetchImpl,
+      timeoutMs: options?.timeoutMs ?? 5000,
+      baseUrls: options?.baseUrls,
+    });
+
+    const items: ModelCatalogItem[] = discovered.map((m) => ({
+      id: m.id,
+      provider: m.provider as ProviderType,
+      label: m.name || m.id,
+      description: m.description || m.name || '',
+      isFree: m.isFree,
+      contextLength: m.contextLength,
+    }));
+
+    setWebDynamicModels(items);
+    return items;
+  } catch (err) {
+    console.error('Failed to load dynamic models in Web:', err);
+    return webDynamicModels;
+  }
+}
 
 const API_KEYS_STORAGE_KEY = 'melonpan_web_api_keys_v1';
 

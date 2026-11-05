@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { registerModelContextWindow } from '../pricing/model-pricing.js';
 
 export interface DiscoveredModel {
   id: string;
@@ -555,6 +556,12 @@ export async function fetchDiscoveredModels(
   for (const r of results) {
     if (r.status === 'fulfilled') {
       allModels.push(...r.value);
+    }
+  }
+
+  for (const m of allModels) {
+    if (m.contextLength && m.contextLength > 0) {
+      registerModelContextWindow(m.id, m.contextLength);
     }
   }
 

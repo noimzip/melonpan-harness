@@ -177,10 +177,43 @@ export function formatTokens(num: number): string {
   return num.toString();
 }
 
+const dynamicContextWindowRegistry = new Map<string, number>();
+
+/**
+ * APIから動的に取得されたモデルの contextLength をレジストリに登録する
+ */
+export function registerModelContextWindow(model: string, contextTokens: number): void {
+  if (model && contextTokens > 0) {
+    dynamicContextWindowRegistry.set(model.trim().toLowerCase(), contextTokens);
+  }
+}
+
+/**
+ * 登録済みの動的 contextWindowTokens を取得する（未登録時は undefined）
+ */
+export function getRegisteredModelContextWindow(model?: string): number | undefined {
+  if (!model) return undefined;
+  return dynamicContextWindowRegistry.get(model.trim().toLowerCase());
+}
+
+/**
+ * 登録済みの動的コンテキストウィンドウレジストリを初期化する
+ */
+export function clearRegisteredModelContextWindows(): void {
+  dynamicContextWindowRegistry.clear();
+}
+
 /**
  * モデル名（プレフィックスまたはサブストリング含む）から contextWindowTokens を解決する
+ * 動的APIディスカバリーで登録された値がある場合はそれを最優先で返却する
  */
 export function resolveModelContextWindow(model?: string): number {
+  if (model) {
+    const registered = dynamicContextWindowRegistry.get(model.trim().toLowerCase());
+    if (registered && registered > 0) {
+      return registered;
+    }
+  }
   const pricing = resolveModelPricing(model);
   return pricing.contextWindowTokens ?? 1_048_576;
 }

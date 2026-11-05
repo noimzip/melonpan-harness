@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { ProviderConfig } from '../types';
 import { WobblyButton } from './WobblyButton';
+import { saveStoredApiKey, getStoredApiKeys } from '../services/provider-factory';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -30,6 +31,9 @@ export function SettingsModal({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    if (local.apiKey !== undefined) {
+      saveStoredApiKey(local.provider, local.apiKey);
+    }
     onSaveConfig(local);
     setSavedSuccess(true);
     setTimeout(() => {
@@ -73,12 +77,14 @@ export function SettingsModal({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    const stored = getStoredApiKeys();
                     setLocal((prev) => ({
                       ...prev,
                       provider: item.id as ProviderConfig['provider'],
-                    }))
-                  }
+                      apiKey: stored[item.id] || '',
+                    }));
+                  }}
                   className={[
                     'p-2 rounded-xl text-left font-medium border-2 transition-all',
                     local.provider === item.id

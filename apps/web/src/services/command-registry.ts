@@ -12,6 +12,9 @@ import {
   saveStoredApiKey,
   clearAllStoredApiKeys,
   getStoredApiKeys,
+  getWebDynamicModels,
+  loadWebDiscoveredModels,
+  clearWebDynamicModels,
 } from './provider-factory';
 import { agentRuntime } from './agent-runtime';
 import JSZip from 'jszip';
@@ -26,6 +29,7 @@ export interface WebCommandContext {
   executePrompt: (prompt: string, overrideMode?: 'plan' | 'act' | 'auto' | 'goal') => void;
   logMessage: (content: string, thought?: string) => void;
   triggerZipDownload?: () => void;
+  refreshModels?: () => Promise<void>;
 }
 
 export interface WebCommandDefinition {
@@ -70,7 +74,7 @@ export class WebCommandRegistry {
       aliases: ['apikey', 'api-key'],
       syntax: '/key [api-key | clear | status | <provider> <api-key>]',
       description: 'マルチプロバイダーAPIキー (Gemini, OpenAI, Anthropic, OpenRouter, Groq) の設定・確認',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const sub = args[0]?.trim();
 
         if (!sub || sub.toLowerCase() === 'status') {
@@ -101,8 +105,12 @@ export class WebCommandRegistry {
 
         if (sub.toLowerCase() === 'clear') {
           clearAllStoredApiKeys();
+          clearWebDynamicModels();
           ctx.setProviderConfig((prev) => ({ ...prev, apiKey: '' }));
           ctx.logMessage('🗑️ 保存されていた全APIキーをブラウザストレージから消去しました。');
+          if (ctx.refreshModels) {
+            await ctx.refreshModels();
+          }
           return;
         }
 
@@ -119,6 +127,11 @@ export class WebCommandRegistry {
             ctx.setProviderConfig((prev) => ({ ...prev, apiKey: targetKey }));
           }
           ctx.logMessage(`🔑 ${provider.toUpperCase()} のAPIキーを設定・保存しました: \`${maskApiKey(targetKey)}\``);
+          if (ctx.refreshModels) {
+            await ctx.refreshModels();
+          } else {
+            loadWebDiscoveredModels().catch(() => {});
+          }
           return;
         }
 
@@ -127,6 +140,11 @@ export class WebCommandRegistry {
         saveStoredApiKey(ctx.providerConfig.provider, newKey);
         ctx.setProviderConfig((prev) => ({ ...prev, apiKey: newKey }));
         ctx.logMessage(`🔑 ${ctx.providerConfig.provider.toUpperCase()} のAPIキーを設定しました: \`${maskApiKey(newKey)}\``);
+        if (ctx.refreshModels) {
+          await ctx.refreshModels();
+        } else {
+          loadWebDiscoveredModels().catch(() => {});
+        }
       },
       getSuggestions: (input) => {
         const prefix = '/key ';
@@ -149,22 +167,56 @@ export class WebCommandRegistry {
     this.register({
       name: 'model',
       aliases: ['boost'],
-      syntax: '/model [name]',
-      description: 'モデルの表示・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, Groq)',
-      execute: (args, ctx) => {
+      syntax: '/model [name] (alias: /boost [name])',
+      description: 'モデルの表示・検索・切り替え (Gemini, OpenAI, Anthropic, OpenRouter, OrcaRouter, Groq, Surplus)',
+      execute: async (args, ctx) => {
         const targetModel = args[0]?.trim();
 
         if (!targetModel) {
+          const dynamicList = getWebDynamicModels();
+          const modelsToDisplay = dynamicList.length > 0 ? dynamicList : ALL_SUPPORTED_MODELS;
           const currentLimit = resolveModelContextWindow(ctx.providerConfig.model);
-          const modelsList = ALL_SUPPORTED_MODELS.map(
-            (m) => `  • \`${m.id}\` (${m.provider}, Context: ${formatTokens(resolveModelContextWindow(m.id))}) - ${m.description}`
-          ).join('\n');
+          const modelsList = modelsToDisplay.map((m) => {
+            const ctxTokens = m.contextLength || resolveModelContextWindow(m.id);
+            const freeTag = m.isFree ? ' [free]' : '';
+            return `  • \`${m.id}\` (${m.provider}${freeTag}, Context: ${formatTokens(ctxTokens)}) - ${m.description}`;
+          }).join('\n');
           ctx.logMessage(
-            `🤖 **現在のアクティブモデル**: \`${ctx.providerConfig.model}\` (${ctx.providerConfig.provider}, Context: ${formatTokens(currentLimit)})\n\n**利用可能な推奨モデル一覧**:\n${modelsList}\n\n切り替え例: \`/model gemini-4-argon\` または \`/model gpt-4o\``
+            `🤖 **現在のアクティブモデル**: \`${ctx.providerConfig.model}\` (${ctx.providerConfig.provider}, Context: ${formatTokens(currentLimit)})\n\n**利用可能なモデル一覧**:\n${modelsList}\n\n切り替え例: \`/model gemini-4-argon\` または \`/model gpt-4o\``
           );
           return;
         }
 
+        // 1. 動的取得済みモデルから検索
+        const foundDynamic = getWebDynamicModels().find(
+          (m) => m.id.toLowerCase() === targetModel.toLowerCase()
+        );
+
+        if (foundDynamic) {
+          const stored = getStoredApiKeys();
+          const targetKey = stored[foundDynamic.provider] || ctx.providerConfig.apiKey;
+          ctx.setProviderConfig((prev) => ({
+            ...prev,
+            model: foundDynamic.id,
+            provider: foundDynamic.provider,
+            apiKey: targetKey,
+          }));
+          const newLimit = foundDynamic.contextLength || resolveModelContextWindow(foundDynamic.id);
+          ctx.updateActiveSession((prev) => ({
+            ...prev,
+            metrics: {
+              ...prev.metrics,
+              activeModel: foundDynamic.id,
+              contextWindowLimit: newLimit,
+            },
+          }));
+          ctx.logMessage(
+            `✔ モデルを \`${foundDynamic.id}\` (${foundDynamic.provider}${foundDynamic.isFree ? ' [free]' : ''}, Context: ${formatTokens(newLimit)}) に切り替えました。\n説明: ${foundDynamic.description}`
+          );
+          return;
+        }
+
+        // 2. 静的定義モデルから検索
         const found = ALL_SUPPORTED_MODELS.find(
           (m) => m.id.toLowerCase() === targetModel.toLowerCase()
         );
@@ -178,7 +230,7 @@ export class WebCommandRegistry {
             provider: found.provider,
             apiKey: targetKey,
           }));
-          const newLimit = resolveModelContextWindow(found.id);
+          const newLimit = found.contextLength || resolveModelContextWindow(found.id);
           ctx.updateActiveSession((prev) => ({
             ...prev,
             metrics: {
@@ -188,40 +240,82 @@ export class WebCommandRegistry {
             },
           }));
           ctx.logMessage(
-            `✔ モデルを \`${found.id}\` (${found.provider}, Context: ${formatTokens(newLimit)}) に切り替えました。\n説明: ${found.description}`
+            `✔ モデルを \`${found.id}\` (${found.provider}${found.isFree ? ' [free]' : ''}, Context: ${formatTokens(newLimit)}) に切り替えました。\n説明: ${found.description}`
           );
-        } else {
-          // Custom model name
-          const inferredProvider = targetModel.startsWith('surplus/') ? 'surplus' : ctx.providerConfig.provider;
-          ctx.setProviderConfig((prev) => ({
-            ...prev,
-            model: targetModel,
-            provider: inferredProvider,
-          }));
-          const newLimit = resolveModelContextWindow(targetModel);
-          ctx.updateActiveSession((prev) => ({
-            ...prev,
-            metrics: {
-              ...prev.metrics,
-              activeModel: targetModel,
-              contextWindowLimit: newLimit,
-            },
-          }));
-          ctx.logMessage(`✔ モデルを \`${targetModel}\` (${inferredProvider}, Context: ${formatTokens(newLimit)}) に設定しました。`);
+          return;
         }
+
+        // 3. カスタムモデル・接頭辞ルーティング
+        let inferredProvider = ctx.providerConfig.provider;
+        if (targetModel.startsWith('surplus/')) {
+          inferredProvider = 'surplus';
+        } else if (targetModel.startsWith('openrouter/')) {
+          inferredProvider = 'openrouter';
+        } else if (targetModel.startsWith('orcarouter/')) {
+          inferredProvider = 'orcarouter';
+        } else if (
+          targetModel.startsWith('groq/') ||
+          targetModel.startsWith('llama-') ||
+          targetModel.startsWith('mixtral-')
+        ) {
+          inferredProvider = 'groq';
+        } else if (
+          targetModel.startsWith('gpt-') ||
+          targetModel.startsWith('o1-') ||
+          targetModel.startsWith('o3-') ||
+          targetModel.startsWith('o4-') ||
+          targetModel.startsWith('chatgpt-')
+        ) {
+          inferredProvider = 'openai';
+        } else if (targetModel.startsWith('claude-')) {
+          inferredProvider = 'anthropic';
+        } else if (targetModel.startsWith('gemini') || targetModel.startsWith('gemma')) {
+          inferredProvider = 'gemini';
+        }
+
+        ctx.setProviderConfig((prev) => ({
+          ...prev,
+          model: targetModel,
+          provider: inferredProvider,
+        }));
+        const newLimit = resolveModelContextWindow(targetModel);
+        ctx.updateActiveSession((prev) => ({
+          ...prev,
+          metrics: {
+            ...prev.metrics,
+            activeModel: targetModel,
+            contextWindowLimit: newLimit,
+          },
+        }));
+        ctx.logMessage(`✔ モデルを \`${targetModel}\` (${inferredProvider}, Context: ${formatTokens(newLimit)}) に設定しました。`);
       },
       getSuggestions: (input) => {
         const matchedPrefix = ['/model ', '/boost '].find((p) => input.startsWith(p));
         if (!matchedPrefix) return [];
         const rem = input.slice(matchedPrefix.length).trim().toLowerCase();
-        return ALL_SUPPORTED_MODELS.filter((m) =>
-          m.id.toLowerCase().includes(rem) || m.provider.toLowerCase().includes(rem)
-        ).map((m) => {
-          const ctxTokens = resolveModelContextWindow(m.id);
+        const dynamicModels = getWebDynamicModels();
+        const sourceModels = dynamicModels.length > 0 ? dynamicModels : ALL_SUPPORTED_MODELS;
+
+        const matched = sourceModels.filter(
+          (m) =>
+            m.id.toLowerCase().includes(rem) ||
+            m.provider.toLowerCase().includes(rem) ||
+            (m.label && m.label.toLowerCase().includes(rem)) ||
+            (m.description && m.description.toLowerCase().includes(rem)) ||
+            (m.isFree && 'free'.includes(rem))
+        );
+
+        const freeList = matched.filter((m) => Boolean(m.isFree));
+        const nonFreeList = matched.filter((m) => !m.isFree);
+        const sorted = [...freeList, ...nonFreeList];
+
+        return sorted.map((m) => {
+          const ctxTokens = m.contextLength || resolveModelContextWindow(m.id);
+          const freeBadge = m.isFree ? ' [free]' : '';
           return {
             text: `${matchedPrefix}${m.id}`,
             display: m.id,
-            description: `(${m.provider}, ${formatTokens(ctxTokens)}) ${m.description}`,
+            description: `(${m.provider}${freeBadge}, ${formatTokens(ctxTokens)}) ${m.description}`,
           };
         });
       },
@@ -231,7 +325,7 @@ export class WebCommandRegistry {
       name: 'effort',
       syntax: '/effort [minimal|low|medium|high]',
       description: '推論レベル (Thinking Level) の深さを制御',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const target = args[0]?.trim().toLowerCase();
         const validLevels = ['minimal', 'low', 'medium', 'high'] as const;
 
@@ -276,7 +370,7 @@ export class WebCommandRegistry {
       name: 'plan',
       syntax: '/plan [prompt]',
       description: 'Plan Mode のトグル切り替え、または指定プロンプトで Plan Mode 即時実行',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const prompt = args.join(' ').trim();
         if (prompt.length > 0) {
           ctx.logMessage(`📝 計画モードでタスクを実行します: "${prompt}"`);
@@ -309,7 +403,7 @@ export class WebCommandRegistry {
       name: 'goal',
       syntax: '/goal [objective]',
       description: 'Goal Mode (サブエージェント解禁・Plan→Act→Auditサイクル) で目標を実行',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const prompt = args.join(' ').trim();
         if (prompt.length > 0) {
           ctx.logMessage(`🎯 ゴールモードで目標を実行します: "${prompt}" (サブエージェント解禁)`);
@@ -469,7 +563,7 @@ export class WebCommandRegistry {
       aliases: ['perm', 'policy'],
       syntax: '/permissions [auto|ask|strict]',
       description: 'ツール実行セキュリティ権限ポリシーの確認・切り替え (auto / ask / strict)',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const target = args[0]?.trim().toLowerCase();
 
         if (!target) {
@@ -541,7 +635,7 @@ export class WebCommandRegistry {
       name: 'skills',
       syntax: '/skills [list | enable <name> | disable <name>]',
       description: 'Agent Skills (agentskills.io) の一覧確認と有効化・無効化',
-      execute: (args, ctx) => {
+      execute: async (args, ctx) => {
         const sub = args[0]?.trim().toLowerCase();
         if (!sub || sub === 'list') {
           ctx.logMessage(
@@ -699,6 +793,18 @@ export class WebCommandRegistry {
             description: cmd.description,
           });
           seen.add(cmd.name);
+        }
+        if (cmd.aliases) {
+          for (const alias of cmd.aliases) {
+            if (`/${alias}`.startsWith(prefix) && !seen.has(alias)) {
+              results.push({
+                text: `/${alias} `,
+                display: `/${alias}`,
+                description: `(${cmd.name} alias) ${cmd.description}`,
+              });
+              seen.add(alias);
+            }
+          }
         }
       }
       return results;

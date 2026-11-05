@@ -20,7 +20,7 @@ import {
 import { Message, ProviderConfig } from '../types';
 import { ToolCard } from './ToolCard';
 import { webCommandRegistry } from '../services/command-registry';
-import { ALL_SUPPORTED_MODELS } from '../services/provider-factory';
+import { ALL_SUPPORTED_MODELS, getAvailableModels } from '../services/provider-factory';
 import { resolveModelContextWindow, formatTokens } from '@melonpan/core';
 
 interface ChatTimelineProps {
@@ -61,17 +61,16 @@ export function ChatTimeline({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Filter models for connected provider only + search query
-  const connectedModels = ALL_SUPPORTED_MODELS.filter(
-    (m) => m.provider === providerConfig.provider
-  );
+  // Filter models for connected provider only + search query (with dynamic API discovery models prioritized)
+  const connectedModels = getAvailableModels(providerConfig.provider);
   const filteredModels = connectedModels.filter((m) => {
     const q = modelSearchQuery.trim().toLowerCase();
     if (!q) return true;
     return (
       m.id.toLowerCase().includes(q) ||
       m.label.toLowerCase().includes(q) ||
-      m.description.toLowerCase().includes(q)
+      m.description.toLowerCase().includes(q) ||
+      (m.isFree && 'free'.includes(q))
     );
   });
 
@@ -553,7 +552,7 @@ export function ChatTimeline({
                         {filteredModels.length > 0 ? (
                           filteredModels.map((m) => {
                             const isSelected = providerConfig.model === m.id;
-                            const ctxTokens = resolveModelContextWindow(m.id);
+                            const ctxTokens = m.contextLength || resolveModelContextWindow(m.id);
                             return (
                               <button
                                 key={m.id}
@@ -570,8 +569,21 @@ export function ChatTimeline({
                                 ].join(' ')}
                               >
                                 <div className="flex items-center justify-between">
-                                  <span className="font-mono text-xs">{m.label}</span>
-                                  <div className="flex items-center gap-1.5">
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    <span className="font-mono text-xs">{m.label}</span>
+                                    {m.isFree && (
+                                      <span
+                                        className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${
+                                          isSelected
+                                            ? 'bg-white/20 text-white border-white/40'
+                                            : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                        }`}
+                                      >
+                                        free
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0">
                                     <span
                                       className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
                                         isSelected ? 'bg-white/20 text-white' : 'bg-black/5 opacity-70'
@@ -594,7 +606,9 @@ export function ChatTimeline({
                           })
                         ) : (
                           <div className="p-3 text-center text-xs opacity-60">
-                            「{modelSearchQuery}」に一致するモデルが見つかりません。
+                            {modelSearchQuery
+                              ? `「${modelSearchQuery}」に一致するモデルが見つかりません。`
+                              : `${providerConfig.provider} の利用可能モデルがありません。設定 (⚙) または /key でAPIキーを設定してください。`}
                           </div>
                         )}
                       </div>

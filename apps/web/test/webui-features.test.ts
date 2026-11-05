@@ -13,9 +13,20 @@ import {
   maskApiKey,
   createProviderInstance,
   MODEL_PRICING,
+  getWebDynamicModels,
+  setWebDynamicModels,
+  clearWebDynamicModels,
+  loadWebDiscoveredModels,
+  getAvailableModels,
 } from '../src/services/provider-factory';
 import { Session, Message, PlanState, SubagentTrace, ProviderConfig } from '../src/types';
-import { SimulatedProvider, MelonpanCore, SurplusProvider } from '@melonpan/core';
+import {
+  SimulatedProvider,
+  MelonpanCore,
+  SurplusProvider,
+  resolveModelContextWindow,
+  clearRegisteredModelContextWindows,
+} from '@melonpan/core';
 import { inlineVfsAssets } from '../src/components/SandboxViewer';
 import JSZip from 'jszip';
 
@@ -35,6 +46,8 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
         for (const k in store) delete store[k];
       },
     });
+    clearWebDynamicModels();
+    clearRegisteredModelContextWindows();
   });
 
   describe('1. Session Management & Initial State', () => {
@@ -205,6 +218,122 @@ describe('WebUI Feature Suite - TUI Spec & MelonpanCore Alignment', () => {
       expect(MODEL_PRICING['gemini-3.8-flash']).toBeDefined();
       expect(MODEL_PRICING['gemini-3.8-flash'].inputPerMillion).toBe(0.75);
       expect(MODEL_PRICING['gemini-3.8-flash'].outputPerMillion).toBe(3.75);
+    });
+
+    it('dynamically loads models and context windows from API in Web version', async () => {
+      saveStoredApiKey('orcarouter', 'sk-orca-test-key');
+      saveStoredApiKey('surplus', 'inf_test_key_abc');
+
+      const mockFetch = async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.includes('surplusintelligence.ai')) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'surplus/deepseek/deepseek-chat',
+                  name: 'DeepSeek Chat',
+                  description: 'DeepSeek Chat on Surplus',
+                  context_window: 65536,
+                },
+                {
+                  id: 'surplus/deepseek/free-model',
+                  name: 'Free Surplus Model',
+                  description: 'Free Surplus model',
+                  context_window: 32768,
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (u.includes('api.orcarouter.ai')) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'orcarouter/deepseek/paid-model',
+                  name: 'Paid Model',
+                  description: 'Paid model',
+                  context_window: 131072,
+                },
+                {
+                  id: 'orcarouter/deepseek/deepseek-v4-flash-free',
+                  name: 'DeepSeek V4 Free',
+                  description: 'High speed free reasoning',
+                  context_window: 163840,
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      };
+
+      const discovered = await loadWebDiscoveredModels({ fetchImpl: mockFetch as any });
+      expect(discovered.length).toBe(4);
+
+      // Verify dynamic context window registration & resolveModelContextWindow
+      expect(resolveModelContextWindow('surplus/deepseek/deepseek-chat')).toBe(65536);
+      expect(resolveModelContextWindow('surplus/deepseek/free-model')).toBe(32768);
+      expect(resolveModelContextWindow('orcarouter/deepseek/paid-model')).toBe(131072);
+      expect(resolveModelContextWindow('orcarouter/deepseek/deepseek-v4-flash-free')).toBe(163840);
+
+      // Verify free model prioritization on getAvailableModels
+      const surplusModels = getAvailableModels('surplus');
+      expect(surplusModels.length).toBe(2);
+      expect(surplusModels[0].id).toBe('surplus/deepseek/free-model');
+      expect(surplusModels[0].isFree).toBe(true);
+      expect(surplusModels[1].id).toBe('surplus/deepseek/deepseek-chat');
+
+      const orcaModels = getAvailableModels('orcarouter');
+      expect(orcaModels.length).toBe(2);
+      expect(orcaModels[0].id).toBe('orcarouter/deepseek/deepseek-v4-flash-free');
+      expect(orcaModels[0].isFree).toBe(true);
+      expect(orcaModels[1].id).toBe('orcarouter/deepseek/paid-model');
+
+      // Verify /model switches to dynamic model and sets exact dynamic contextWindowLimit
+      const { ctx, loggedMessages } = createTestContext();
+      await webCommandRegistry.executeCommand('/model surplus/deepseek/deepseek-chat', ctx);
+      expect(ctx.providerConfig.provider).toBe('surplus');
+      expect(ctx.providerConfig.model).toBe('surplus/deepseek/deepseek-chat');
+      expect(ctx.session.metrics.contextWindowLimit).toBe(65536);
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('65.5k');
+
+      // Verify /model without args shows dynamic models
+      await webCommandRegistry.executeCommand('/model', ctx);
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('利用可能なモデル一覧');
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('surplus/deepseek/free-model');
+      expect(loggedMessages[loggedMessages.length - 1]).toContain('[free]');
+
+      // Verify /model and /boost autocomplete prioritize dynamic free models and show dynamic context size
+      const suggestions = webCommandRegistry.getAutocompleteSuggestions('/model surplus');
+      expect(suggestions.length).toBe(2);
+      expect(suggestions[0].text).toContain('surplus/deepseek/free-model');
+      expect(suggestions[0].description).toContain('[free]');
+      expect(suggestions[0].description).toContain('32.8k');
+
+      const boostSuggestions = webCommandRegistry.getAutocompleteSuggestions('/boost orcarouter');
+      expect(boostSuggestions.length).toBe(2);
+      expect(boostSuggestions[0].text).toContain('orcarouter/deepseek/deepseek-v4-flash-free');
+      expect(boostSuggestions[0].description).toContain('[free]');
+      expect(boostSuggestions[0].description).toContain('163.8k');
+
+      // Verify /b autocompletes to /boost
+      const bSuggestions = webCommandRegistry.getAutocompleteSuggestions('/b');
+      expect(bSuggestions.some((s) => s.text === '/boost ' && s.display === '/boost')).toBe(true);
+    });
+
+    it('/key command triggers refreshModels callback', async () => {
+      const { ctx } = createTestContext();
+      let refreshInvoked = false;
+      ctx.refreshModels = async () => {
+        refreshInvoked = true;
+      };
+
+      await webCommandRegistry.executeCommand('/key surplus inf_new_test_key_999', ctx);
+      expect(refreshInvoked).toBe(true);
     });
 
     it('executes /effort command and validates levels', async () => {

@@ -47,7 +47,13 @@ import { SettingsModal } from './components/SettingsModal';
 import { KioskOverlay } from './components/KioskOverlay';
 
 import { webCommandRegistry, WebCommandContext } from './services/command-registry';
-import { getStoredApiKeys, saveStoredApiKey } from './services/provider-factory';
+import {
+  getStoredApiKeys,
+  saveStoredApiKey,
+  loadWebDiscoveredModels,
+  getWebDynamicModels,
+  ALL_SUPPORTED_MODELS,
+} from './services/provider-factory';
 
 type RightTab = 'sandbox' | 'vfs' | 'plan' | 'subagents' | 'skills' | 'context' | 'gallery' | 'logs';
 
@@ -96,6 +102,11 @@ export function App() {
       saveSessions(sessions);
     }
   }, [sessions]);
+
+  // 動的モデルディスカバリー: 初期マウント時に保存済みAPIキーからモデルおよびコンテキスト長をAPI経由で取得
+  useEffect(() => {
+    loadWebDiscoveredModels().catch(() => {});
+  }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || sessions[0];
 
@@ -186,6 +197,9 @@ export function App() {
         updateActiveSession,
         executePrompt: (prompt, mode) => {
           handleSendMessage(prompt, mode);
+        },
+        refreshModels: async () => {
+          await loadWebDiscoveredModels();
         },
         logMessage: (content, thought) => {
           updateActiveSession((prev) => ({
@@ -346,6 +360,9 @@ export function App() {
       executePrompt: (prompt, mode) => {
         handleSendMessage(prompt, mode);
       },
+      refreshModels: async () => {
+        await loadWebDiscoveredModels();
+      },
       logMessage: (content, thought) => {
         updateActiveSession((prev) => ({
           ...prev,
@@ -471,8 +488,15 @@ export function App() {
               onCancelTask={handleCancelTask}
               providerConfig={providerConfig}
               onSelectModel={(model) => {
-                setProviderConfig((prev) => ({ ...prev, model }));
-                const newLimit = resolveModelContextWindow(model);
+                const dynamic = getWebDynamicModels().find((m) => m.id === model);
+                const staticModel = ALL_SUPPORTED_MODELS.find((m) => m.id === model);
+                const targetProvider = dynamic?.provider || staticModel?.provider || providerConfig.provider;
+                setProviderConfig((prev) => ({
+                  ...prev,
+                  model,
+                  provider: targetProvider,
+                }));
+                const newLimit = dynamic?.contextLength || resolveModelContextWindow(model);
                 updateActiveSession((prev) => ({
                   ...prev,
                   metrics: {
@@ -619,7 +643,12 @@ export function App() {
         config={providerConfig}
         onSaveConfig={(newConfig) => {
           setProviderConfig(newConfig);
-          const newLimit = resolveModelContextWindow(newConfig.model);
+          if (newConfig.apiKey) {
+            saveStoredApiKey(newConfig.provider, newConfig.apiKey);
+          }
+          loadWebDiscoveredModels().catch(() => {});
+          const dynamic = getWebDynamicModels().find((m) => m.id === newConfig.model);
+          const newLimit = dynamic?.contextLength || resolveModelContextWindow(newConfig.model);
           updateActiveSession((prev) => ({
             ...prev,
             metrics: {
@@ -628,9 +657,6 @@ export function App() {
               contextWindowLimit: newLimit,
             },
           }));
-          if (newConfig.apiKey) {
-            saveStoredApiKey(newConfig.provider, newConfig.apiKey);
-          }
         }}
       />
 
