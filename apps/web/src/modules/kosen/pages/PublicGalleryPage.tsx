@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
 import {
   Trophy,
   Play,
@@ -7,7 +6,6 @@ import {
   Sparkles,
   X,
   RefreshCw,
-  ArrowLeft,
   Gamepad2,
   Search,
   Filter,
@@ -147,13 +145,6 @@ export function PublicGalleryPage() {
               <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
               <RubyText text="更新" />
             </WobblyButton>
-
-            <Link to="/kiosk" className="touch-manipulation">
-              <WobblyButton variant="primary" size="sm" className="whitespace-nowrap">
-                <ArrowLeft size={13} />
-                <RubyText text="ゲームを作る" />
-              </WobblyButton>
-            </Link>
           </div>
         </div>
       </header>
