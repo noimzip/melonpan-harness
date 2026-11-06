@@ -169,7 +169,7 @@ export function PublicGalleryPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="タイトルやキーワードで検索..."
-              className="w-full pl-9 pr-3 py-1.5 text-xs sm:text-sm rounded-full bg-[var(--card)] border-2 border-[var(--stroke)] focus:outline-none focus:border-[var(--accent)] transition-colors placeholder:text-[var(--foreground)]/50"
+              className="w-full pl-9 pr-3 py-2 sm:py-1.5 text-base sm:text-sm rounded-full bg-[var(--card)] border-2 border-[var(--stroke)] focus:outline-none focus:border-[var(--accent)] transition-colors placeholder:text-[var(--foreground)]/50"
             />
             {searchQuery && (
               <button
@@ -202,7 +202,7 @@ export function PublicGalleryPage() {
                   key={tier.id}
                   onClick={() => setSelectedTier(tier.id)}
                   className={[
-                    'px-2.5 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer touch-manipulation',
+                    'px-3 py-1.5 rounded-full text-xs font-bold border transition-all cursor-pointer touch-manipulation whitespace-nowrap',
                     selectedTier === tier.id
                       ? 'bg-[var(--accent)] text-white border-[var(--accent)] shadow-sm'
                       : 'bg-[var(--card)] border-[var(--stroke)]/50 opacity-80 hover:opacity-100',
