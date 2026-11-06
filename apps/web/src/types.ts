@@ -125,7 +125,7 @@ export interface ProviderConfig {
   model: string;
   apiKey: string;
   baseUrl: string;
-  thinkingEffort: 'minimal' | 'low' | 'medium' | 'high';
+  thinkingEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   bridgeUrl: string;
 }
 

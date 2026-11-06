@@ -270,6 +270,9 @@ export class GeminiProvider implements ILLMProvider {
       config.maxOutputTokens = request.maxOutputTokens;
     }
 
+    if (request.thinkingLevel && ['none', 'xhigh', 'max'].includes(request.thinkingLevel)) {
+      throw new Error(`Gemini does not support thinking level: ${request.thinkingLevel}`);
+    }
     const thinkingLevelUpper = (request.thinkingLevel || 'high').toUpperCase();
     const validLevels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
     if (validLevels.includes(thinkingLevelUpper)) {
@@ -697,6 +700,13 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       model: targetModel,
       messages: this.convertMessages(request),
     };
+
+    if (request.thinkingLevel && ['none', 'xhigh', 'max'].includes(request.thinkingLevel)) {
+      if (!['openai', 'openrouter', 'orcarouter', 'groq', 'surplus'].includes(this.id)) {
+        throw new Error(`Unsupported thinking level for ${this.id}: ${request.thinkingLevel}`);
+      }
+      body.reasoning_effort = request.thinkingLevel;
+    }
 
     if (request.tools && request.tools.length > 0) {
       const stableTools = this.cacheManager.stabilizeTools(request.tools);

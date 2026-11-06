@@ -12,7 +12,8 @@
     "demo": "tsx packages/core/examples/cli-subagent-test.ts --mode=auto",
     "demo:plan": "tsx packages/core/examples/cli-subagent-test.ts --mode=plan",
     "tui": "pnpm --filter @melonpan/cli run start",
-    "web": "pnpm --filter @melonpan/web dev"
+    "web": "pnpm --filter @melonpan/web dev",
+    "deploy:vercel": "node scripts/deploy-vercel.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

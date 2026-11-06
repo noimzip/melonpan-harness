@@ -126,7 +126,8 @@ export class AgentRuntime {
     session: Session,
     providerConfig: ProviderConfig,
     callbacks: RuntimeCallbacks,
-    customProvider?: ILLMProvider
+    customProvider?: ILLMProvider,
+    throwOnError = false
   ): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
@@ -498,6 +499,7 @@ export class AgentRuntime {
         assistantMsg.isStreaming = false;
         assistantMsg.content += `\n\n❌ エラーが発生しました: ${err.message || String(err)}`;
         callbacks.onMessageUpdate({ ...assistantMsg });
+        if (throwOnError) throw err;
       }
     } finally {
       assistantMsg.isStreaming = false;

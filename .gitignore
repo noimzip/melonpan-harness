@@ -13,3 +13,5 @@ plan.md
 .melonpan/
 .tmp-test-sessions/
 output/
+.vercel
+.env*

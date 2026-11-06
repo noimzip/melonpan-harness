@@ -9,6 +9,7 @@ export interface DiscoveredModel {
   isFree?: boolean;
   contextLength?: number;
   raw?: any;
+  supportedEfforts?: string[];
 }
 
 export interface ProviderApiKeys {
@@ -34,6 +35,7 @@ export interface ModelDiscoveryOptions {
     surplus?: string;
   };
   surplusMinDiscount?: number;
+  throwOnError?: boolean;
 }
 
 /**
@@ -44,7 +46,7 @@ export interface ModelDiscoveryOptions {
  */
 export async function fetchOpenRouterModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -67,10 +69,12 @@ export async function fetchOpenRouterModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
     return list.map((item) => {
@@ -99,7 +103,8 @@ export async function fetchOpenRouterModels(
         raw: item,
       };
     });
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -114,7 +119,7 @@ export async function fetchOpenRouterModels(
  */
 export async function fetchOrcaRouterModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -135,10 +140,12 @@ export async function fetchOrcaRouterModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
     return list.map((item) => {
@@ -164,7 +171,8 @@ export async function fetchOrcaRouterModels(
         raw: item,
       };
     });
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -176,7 +184,7 @@ export async function fetchOrcaRouterModels(
  */
 export async function fetchGroqModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -197,10 +205,12 @@ export async function fetchGroqModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
     return list
@@ -217,7 +227,8 @@ export async function fetchGroqModels(
           raw: item,
         };
       });
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -229,7 +240,7 @@ export async function fetchGroqModels(
  */
 export async function fetchSurplusModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; minDiscount?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; minDiscount?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -259,10 +270,12 @@ export async function fetchSurplusModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data) && !Array.isArray(data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
     return list.map((item) => {
@@ -282,7 +295,8 @@ export async function fetchSurplusModels(
         raw: item,
       };
     });
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -294,7 +308,7 @@ export async function fetchSurplusModels(
  */
 export async function fetchOpenAIModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -315,10 +329,12 @@ export async function fetchOpenAIModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
     // チャット推論対応モデル (gpt-*, o1-*, o3-*, o4-*, chatgpt-*) を優先しつつ、返却された全モデルを保持 (そのまま表示)
@@ -341,11 +357,21 @@ export async function fetchOpenAIModels(
       isFree: false,
       raw: item,
     }));
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Return only explicitly reported Anthropic effort capabilities. */
+export function getAnthropicEfforts(model: any): string[] | undefined {
+  const effort = model?.capabilities?.effort;
+  if (!effort || typeof effort !== 'object') return undefined;
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max'];
+  if (!levels.every(level => typeof effort[level]?.supported === 'boolean')) return undefined;
+  return levels.filter(level => effort[level].supported);
 }
 
 /**
@@ -353,7 +379,7 @@ export async function fetchOpenAIModels(
  */
 export async function fetchAnthropicModels(
   apiKey: string,
-  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { baseUrl?: string; fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -375,21 +401,25 @@ export async function fetchAnthropicModels(
     });
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.data)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.data) ? data.data : [];
 
     return list.map((item) => ({
       id: item.id,
       name: item.display_name || item.id,
       provider: 'anthropic',
+      supportedEfforts: getAnthropicEfforts(item),
       description: 'Anthropic Claude reasoning model',
       isFree: false,
       raw: item,
     }));
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -401,7 +431,7 @@ export async function fetchAnthropicModels(
  */
 export async function fetchGeminiModels(
   apiKey: string,
-  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  options: { fetchImpl?: typeof fetch; timeoutMs?: number; throwOnError?: boolean } = {}
 ): Promise<DiscoveredModel[]> {
   if (!apiKey) return [];
   const fetchFn = options.fetchImpl || fetch;
@@ -421,10 +451,12 @@ export async function fetchGeminiModels(
     );
 
     if (!res.ok) {
+      if (options.throwOnError) throw new Error(`Model discovery failed (HTTP ${res.status})`);
       return [];
     }
 
     const data: any = await res.json();
+    if (options.throwOnError && !Array.isArray(data?.models)) throw new Error('Invalid model response');
     const list: any[] = Array.isArray(data?.models) ? data.models : [];
 
     return list
@@ -449,7 +481,8 @@ export async function fetchGeminiModels(
           raw: item,
         };
       });
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   } finally {
     clearTimeout(timer);
@@ -486,6 +519,7 @@ export async function fetchDiscoveredModels(
         baseUrl: options.baseUrls?.openrouter,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -496,6 +530,7 @@ export async function fetchDiscoveredModels(
         baseUrl: options.baseUrls?.orcarouter,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -506,6 +541,7 @@ export async function fetchDiscoveredModels(
         baseUrl: options.baseUrls?.groq,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -517,6 +553,7 @@ export async function fetchDiscoveredModels(
         minDiscount: options.surplusMinDiscount,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -526,6 +563,7 @@ export async function fetchDiscoveredModels(
       fetchGeminiModels(apiKeys.gemini, {
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -536,6 +574,7 @@ export async function fetchDiscoveredModels(
         baseUrl: options.baseUrls?.openai,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
@@ -546,10 +585,15 @@ export async function fetchDiscoveredModels(
         baseUrl: options.baseUrls?.anthropic,
         fetchImpl: options.fetchImpl,
         timeoutMs: options.timeoutMs,
+        throwOnError: options.throwOnError,
       }).then(sortModelsWithFreeOnTop)
     );
   }
 
+  if (options.throwOnError) {
+    const results = await Promise.all(fetchPromises);
+    return results.flat();
+  }
   const results = await Promise.allSettled(fetchPromises);
   const allModels: DiscoveredModel[] = [];
 

@@ -46,6 +46,15 @@ import { PermissionModal } from './components/PermissionModal';
 import { SettingsModal } from './components/SettingsModal';
 import { KioskOverlay } from './components/KioskOverlay';
 
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import {
+  AgeProvider,
+  PasskeyAuthGate,
+  KioskWizardPage,
+  GenerationStatusPage,
+  PublicGalleryPage,
+  AdminPanelPage,
+} from './modules/kosen';
 import { webCommandRegistry, WebCommandContext } from './services/command-registry';
 import {
   getStoredApiKeys,
@@ -57,7 +66,7 @@ import {
 
 type RightTab = 'sandbox' | 'vfs' | 'plan' | 'subagents' | 'skills' | 'context' | 'gallery' | 'logs';
 
-export function App() {
+export function WebIdeWorkspace() {
   const [sessions, setSessions] = useState<Session[]>(() => loadSessions());
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(() => {
     const saved = getActiveSessionId();
@@ -671,3 +680,55 @@ export function App() {
     </div>
   );
 }
+
+export function App() {
+  return (
+    <AgeProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* Protected Routes: Passkey (WebAuthn) Required */}
+          <Route
+            path="/"
+            element={
+              <PasskeyAuthGate pageTitle="体験ブース（キオスク）" hideSessionIndicator>
+                <KioskWizardPage />
+              </PasskeyAuthGate>
+            }
+          />
+          <Route
+            path="/kiosk"
+            element={
+              <PasskeyAuthGate pageTitle="体験ブース（キオスク）" hideSessionIndicator>
+                <KioskWizardPage />
+              </PasskeyAuthGate>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <PasskeyAuthGate pageTitle="高専祭 管理者用パネル">
+                <AdminPanelPage />
+              </PasskeyAuthGate>
+            }
+          />
+          <Route
+            path="/ide"
+            element={
+              <PasskeyAuthGate pageTitle="Melonpan Web IDE">
+                <WebIdeWorkspace />
+              </PasskeyAuthGate>
+            }
+          />
+
+          {/* Public Routes: Visitors on smartphones / No Auth Required */}
+          <Route path="/status/:sessionId" element={<GenerationStatusPage />} />
+          <Route path="/gallery" element={<PublicGalleryPage />} />
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AgeProvider>
+  );
+}
+
