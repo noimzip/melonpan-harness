@@ -42,28 +42,29 @@ export async function transcribeWithGeminiLLM(
   const base64Data = await blobToBase64(audioBlob);
   const mimeType = audioBlob.type || 'audio/webm';
 
-  // 1. Try Supabase Edge Function AI Proxy first (No client-side API Key required)
-  try {
-    const proxyRes = await invokeKosenAiProxy<{ text: string }>('transcribe', {
-      model: modelName,
-      audioBase64: base64Data,
-      mimeType,
-    });
-    if (proxyRes?.text && proxyRes.text.trim()) {
-      return proxyRes.text.trim();
-    }
-  } catch (proxyErr) {
-    console.warn('Supabase Edge Function transcribe failed, checking local API key fallback:', proxyErr);
-  }
-
-  // 2. Direct client fallback if client has a local API key configured
   const keys = getStoredApiKeys();
   const apiKey = keys.gemini || keys.openrouter || '';
+
+  // 1. If no local API key is stored, try Supabase Edge Function AI Proxy
   if (!apiKey) {
+    try {
+      const proxyRes = await invokeKosenAiProxy<{ text: string }>('transcribe', {
+        model: modelName,
+        audioBase64: base64Data,
+        mimeType,
+      });
+      if (proxyRes?.text && proxyRes.text.trim()) {
+        return proxyRes.text.trim();
+      }
+    } catch (proxyErr) {
+      console.warn('Supabase Edge Function transcribe failed:', proxyErr);
+    }
     throw new Error(
-      '音声認識を実行できませんでした（Supabase Edge Function または API Key を確認してください）'
+      '音声認識を実行できませんでした（ローカルの API キーまたは Supabase Edge Function を確認してください）'
     );
   }
+
+  // 2. Direct client call using locally stored API key
 
   // 2a. Try Gemini Interactions API
   try {

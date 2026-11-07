@@ -126,7 +126,7 @@ export async function startKosenGeneration(params: {
     const fullPrompt = fullPromptParts.join('\n\n');
     const storedKeys = getStoredApiKeys();
     const apiKey = storedKeys[params.tierConfig.provider] || '';
-    const useServer = ['gemini', 'openrouter', 'surplus'].includes(params.tierConfig.provider);
+    const useServer = !apiKey && ['gemini', 'openrouter', 'surplus'].includes(params.tierConfig.provider);
     const serverProvider = useServer ? createServerGenerationProvider(params.tierConfig.provider as ServerKeyProvider, sessionId) : undefined;
     let generationError = ''; 
 

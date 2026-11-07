@@ -145,10 +145,11 @@ export function AdminPanelPage() {
     let cancelled = false;
     const providers = [...new Set(Object.values(modelTiers).map(t => t.provider))];
     for (const provider of providers) {
-      const usesServer = SERVER_KEY_PROVIDERS.includes(provider as ServerKeyProvider);
+      const localKey = apiKeys[provider];
+      const usesServer = !localKey && SERVER_KEY_PROVIDERS.includes(provider as ServerKeyProvider);
       const serverStatus = serverKeyStatus[provider];
       if (usesServer && !serverStatus) continue;
-      const key = usesServer ? (serverStatus?.configured ? 'server' : '') : apiKeys[provider];
+      const key = localKey || (usesServer && serverStatus?.configured ? 'server' : '');
       if (!key) {
         setCatalog(prev => ({ ...prev, [provider]: { status: serverStatus?.unavailable ? 'サーバーのキー状態を取得できません' : 'APIキーが未設定です', models: [] } }));
         continue;
@@ -719,15 +720,61 @@ export function AdminPanelPage() {
         {/* ─── TAB 2: SERVER API KEYS & PASSKEYS ─── */}
         {activeTab === 'keys' && (
           <div className="space-y-6">
-            {/* 1. Supabase Server-Side API Key Management */}
+            {/* 1. Local API Key Management (Primary) */}
+            <WobblyCard className="p-6 space-y-4">
+              <div className="border-b border-[var(--stroke)]/20 pb-3">
+                <h2 className="text-lg font-extrabold flex items-center gap-2">
+                  <Key className="text-[var(--accent)]" size={20} />
+                  <span>ローカル API キー管理（優先使用）</span>
+                </h2>
+                <p className="text-xs opacity-75 mt-1">
+                  このブラウザ（ローカル）に保存されている API キーです。ローカルに API キーが保存されている場合は、クラウド（サーバー側）のキーよりも優先して直接利用されます。
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {PROVIDERS.map((prov) => (
+                  <div
+                    key={prov}
+                    className="p-3 rounded-xl border border-[var(--stroke)] bg-[var(--background)] space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold uppercase">{prov}</span>
+                      <span className="font-mono opacity-60">
+                        {maskApiKey(apiKeys[prov])}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        value={keyInputs[prov] || ''}
+                        onChange={(e) =>
+                          setKeyInputs((prev) => ({ ...prev, [prov]: e.target.value }))
+                        }
+                        placeholder={`${prov} Key...`}
+                        className="flex-1 px-2.5 py-1 rounded-lg border border-[var(--stroke)] bg-[var(--card)] text-xs font-mono"
+                      />
+                      <WobblyButton
+                        variant="primary"
+                        size="sm"
+                        onClick={() => handleSaveProviderKey(prov)}
+                      >
+                        ローカル保存
+                      </WobblyButton>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </WobblyCard>
+
+            {/* 2. Supabase Server-Side API Key Management */}
             <WobblyCard className="p-6 space-y-4">
               <div className="border-b border-[var(--stroke)]/20 pb-3">
                 <h2 className="text-lg font-extrabold flex items-center gap-2">
                   <Shield className="text-[var(--warm-success)]" size={20} />
-                  サーバー側 API キー管理
+                  サーバー側 API キー管理（クラウドフォールバック）
                 </h2>
                 <p className="text-xs opacity-75 mt-1">
-                  キーはサーバーに保存され、この画面には末尾のみ表示されます。Gemini・OpenRouter・Surplus のキーはゲーム生成で使用されます。環境変数のキーが設定されている場合はそちらが優先されます。キー管理には Supabase Auth のスタッフセッションが必要です。
+                  ローカルに API キーが設定されていない場合に使用されるサーバー保存キーです。この画面には末尾のみ表示されます。キー管理には Supabase Auth のスタッフセッションが必要です。
                 </p>
               </div>
               {SERVER_KEY_PROVIDERS.map((provider) => {
@@ -756,7 +803,7 @@ export function AdminPanelPage() {
               })}
             </WobblyCard>
 
-            {/* 2. Staff Passkeys (WebAuthn / FIDO2) & Enrollment Secret */}
+            {/* 3. Staff Passkeys (WebAuthn / FIDO2) & Enrollment Secret */}
             <WobblyCard className="p-6 space-y-4">
               <div className="flex items-center justify-between border-b border-[var(--stroke)]/20 pb-3">
                 <div>
@@ -834,50 +881,6 @@ export function AdminPanelPage() {
                     {isRegisteringPasskey ? '端末認証中...' : 'この端末をパスキー登録'}
                   </WobblyButton>
                 </form>
-              </div>
-            </WobblyCard>
-
-            {/* 3. Client-Side Fallback Keys (Optional) */}
-            <WobblyCard className="p-6 space-y-4 opacity-80">
-              <h2 className="text-sm font-bold flex items-center gap-2">
-                <span>⚠️</span>
-                <span>オフライン / ローカル開発用クライアントキー（任意）</span>
-              </h2>
-              <p className="text-xs opacity-75">
-                Supabase に接続できないオフライン環境やローカル専用テスト時にのみ使用されるブラウザ一時キーです。通常運用時は上のサーバーサイドキーが優先されます。
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {PROVIDERS.map((prov) => (
-                  <div
-                    key={prov}
-                    className="p-3 rounded-xl border border-[var(--stroke)]/50 bg-[var(--background)] space-y-1.5"
-                  >
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold uppercase">{prov}</span>
-                      <span className="font-mono opacity-60">
-                        {maskApiKey(apiKeys[prov])}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={keyInputs[prov] || ''}
-                        onChange={(e) =>
-                          setKeyInputs((prev) => ({ ...prev, [prov]: e.target.value }))
-                        }
-                        placeholder={`${prov} Key...`}
-                        className="flex-1 px-2.5 py-1 rounded-lg border border-[var(--stroke)] bg-[var(--card)] text-xs font-mono"
-                      />
-                      <WobblyButton
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleSaveProviderKey(prov)}
-                      >
-                        ローカル保存
-                      </WobblyButton>
-                    </div>
-                  </div>
-                ))}
               </div>
             </WobblyCard>
           </div>

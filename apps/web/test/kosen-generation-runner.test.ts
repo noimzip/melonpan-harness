@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const f = vi.hoisted(() => ({ execute: vi.fn(), createProvider: vi.fn((id: string) => ({ id })), update: vi.fn(), event: vi.fn(), publish: vi.fn() }));
+const f = vi.hoisted(() => ({ execute: vi.fn(), createProvider: vi.fn((id: string) => ({ id })), update: vi.fn(), event: vi.fn(), publish: vi.fn(), getStoredApiKeys: vi.fn(() => ({})) }));
 vi.mock('../src/services/agent-runtime', () => ({ AgentRuntime: class { setPermissionPolicy() {} cancelCurrentTask() {} executeTurn(...args: unknown[]) { return f.execute(...args); } } }));
-vi.mock('../src/services/provider-factory', () => ({ getStoredApiKeys: () => ({}) }));
+vi.mock('../src/services/provider-factory', () => ({ getStoredApiKeys: f.getStoredApiKeys }));
 vi.mock('../src/modules/kosen/server-provider', () => ({ createServerGenerationProvider: f.createProvider }));
 vi.mock('../src/modules/kosen/supabase', () => ({
   fetchExhibitionSettings: async () => ({ statusExpireMinutes: 5 }),
@@ -10,6 +10,7 @@ vi.mock('../src/modules/kosen/supabase', () => ({
   appendKosenEvent: f.event,
   updateKosenSession: f.update,
   publishKosenGame: f.publish,
+  invokeKosenAiProxy: vi.fn(),
 }));
 vi.mock('../src/modules/kosen/toppings-service', () => ({
   generateGameSummaryAndTitle: async () => ({ title: 'Game', description: 'Description' }),
@@ -41,5 +42,19 @@ describe('kiosk server-backed generation', () => {
     await startKosenGeneration(params('surplus'));
     await vi.waitFor(() => expect(f.update).toHaveBeenCalledWith('session-test', expect.objectContaining({ status: 'failed', error_message: 'provider unavailable' })));
     expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it.each(['openrouter', 'surplus', 'gemini'] as const)('prioritizes locally stored API key over cloud server provider for %s', async provider => {
+    f.getStoredApiKeys.mockReturnValueOnce({ [provider]: 'local-key-123' });
+    f.execute.mockImplementation(async (_prompt, _session, config, callbacks, customProvider) => {
+      expect(config.provider).toBe(provider);
+      expect(config.apiKey).toBe('local-key-123');
+      expect(customProvider).toBeUndefined();
+      callbacks.onFileChange('index.html', '<html>local generated</html>');
+    });
+    await startKosenGeneration(params(provider));
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalled());
+    expect(f.createProvider).not.toHaveBeenCalled();
+    expect(f.publish).toHaveBeenCalledWith(expect.objectContaining({ htmlContent: '<html>local generated</html>' }));
   });
 });

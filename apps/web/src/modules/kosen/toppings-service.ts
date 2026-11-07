@@ -127,8 +127,8 @@ export async function generateToppingsForPrompt(
     }
   }
 
-  // The legacy toppings proxy accepts Gemini requests only.
-  if (targetProvider === 'gemini') try {
+  // The legacy toppings proxy accepts Gemini requests only (skip if local key is saved).
+  if (targetProvider === 'gemini' && !keys.gemini) try {
     const proxyRes = await invokeKosenAiProxy<{ toppings: KosenTopping[] }>('toppings', {
       model: targetModel,
       prompt: trimmed,
@@ -144,7 +144,7 @@ export async function generateToppingsForPrompt(
   // Check if we have an API key for the target provider, or find any available provider
   let provId: ProviderType = targetProvider;
   let provKey = keys[provId];
-  const useServerProvider = targetProvider === 'openrouter' || targetProvider === 'surplus';
+  const useServerProvider = !provKey && (targetProvider === 'openrouter' || targetProvider === 'surplus');
   if (!provKey && !useServerProvider) {
     const fallback = (
       [
@@ -396,8 +396,8 @@ export async function expandPromptWithAI(
     }
   }
 
-  // 1. Try Supabase Edge Function AI Proxy (Server-side API Key) first
-  if (trimmed && targetProvider === 'gemini') {
+  // 1. Try Supabase Edge Function AI Proxy (Server-side API Key) if no local Gemini key
+  if (trimmed && targetProvider === 'gemini' && !keys.gemini) {
     try {
       const proxyRes = await invokeKosenAiProxy<{ options: PromptExpansionOption[] }>('expand', {
         model: targetModel,
@@ -414,7 +414,7 @@ export async function expandPromptWithAI(
   // Find usable API key
   let provId: ProviderType = targetProvider;
   let provKey = keys[provId];
-  const useServerProvider = targetProvider === 'openrouter' || targetProvider === 'surplus';
+  const useServerProvider = !provKey && (targetProvider === 'openrouter' || targetProvider === 'surplus');
   if (!provKey && !useServerProvider) {
     const fallback = (
       [
@@ -546,23 +546,6 @@ export async function generateGameSummaryAndTitle(params: {
     params.prompt.length > 70 ? '...' : ''
   }」をテーマにAIが自動生成したオリジナルHTML5ゲームです。${toppingSummary}`;
 
-  // 1. Try Supabase Edge Function AI Proxy (Server-side API Key) first
-  try {
-    const proxyRes = await invokeKosenAiProxy<{ title: string; description: string }>('summary', {
-      prompt: params.prompt,
-      toppings: params.toppings,
-      userTitle: cleanTitle,
-    });
-    if (proxyRes?.title && proxyRes?.description) {
-      return {
-        title: cleanTitle || proxyRes.title,
-        description: proxyRes.description,
-      };
-    }
-  } catch (err) {
-    console.warn('Supabase Edge Function summary proxy failed, attempting local fallback:', err);
-  }
-
   const keys = getStoredApiKeys();
   const activeProviderEntry = (
     [
@@ -571,8 +554,28 @@ export async function generateGameSummaryAndTitle(params: {
       ['anthropic', 'claude-3-5-haiku'],
       ['groq', 'llama-3.3-70b-versatile'],
       ['openrouter', 'meta-llama/llama-3.2-3b-instruct:free'],
+      ['surplus', 'surplus/deepseek/deepseek-chat'],
     ] as const
   ).find(([prov]) => Boolean(keys[prov]));
+
+  if (!activeProviderEntry) {
+    // Try Supabase Edge Function AI Proxy (Server-side API Key) when no local key is stored
+    try {
+      const proxyRes = await invokeKosenAiProxy<{ title: string; description: string }>('summary', {
+        prompt: params.prompt,
+        toppings: params.toppings,
+        userTitle: cleanTitle,
+      });
+      if (proxyRes?.title && proxyRes?.description) {
+        return {
+          title: cleanTitle || proxyRes.title,
+          description: proxyRes.description,
+        };
+      }
+    } catch (err) {
+      console.warn('Supabase Edge Function summary proxy failed, attempting local fallback:', err);
+    }
+  }
 
   if (activeProviderEntry) {
     const [provId, defaultModel] = activeProviderEntry;
