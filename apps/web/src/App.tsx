@@ -47,6 +47,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { KioskOverlay } from './components/KioskOverlay';
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { Analytics } from '@vercel/analytics/react';
 import {
   AgeProvider,
   PasskeyAuthGate,
@@ -728,6 +729,7 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
+      <Analytics />
     </AgeProvider>
   );
 }
