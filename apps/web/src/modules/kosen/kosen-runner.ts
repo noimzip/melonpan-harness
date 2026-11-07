@@ -125,9 +125,15 @@ export async function startKosenGeneration(params: {
 
     const fullPrompt = fullPromptParts.join('\n\n');
     const storedKeys = getStoredApiKeys();
-    const apiKey = storedKeys[params.tierConfig.provider] || '';
+    const apiKey = storedKeys[params.tierConfig.provider] || (params.tierConfig.provider === 'gemini' ? storedKeys.gemini : '') || '';
+    
+    // クライアント直接実行（Direct Client Inference）を最優先。
+    // Edge Function経由（useServer）は150秒の壁（546エラー）があるため、ローカルキーがない場合のみの限定フォールバックとする
     const useServer = !apiKey && ['gemini', 'openrouter', 'surplus'].includes(params.tierConfig.provider);
-    const serverProvider = useServer ? createServerGenerationProvider(params.tierConfig.provider as ServerKeyProvider, sessionId) : undefined;
+    const serverProvider = useServer
+      ? createServerGenerationProvider(params.tierConfig.provider as ServerKeyProvider, sessionId)
+      : undefined;
+    const shouldRunLLM = Boolean(apiKey || serverProvider);
     let generationError = ''; 
 
     let latestCode = '';
@@ -139,8 +145,8 @@ export async function startKosenGeneration(params: {
     });
 
     try {
-      if (serverProvider || apiKey) {
-        // Real LLM execution via MelonpanCore
+      if (shouldRunLLM) {
+        // Real LLM execution via MelonpanCore (Direct Client Inference prioritized when apiKey is set)
         const webSession = createInitialSession(
           params.gameTitle || '高専祭ゲーム',
           params.tierConfig.model
@@ -217,8 +223,15 @@ export async function startKosenGeneration(params: {
         throw new Error('ゲーム生成が完了しましたが、HTML ファイルが作成されませんでした。');
       }
 
-      // If no API key was configured or LLM didn't produce HTML, run interactive progressive simulation so the kiosk & QR status page work seamlessly
-      if (!latestCode || !latestCode.includes('<html')) {
+      // もし API キー未設定、または LLM 実行でエラー（サーバー546タイムアウト等）が発生して HTML が生成されなかった場合は、
+      // 画面を赤く落とさず、インタラクティブ・シミュレーションでゲームを完成させて来場者に届ける
+      if (!latestCode || !latestCode.toLowerCase().includes('<html')) {
+        if (generationError) {
+          await appendKosenEvent(sessionId, 'thought', {
+            thought: `⚠️ クラウド通信が混雑しているため (${generationError})、高品質エンジンでゲームを仕上げます！`,
+          }).catch(() => {});
+        }
+
         const { title: autoTitle } = await generateGameSummaryAndTitle({
           prompt: params.prompt,
           toppings: params.toppings,

@@ -237,8 +237,36 @@ const API_KEYS_STORAGE_KEY = 'melonpan_web_api_keys_v1';
 export function getStoredApiKeys(): Record<string, string> {
   try {
     const raw = localStorage.getItem(API_KEYS_STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
+    const parsed: Record<string, string> = raw ? JSON.parse(raw) : {};
+
+    // 複数のキー保存形式に対応（個別キー名、大文字・小文字、スネークケース等）
+    const providers = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq', 'surplus'];
+    for (const p of providers) {
+      if (!parsed[p]) {
+        const direct =
+          localStorage.getItem(p) ||
+          localStorage.getItem(`${p}_api_key`) ||
+          localStorage.getItem(`${p.toUpperCase()}_API_KEY`) ||
+          localStorage.getItem(`${p}_key`);
+        if (direct && direct.trim()) {
+          parsed[p] = direct.trim();
+        }
+      }
+    }
+
+    // 汎用キー名（api_key, apiKey, GEMINI_KEY）のフォールバック
+    if (!parsed.gemini) {
+      const generic =
+        localStorage.getItem('gemini_key') ||
+        localStorage.getItem('GEMINI_KEY') ||
+        localStorage.getItem('api_key') ||
+        localStorage.getItem('apiKey');
+      if (generic && generic.trim()) {
+        parsed.gemini = generic.trim();
+      }
+    }
+
+    return parsed;
   } catch {
     return {};
   }
@@ -247,10 +275,20 @@ export function getStoredApiKeys(): Record<string, string> {
 export function saveStoredApiKey(provider: string, key: string): void {
   try {
     const existing = getStoredApiKeys();
+    const pLower = provider.toLowerCase();
     if (key.trim()) {
-      existing[provider.toLowerCase()] = key.trim();
+      existing[pLower] = key.trim();
+      // 個別キー名としても冗長保存して取り出しをより確実に
+      localStorage.setItem(`${pLower}_api_key`, key.trim());
+      if (pLower === 'gemini') {
+        localStorage.setItem('GEMINI_API_KEY', key.trim());
+      }
     } else {
-      delete existing[provider.toLowerCase()];
+      delete existing[pLower];
+      localStorage.removeItem(`${pLower}_api_key`);
+      if (pLower === 'gemini') {
+        localStorage.removeItem('GEMINI_API_KEY');
+      }
     }
     localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(existing));
   } catch (e) {
@@ -261,6 +299,17 @@ export function saveStoredApiKey(provider: string, key: string): void {
 export function clearAllStoredApiKeys(): void {
   try {
     localStorage.removeItem(API_KEYS_STORAGE_KEY);
+    const providers = ['gemini', 'openai', 'anthropic', 'openrouter', 'orcarouter', 'groq', 'surplus'];
+    for (const p of providers) {
+      localStorage.removeItem(p);
+      localStorage.removeItem(`${p}_api_key`);
+      localStorage.removeItem(`${p.toUpperCase()}_API_KEY`);
+      localStorage.removeItem(`${p}_key`);
+    }
+    localStorage.removeItem('gemini_key');
+    localStorage.removeItem('GEMINI_KEY');
+    localStorage.removeItem('api_key');
+    localStorage.removeItem('apiKey');
   } catch {}
 }
 
