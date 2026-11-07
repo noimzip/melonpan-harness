@@ -7,6 +7,7 @@ export async function requestServerGeneration(
   request: unknown,
   signal?: AbortSignal,
   action: 'generate_provider' | 'list_provider_models' = 'generate_provider',
+  sessionId?: string,
 ): Promise<Response> {
   const { url, anonKey } = getSupabaseCredentials();
   const { data: { session } } = await getSupabaseClient().auth.getSession();
@@ -15,12 +16,12 @@ export async function requestServerGeneration(
   return fetch(`${url}/functions/v1/kosen-ai-proxy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${session?.access_token || anonKey}`, ...(staffToken ? { 'x-kosen-staff-token': staffToken } : {}) },
-    body: JSON.stringify({ action, payload: { provider, request } }),
+    body: JSON.stringify({ action, payload: { provider, request, sessionId } }),
     signal,
   });
 }
 
-export function createServerGenerationProvider(provider: ServerKeyProvider): ILLMProvider {
+export function createServerGenerationProvider(provider: ServerKeyProvider, sessionId?: string): ILLMProvider {
   if (provider === 'gemini') {
     return {
       id: 'gemini',
@@ -28,7 +29,7 @@ export function createServerGenerationProvider(provider: ServerKeyProvider): ILL
         const gemini = new GeminiProvider({
           enableContextCache: false,
           aiClient: { models: { generateContent: async (body: unknown) => {
-            const response = await requestServerGeneration(provider, body, signal);
+            const response = await requestServerGeneration(provider, body, signal, 'generate_provider', sessionId);
             if (!response.ok) throw new Error(`サーバー側の生成に失敗しました (${response.status})。`);
             return response.json();
           } } },
@@ -41,6 +42,6 @@ export function createServerGenerationProvider(provider: ServerKeyProvider): ILL
     id: provider,
     apiKey: '',
     enablePromptCaching: false,
-    fetchImpl: async (_url, init) => requestServerGeneration(provider, JSON.parse(String(init?.body)), init?.signal ?? undefined),
+    fetchImpl: async (_url, init) => requestServerGeneration(provider, JSON.parse(String(init?.body)), init?.signal ?? undefined, 'generate_provider', sessionId),
   });
 }

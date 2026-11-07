@@ -1,3 +1,4 @@
+import { safeLog } from "./generation-logs.ts";
 export type ServerKeyProvider = "gemini" | "openrouter" | "surplus";
 const PROVIDERS: ServerKeyProvider[] = ["gemini", "openrouter", "surplus"];
 const corsHeaders = {
@@ -10,6 +11,7 @@ export async function handleGenerationProxy(req: Request, payload: any, deps: {
   isStaffRequest: (req: Request) => Promise<boolean>;
   resolveServerApiKey: (provider: ServerKeyProvider) => Promise<string>;
   fetch: typeof fetch;
+  recordLog?: (entry: any) => Promise<void>;
 }): Promise<Response> {
   if (!await deps.isStaffRequest(req)) {
     return new Response(JSON.stringify({ error: "Staff authentication required" }), {
@@ -64,9 +66,24 @@ export async function handleGenerationProxy(req: Request, payload: any, deps: {
     headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
     body = request;
   }
-  const upstream = await deps.fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
+  let upstream: Response;
+  try {
+    upstream = await deps.fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
+  } catch (error) {
+    try { await deps.recordLog?.(safeLog({ session_id: payload.sessionId, provider, model: request.model,
+      event: "provider_error", details: { code: req.signal.aborted ? "request_cancelled" : "network_error" } })); }
+    catch { console.error("Generation log persistence failed"); }
+    throw error;
+  }
   if (!upstream.ok) {
-    console.error(`Provider ${provider} returned HTTP ${upstream.status}`);
+    let error: any = {};
+    try { error = await upstream.json(); } catch { /* Non-JSON responses are intentionally not persisted. */ }
+    try {
+      await deps.recordLog?.(safeLog({ session_id: payload.sessionId, provider, model: request.model,
+        event: "provider_error", details: { http_status: upstream.status, code: error.error?.code,
+          message: error.error?.message, request_id: error.request_id || upstream.headers.get("x-request-id"),
+          reasoning_effort: request.reasoning_effort } }, key));
+    } catch { console.error("Generation log persistence failed"); }
     return new Response(JSON.stringify({ error: `Provider request failed (${upstream.status})` }), {
       status: upstream.status, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

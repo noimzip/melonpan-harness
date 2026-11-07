@@ -1,3 +1,5 @@
+import { RetryGeneration } from '../RetryGeneration.js';
+import { GenerationLogs } from '../GenerationLogs.js';
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
@@ -67,7 +69,7 @@ const SERVER_KEY_PROVIDERS = ['gemini', 'openrouter', 'surplus'] as const;
 type ServerKeyProvider = (typeof SERVER_KEY_PROVIDERS)[number];
 const SERVER_KEY_LABELS: Record<ServerKeyProvider, string> = { gemini: 'Gemini', openrouter: 'OpenRouter', surplus: 'Surplus' };
 
-type AdminTab = 'models' | 'sessions' | 'games' | 'keys';
+type AdminTab = 'models' | 'sessions' | 'games' | 'keys' | 'logs';
 
 const PROVIDERS: ProviderType[] = [
   'gemini',
@@ -105,6 +107,7 @@ export function AdminPanelPage() {
   const [refreshModels, setRefreshModels] = useState(0);
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [saveNotice, setSaveNotice] = useState('');
+  const [retrySession, setRetrySession] = useState<KosenSessionRecord | null>(null);
   const [qrModalSessionId, setQrModalSessionId] = useState<string | null>(null);
 
   const loadAllAdminData = async () => {
@@ -374,6 +377,7 @@ export function AdminPanelPage() {
       <div className="bg-[var(--card)]/60 border-b border-[var(--stroke)]/30 px-4 sm:px-8 py-2.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           {[
+            { id: 'logs', label: '生成ログ', icon: <Activity size={15} /> },
             { id: 'models', label: 'モデル割り当て管理 (高速/思考/超思考)', icon: <Sliders size={15} /> },
             { id: 'keys', label: 'サーバーAPIキー & パスキー管理', icon: <Key size={15} /> },
             { id: 'sessions', label: `動作セッション & QR管理 (${sessions.length})`, icon: <Activity size={15} /> },
@@ -406,6 +410,7 @@ export function AdminPanelPage() {
       {/* Main Content */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-6">
         {/* ─── TAB 1: MODEL TIER CONFIGURATION ─── */}
+        {activeTab === 'logs' && <GenerationLogs />}
         {activeTab === 'models' && (
           <div className="space-y-6">
             <WobblyCard className="p-6 space-y-6">
@@ -890,6 +895,13 @@ export function AdminPanelPage() {
               </div>
             </div>
 
+            {retrySession && <RetryGeneration key={retrySession.id} session={retrySession} catalog={catalog}
+              onClose={() => setRetrySession(null)}
+              onStarted={created => {
+                setSessions(previous => [created, ...previous]);
+                setRetrySession(null);
+                setQrModalSessionId(created.id);
+              }} />}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
@@ -948,6 +960,11 @@ export function AdminPanelPage() {
                         >
                           実況 <ExternalLink size={11} />
                         </Link>
+                        {(s.status === 'failed' || s.status === 'cancelled') && (
+                          <button onClick={() => setRetrySession(s)} className="px-2.5 py-1 rounded-lg border border-[var(--stroke)] font-bold cursor-pointer">
+                            設定を変更して再生成
+                          </button>
+                        )}
                         {s.status === 'running' && (
                           <button
                             onClick={() => handleStopSession(s.id)}

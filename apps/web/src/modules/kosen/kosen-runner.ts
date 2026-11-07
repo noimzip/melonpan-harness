@@ -1,3 +1,4 @@
+import { invokeKosenAiProxy } from './supabase.js';
 import { AgentRuntime } from '../../services/agent-runtime';
 import { createInitialSession } from '../../services/session-storage';
 import { getStoredApiKeys } from '../../services/provider-factory';
@@ -25,6 +26,7 @@ interface ActiveGenerationJob {
   sessionId: string;
   runtime: AgentRuntime;
   aborted: boolean;
+  log: (event: string, tool?: string) => void;
 }
 
 const activeJobs = new Map<string, ActiveGenerationJob>();
@@ -33,6 +35,7 @@ export function stopKosenGenerationJob(sessionId: string): void {
   const job = activeJobs.get(sessionId);
   if (job) {
     job.aborted = true;
+    job.log('cancelled');
     job.runtime.cancelCurrentTask();
     activeJobs.delete(sessionId);
   }
@@ -74,6 +77,15 @@ export async function startKosenGeneration(params: {
   });
 
   const sessionId = sessionRecord.id;
+  const log = (event: string, tool?: string) => {
+    void (async () => {
+      try { await invokeKosenAiProxy('append_generation_log', {
+        session_id: sessionId, provider: params.tierConfig.provider, model: params.tierConfig.model,
+        event, details: { tool },
+      }); } catch { console.error('Generation log persistence failed'); }
+    })();
+  };
+  log('started');
 
   // 2. Run generation asynchronously so kiosk immediately transitions to QR code page
   (async () => {
@@ -89,6 +101,7 @@ export async function startKosenGeneration(params: {
       sessionId,
       runtime,
       aborted: false,
+      log,
     };
     activeJobs.set(sessionId, job);
 
@@ -114,7 +127,7 @@ export async function startKosenGeneration(params: {
     const storedKeys = getStoredApiKeys();
     const apiKey = storedKeys[params.tierConfig.provider] || '';
     const useServer = ['gemini', 'openrouter', 'surplus'].includes(params.tierConfig.provider);
-    const serverProvider = useServer ? createServerGenerationProvider(params.tierConfig.provider as ServerKeyProvider) : undefined;
+    const serverProvider = useServer ? createServerGenerationProvider(params.tierConfig.provider as ServerKeyProvider, sessionId) : undefined;
     let generationError = ''; 
 
     let latestCode = '';
@@ -157,6 +170,7 @@ export async function startKosenGeneration(params: {
             }
           },
           onToolCallUpdate: (tc) => {
+            log('tool', tc.name);
             turnCount++;
             params.onProgress?.({ turnCount, status: 'running' });
             appendKosenEvent(sessionId, 'tool_call', {
@@ -309,12 +323,15 @@ export async function startKosenGeneration(params: {
         isPublic: params.isPublic,
       });
 
+      log('completed');
       params.onProgress?.({
         thought: `✨ ゲーム「${finalTitle}」が完成しました！`,
         code: latestCode,
         status: 'completed',
       });
     } catch (err: any) {
+      if (job.aborted) return;
+      log('failed');
       const errMsg = err?.message || String(err);
       await updateKosenSession(sessionId, {
         status: 'failed',

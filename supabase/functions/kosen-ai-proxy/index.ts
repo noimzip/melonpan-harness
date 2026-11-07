@@ -1,3 +1,4 @@
+import { recordLog } from "./generation-logs.ts";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { handleGenerationProxy, handleProviderModels } from "./generation-proxy.ts";
@@ -17,6 +18,8 @@ interface ProxyRequest {
     | "expand"
     | "summary"
     | "chat"
+    | "append_generation_log"
+    | "list_generation_logs"
     | "generate_provider"
     | "list_provider_models"
     | "save_server_key"
@@ -330,11 +333,34 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    if (action === "append_generation_log" || action === "list_generation_logs") {
+      const respond = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+        status, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+      if (!await isStaffRequest(req)) return respond({ error: "Staff authentication required" }, 403);
+      const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+      if (action === "append_generation_log") {
+        if (!["started", "tool", "completed", "cancelled", "failed"].includes(payload?.event)) return respond({ error: "Invalid event" }, 400);
+        // Arbitrary error messages and generated content must not be accepted from the client.
+        await recordLog(admin, { ...payload, details: { tool: payload?.details?.tool } });
+        return respond({ success: true });
+      }
+      let query = admin.from("kosen_generation_logs").select("*")
+        .gte("created_at", new Date(Date.now() - 30 * 86400000).toISOString());
+      for (const field of ["provider", "event", "session_id"]) {
+        if (typeof payload?.[field] === "string" && payload[field]) query = query.eq(field, payload[field]);
+      }
+      if (typeof payload?.since === "string" && Number.isFinite(Date.parse(payload.since))) query = query.gte("created_at", payload.since);
+      const offset = Number.isInteger(payload?.offset) ? Math.max(0, Math.min(payload.offset, 100000)) : 0;
+      const { data, error } = await query.order("created_at", { ascending: false }).order("id").range(offset, offset + 99);
+      return error ? respond({ error: "ログを取得できませんでした" }, 500) : respond({ logs: data });
+    }
+
     if (action === "list_provider_models") {
       return await handleProviderModels(req, payload?.provider, { isStaffRequest, resolveServerApiKey, fetch });
     }
     if (action === "generate_provider") {
-      return await handleGenerationProxy(req, payload, { isStaffRequest, resolveServerApiKey, fetch });
+      return await handleGenerationProxy(req, payload, { isStaffRequest, resolveServerApiKey, fetch, recordLog: (entry) => recordLog(createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!), entry) });
     }
 
     const apiKey = await resolveServerApiKey();

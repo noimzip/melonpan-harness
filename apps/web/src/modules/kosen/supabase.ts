@@ -341,6 +341,8 @@ export async function signOutStaff(): Promise<void> {
 
 export async function invokeKosenAiProxy<T = any>(
   action:
+    | 'append_generation_log'
+    | 'list_generation_logs'
     | 'transcribe'
     | 'toppings'
     | 'expand'
