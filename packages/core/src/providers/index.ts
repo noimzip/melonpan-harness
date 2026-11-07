@@ -611,7 +611,7 @@ export class OpenAICompatibleProvider implements ILLMProvider {
         : '';
     this.apiKey = options.apiKey ?? envKey;
     this.extraHeaders = options.headers || {};
-    this.fetchImpl = options.fetchImpl || fetch;
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.cacheManager = options.cacheManager || new ContextCacheManager();
     this.enablePromptCaching = options.enablePromptCaching ?? true;
     this.defaultModel = options.defaultModel;

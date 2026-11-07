@@ -343,5 +343,36 @@ describe('Providers Routing and Discovery (Core)', () => {
       expect(interceptedPayload.messages[0].role).toBe('developer');
       expect(interceptedPayload.messages[0].content).toBe('You are an autonomous coding agent.');
     });
+
+    it('invokes default global fetch without binding this to the provider instance (prevents Window Illegal invocation)', async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedThis: unknown = undefined;
+      try {
+        globalThis.fetch = (async function (this: unknown) {
+          capturedThis = this;
+          if (this && this !== globalThis) {
+            throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+          }
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: 'OK' } }] }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }) as typeof fetch;
+
+        const surplus = new SurplusProvider({ apiKey: 'inf_test_key' });
+        const chunks = [];
+        for await (const chunk of surplus.streamChat({
+          model: 'gpt-6.1-terra',
+          messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        expect(capturedThis).not.toBe(surplus);
+        expect(chunks.some((c) => c.type === 'text_delta' && c.delta === 'OK')).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
   });
 });
