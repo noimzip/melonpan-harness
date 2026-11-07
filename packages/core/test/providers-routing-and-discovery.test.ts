@@ -4,6 +4,7 @@ import {
   OrcaRouterProvider,
   GroqProvider,
   SurplusProvider,
+  OpenAICompatibleProvider,
   ProviderRegistry,
   fetchOpenRouterModels,
   fetchOrcaRouterModels,
@@ -298,7 +299,7 @@ describe('Providers Routing and Discovery (Core)', () => {
       expect(count).toBeGreaterThan(0);
     });
 
-    it('converts systemInstruction to developer role for gpt-6 and o1/o3/o4 reasoning models', async () => {
+    it('preserves system role for Surplus / gateway models and uses developer role only for direct OpenAI', async () => {
       let interceptedPayload: any = null;
       const mockFetch = async (_url: string | URL | Request, init?: RequestInit) => {
         interceptedPayload = JSON.parse(String(init?.body || '{}'));
@@ -315,24 +316,32 @@ describe('Providers Routing and Discovery (Core)', () => {
         fetchImpl: mockFetch as any,
       });
 
-      // 1. gpt-6.1-terra must receive role: "developer"
+      // 1. Surplus: gpt-6.1-terra must retain role: "system" because Surplus rejects "developer"
       for await (const _ of surplus.streamChat({
         model: 'surplus/gpt-6.1-terra',
         systemInstruction: 'You are an autonomous coding agent.',
         messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
       })) {}
 
-      expect(interceptedPayload.messages[0].role).toBe('developer');
+      expect(interceptedPayload.messages[0].role).toBe('system');
       expect(interceptedPayload.messages[0].content).toBe('You are an autonomous coding agent.');
 
-      // 2. Standard models (e.g. gpt-4o or deepseek) retain role: "system"
-      for await (const _ of surplus.streamChat({
-        model: 'surplus/deepseek/deepseek-chat',
+      // 2. Direct OpenAI (id: 'openai'): reasoning models use role: "developer"
+      const directOpenAI = new OpenAICompatibleProvider({
+        id: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'sk-test',
+        fetchImpl: mockFetch as any,
+      });
+
+      for await (const _ of directOpenAI.streamChat({
+        model: 'openai/o1-mini',
         systemInstruction: 'You are an autonomous coding agent.',
         messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
       })) {}
 
-      expect(interceptedPayload.messages[0].role).toBe('system');
+      expect(interceptedPayload.messages[0].role).toBe('developer');
+      expect(interceptedPayload.messages[0].content).toBe('You are an autonomous coding agent.');
     });
   });
 });

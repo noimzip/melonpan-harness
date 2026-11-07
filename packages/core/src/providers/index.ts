@@ -621,14 +621,18 @@ export class OpenAICompatibleProvider implements ILLMProvider {
   private convertMessages(request: LLMChatRequest): any[] {
     const out: any[] = [];
     if (request.systemInstruction) {
-      // OpenAI o1, o3, o4, gpt-6 系列などの新世代推論モデルは role: 'system' ではなく role: 'developer' を要求する (HTTP 400 回避)
+      // OpenAI 本家の o1, o3, o4, gpt-6 系列推論モデルは直接呼び出し時 (api.openai.com) に role: 'developer' を要求する
+      // ただし Surplus や OpenRouter などの OpenAI 互換ゲートウェイ/プロバイダはスキーマで 'developer' を受け付けず
+      // 'system' のみを要求し 400 Bad Request を返すため、直接 OpenAI 呼び出し時のみ 'developer' に変換する
+      const isDirectOpenAI = this.id === 'openai' || this.baseUrl.includes('api.openai.com');
       const cleanModel =
         this.id && request.model.startsWith(`${this.id}/`)
           ? request.model.slice(this.id.length + 1)
           : request.model;
       const isDeveloperRoleModel =
-        /^(o1|o3|o4|gpt-6)/i.test(cleanModel) ||
-        /\/(o[1-9]|gpt-6)/i.test(cleanModel);
+        isDirectOpenAI &&
+        (/^(o1|o3|o4|gpt-6)/i.test(cleanModel) ||
+        /\/(o[1-9]|gpt-6)/i.test(cleanModel));
       const systemRole = isDeveloperRoleModel ? 'developer' : 'system';
       out.push({ role: systemRole, content: request.systemInstruction });
     }
