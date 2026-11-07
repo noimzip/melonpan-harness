@@ -583,6 +583,7 @@ export interface OpenAICompatibleProviderOptions {
   cacheManager?: ContextCacheManager;
   enablePromptCaching?: boolean;
   defaultModel?: string;
+  stream?: boolean;
 }
 
 /**
@@ -597,6 +598,7 @@ export class OpenAICompatibleProvider implements ILLMProvider {
   private cacheManager: ContextCacheManager;
   private enablePromptCaching: boolean;
   private defaultModel?: string;
+  private stream: boolean;
 
   constructor(options: OpenAICompatibleProviderOptions = {}) {
     this.id = options.id || 'openai-compat';
@@ -613,12 +615,22 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     this.cacheManager = options.cacheManager || new ContextCacheManager();
     this.enablePromptCaching = options.enablePromptCaching ?? true;
     this.defaultModel = options.defaultModel;
+    this.stream = options.stream ?? true;
   }
 
   private convertMessages(request: LLMChatRequest): any[] {
     const out: any[] = [];
     if (request.systemInstruction) {
-      out.push({ role: 'system', content: request.systemInstruction });
+      // OpenAI o1, o3, o4, gpt-6 系列などの新世代推論モデルは role: 'system' ではなく role: 'developer' を要求する (HTTP 400 回避)
+      const cleanModel =
+        this.id && request.model.startsWith(`${this.id}/`)
+          ? request.model.slice(this.id.length + 1)
+          : request.model;
+      const isDeveloperRoleModel =
+        /^(o1|o3|o4|gpt-6)/i.test(cleanModel) ||
+        /\/(o[1-9]|gpt-6)/i.test(cleanModel);
+      const systemRole = isDeveloperRoleModel ? 'developer' : 'system';
+      out.push({ role: systemRole, content: request.systemInstruction });
     }
 
     for (const msg of request.messages) {
@@ -700,6 +712,10 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       model: targetModel,
       messages: this.convertMessages(request),
     };
+
+    if (this.stream) {
+      body.stream = true;
+    }
 
     if (request.thinkingLevel && ['none', 'xhigh', 'max'].includes(request.thinkingLevel)) {
       if (!['openai', 'openrouter', 'orcarouter', 'groq', 'surplus'].includes(this.id)) {
@@ -843,7 +859,20 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       return;
     }
 
-    const data: any = await response.json();
+    let data: any;
+    try {
+      if (typeof response.json === 'function') {
+        data = await response.json();
+      } else {
+        const text = typeof response.text === 'function' ? await response.text() : '';
+        data = text ? JSON.parse(text) : {};
+      }
+    } catch (e: any) {
+      throw new Error(
+        `OpenAICompatibleProvider HTTP ${response.status} failed to parse JSON response: ${e.message}. ` +
+        `This typically happens when the upstream proxy/gateway abruptly closes the connection or times out.`
+      );
+    }
     const choice = data?.choices?.[0]?.message;
 
     // 思考フィールド (reasoning_content / reasoning) のサポート

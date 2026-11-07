@@ -254,6 +254,7 @@ describe('Providers Routing and Discovery (Core)', () => {
 
       expect(interceptedPayload).not.toBeNull();
       expect(interceptedPayload.model).toBe('deepseek/deepseek-chat');
+      expect(interceptedPayload.stream).toBe(true);
       expect(chunks.some((c) => c.type === 'text_delta' && c.delta === 'Surplus response')).toBe(true);
     });
 
@@ -295,6 +296,43 @@ describe('Providers Routing and Discovery (Core)', () => {
 
       expect(calledUrls.length).toBe(0);
       expect(count).toBeGreaterThan(0);
+    });
+
+    it('converts systemInstruction to developer role for gpt-6 and o1/o3/o4 reasoning models', async () => {
+      let interceptedPayload: any = null;
+      const mockFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+        interceptedPayload = JSON.parse(String(init?.body || '{}'));
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'OK' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      };
+
+      const surplus = new SurplusProvider({
+        apiKey: 'inf_test_key',
+        fetchImpl: mockFetch as any,
+      });
+
+      // 1. gpt-6.1-terra must receive role: "developer"
+      for await (const _ of surplus.streamChat({
+        model: 'surplus/gpt-6.1-terra',
+        systemInstruction: 'You are an autonomous coding agent.',
+        messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+      })) {}
+
+      expect(interceptedPayload.messages[0].role).toBe('developer');
+      expect(interceptedPayload.messages[0].content).toBe('You are an autonomous coding agent.');
+
+      // 2. Standard models (e.g. gpt-4o or deepseek) retain role: "system"
+      for await (const _ of surplus.streamChat({
+        model: 'surplus/deepseek/deepseek-chat',
+        systemInstruction: 'You are an autonomous coding agent.',
+        messages: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+      })) {}
+
+      expect(interceptedPayload.messages[0].role).toBe('system');
     });
   });
 });
