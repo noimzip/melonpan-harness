@@ -4,6 +4,7 @@ import {
   InMemorySkillLoader,
   SkillManager,
   RuleBasedPermissionPolicy,
+  MockCommandExecutor,
   ILLMProvider,
   calculateTokenCost,
   AgentEvent,
@@ -228,6 +229,15 @@ export class AgentRuntime {
       );
       const remainingCostCapUsd = Math.max(0.000001, 2.0 - priorCostUsd);
 
+      const browserCommandExecutor = new MockCommandExecutor((cmd) => ({
+        command: cmd,
+        stdout:
+          '[Browser VirtualFS Sandbox] Shell commands (node/npm) are not needed in the browser VFS environment. Your HTML/JS files in VFS are ready. If index.html is written, call complete_task immediately.',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      }));
+
       // Create MelonpanCore ReAct agent
       const core = new MelonpanCore({
         apiKey: effectiveKey,
@@ -239,6 +249,7 @@ export class AgentRuntime {
         vfs,
         skillManager,
         permissionPolicy,
+        commandExecutor: browserCommandExecutor,
         enableStreaming: true,
         maxTurns: 300,
         maxCostUsd: remainingCostCapUsd,

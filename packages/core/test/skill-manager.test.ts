@@ -66,8 +66,10 @@ describe('SkillManager', () => {
       'threejs-3d',
     ]);
 
-    // 4. Combined resolveAndLoad merges active instructions cleanly
-    const combined = await manager.resolveAndLoad('3Dでボールがバウンドするゲーム');
+    // 4. Combined resolveAndLoad merges active instructions cleanly (e.g., 3D Mario Kart with drift/turbo)
+    const combined = await manager.resolveAndLoad(
+      '3Dでマリオカート風のゲームを作ってほしい\n長押しドリフトで超加速する3段階ターボ'
+    );
     expect(combined).toBeDefined();
     expect(combined?.name).toContain('anti-ai-slop');
     expect(combined?.name).toContain('game-architecture');
@@ -78,6 +80,7 @@ describe('SkillManager', () => {
     expect(combined?.instruction).toContain('Smartphone Touch Controls');
     expect(combined?.instruction).toContain('Strict Velocity Clamping');
     expect(combined?.instruction).toContain('THREE.Group');
+    expect(combined?.instruction).toContain('Direct Initial Creation');
   });
 
   it('supports in-memory skill registration for browser/test environments', async () => {

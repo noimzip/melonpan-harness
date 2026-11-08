@@ -5,7 +5,7 @@ license: MIT
 metadata:
   version: "1.0.0"
   category: "physics"
-  keywords: "physics,gravity,collision,bounce,velocity,jump,ball,pinball,breakout,platformer,racing,物理,重力,衝突,跳ね返り,反射,バウンド,速度,加速,ジャンプ,ボール,ピンボール"
+  keywords: "physics,gravity,collision,bounce,velocity,jump,ball,pinball,breakout,platformer,racing,drift,turbo,kart,物理,重力,衝突,跳ね返り,反射,バウンド,速度,加速,ジャンプ,ボール,ピンボール,ドリフト,ターボ,レース,カート"
 ---
 
 # Robust Game Physics & Collision Stability Guidelines

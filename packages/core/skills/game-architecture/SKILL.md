@@ -15,7 +15,8 @@ Implement a complete, standalone, single-file HTML5 game inside `index.html` usi
 When the game is fully implemented, verified, and playable, conclude your work by invoking `complete_task`.
 
 ## 1. Code Modification & Token Conservation Policy (STRICT)
-- **Initial File Creation**: Use `write_file` ONCE to generate the initial standalone `index.html`.
+- **Direct Initial Creation (No Redundant `list_files`)**: Start by calling `write_file("index.html", content)` ONCE on your very first turn to generate the complete standalone game. Do NOT waste a turn calling `list_files` on an empty workspace.
+- **No Shell / Node Commands (`run_command` Forbidden for VFS HTML)**: Because files reside in an in-memory Virtual File System (VFS), external shell commands (`node -e`, `fs.readFileSync`, etc.) cannot access VFS files and will return empty output. NEVER call `run_command` to syntax-check `index.html`. After `write_file` succeeds, immediately call `complete_task`!
 - **Modifications, Tuning, Refinements, and Bug Fixes**: You are STRICTLY FORBIDDEN from regenerating or rewriting the entire file using `write_file`. You MUST use `edit_file` to replace only the specific, targeted lines/functions with minimum Search & Replace blocks. Full-file regeneration wastes thousands of output tokens and is strictly rejected.
 
 ## 2. Game Loop & State Machine Lifecycle (MANDATORY)

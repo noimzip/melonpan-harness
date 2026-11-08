@@ -161,7 +161,14 @@ export class MelonpanCore implements IAgentRuntime {
     });
 
     // 2. プロンプトに応じたスキルの動的解決と本文ロード (Progressive Disclosure)
-    const skill = await this.skillManager.resolveAndLoad(prompt);
+    const activeSkills =
+      this.skillManager.getDefaultSkills().length > 0
+        ? await this.skillManager.resolveSkills(prompt)
+        : undefined;
+    const skill =
+      activeSkills && activeSkills.length > 0
+        ? this.skillManager.combineLoadedSkills(activeSkills)
+        : await this.skillManager.resolveAndLoad(prompt);
     if (skill) {
       yield this.session.recordEvent({
         type: 'SKILL_LOADED',
@@ -190,6 +197,7 @@ export class MelonpanCore implements IAgentRuntime {
     // 3. ReAct 自律ループの実行
     for await (const event of this.agent.execute(prompt, skill, this.vfs, {
       signal: runOptions.signal,
+      activeSkills,
       availableSkills: this.skillManager.getEnabledSkills(),
       history: this.session.getMessages(),
     })) {

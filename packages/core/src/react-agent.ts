@@ -148,6 +148,7 @@ export interface ReactAgentOptions {
 
 export interface ReactAgentExecuteOptions {
   signal?: AbortSignal;
+  activeSkills?: LoadedSkill[];
   availableSkills?: SkillMetadata[];
   history?: LLMMessage[];
   workspaceRoot?: string;
@@ -388,10 +389,14 @@ export class ReactAgent {
         : undefined);
 
     let currentActiveSkill = skill;
+    let currentActiveSkills = execOptions.activeSkills
+      ? [...execOptions.activeSkills]
+      : undefined;
     const buildSystemPrompt = () =>
       this.promptComposer.compose({
         mode: this.mode,
         activeSkill: currentActiveSkill,
+        activeSkills: currentActiveSkills,
         availableSkills,
         availableTools: this.toolRegistry.getAll(),
         workspaceRoot: execOptions.workspaceRoot,
@@ -410,6 +415,11 @@ export class ReactAgent {
         execOptions,
         (activatedSkill) => {
           currentActiveSkill = activatedSkill;
+          if (currentActiveSkills) {
+            if (!currentActiveSkills.some((s) => s.name === activatedSkill.name)) {
+              currentActiveSkills.push(activatedSkill);
+            }
+          }
           return buildSystemPrompt();
         }
       );

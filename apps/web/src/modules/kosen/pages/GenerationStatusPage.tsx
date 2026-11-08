@@ -209,6 +209,34 @@ export function GenerationStatusPage() {
   const codeLineCount = session.current_code ? session.current_code.split('\n').length : 0;
   const isCompleted = session.status === 'completed';
 
+  // Derive active skills from events or prompt/toppings keywords
+  const combinedInputLower = `${session.prompt} ${(session.toppings || []).join(' ')}`.toLowerCase();
+  const activeSkillBadges: Array<{ id: string; label: string }> = [
+    { id: 'anti-ai-slop', label: '🎨 AI Slop防止' },
+    { id: 'game-architecture', label: '🏗 ゲーム構成' },
+    { id: 'responsive-design', label: '📱 スマホ＆PC対応' },
+  ];
+  const skillLoadedEventText = events
+    .map((e) => e.payload?.message || '')
+    .filter((m) => m.includes('スキル適用:'))
+    .join(' ');
+  if (
+    skillLoadedEventText.includes('physics-engine') ||
+    /(physics|gravity|collision|bounce|velocity|jump|ball|pinball|breakout|platformer|racing|drift|turbo|kart|物理|重力|衝突|跳ね返り|反射|バウンド|速度|加速|ジャンプ|ボール|ピンボール|ドリフト|ターボ|レース|カート)/i.test(
+      combinedInputLower
+    )
+  ) {
+    activeSkillBadges.push({ id: 'physics-engine', label: '⚙️ 物理演算強化' });
+  }
+  if (
+    skillLoadedEventText.includes('threejs-3d') ||
+    /(3d|３d|３ｄ|three\.?js|webgl|polygon|perspective|voxel|first-person|third-person|cube|sphere|kart|mariokart|立体|三次元|3次元|ポリゴン|奥行き|一人称|三人称|ボクセル|マリオカート)/i.test(
+      combinedInputLower
+    )
+  ) {
+    activeSkillBadges.push({ id: 'threejs-3d', label: '🧊 3D (Three.js) 強化' });
+  }
+
   return (
     <div className="min-h-dvh bg-[var(--background)] text-[var(--foreground)] flex flex-col font-sans">
       <HandDrawnFilter />
@@ -305,6 +333,21 @@ export function GenerationStatusPage() {
               <RubyText text="プロンプト: " />
             </span>
             {session.prompt}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            <span className="text-[11px] font-bold opacity-70 mr-1">
+              <RubyText text="有効スキル:" />
+            </span>
+            {activeSkillBadges.map((badge) => (
+              <span
+                key={badge.id}
+                className="px-2 py-0.5 rounded-full bg-[var(--warm-badge)] border border-[var(--stroke)]/30 text-[10px] sm:text-[11px] font-bold flex items-center gap-1"
+              >
+                <span>{badge.label}</span>
+                <span className="font-mono opacity-60 text-[9px]">({badge.id})</span>
+              </span>
+            ))}
           </div>
 
           {isCompleted && (

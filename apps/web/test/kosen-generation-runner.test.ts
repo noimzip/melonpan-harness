@@ -57,4 +57,33 @@ describe('kiosk server-backed generation', () => {
     expect(f.createProvider).not.toHaveBeenCalled();
     expect(f.publish).toHaveBeenCalledWith(expect.objectContaining({ htmlContent: '<html>local generated</html>' }));
   });
+
+  it('omits redundant header prefix and logs SKILL_LOADED events to kosen_events', async () => {
+    f.getStoredApiKeys.mockReturnValueOnce({ gemini: 'local-key-123' });
+    f.execute.mockImplementation(async (promptText: string, _session, _config, callbacks) => {
+      expect(promptText).not.toContain('【高専祭 ゲーム制作リクエスト】');
+      expect(promptText).toContain('3Dでマリオカート風のゲームを作ってほしい');
+      expect(promptText).toContain('Three.js WebGL 3D');
+      callbacks.onEvent?.({
+        type: 'SKILL_LOADED',
+        payload: {
+          name: 'anti-ai-slop + game-architecture + responsive-design + threejs-3d + physics-engine',
+        },
+      });
+      callbacks.onFileChange('index.html', '<html>3d kart game</html>');
+    });
+    await startKosenGeneration({
+      ...params('gemini'),
+      prompt: '3Dでマリオカート風のゲームを作ってほしい',
+    });
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalled());
+    expect(f.event).toHaveBeenCalledWith(
+      'session-test',
+      'status',
+      expect.objectContaining({
+        message:
+          '🎯 スキル適用: anti-ai-slop + game-architecture + responsive-design + threejs-3d + physics-engine',
+      })
+    );
+  });
 });

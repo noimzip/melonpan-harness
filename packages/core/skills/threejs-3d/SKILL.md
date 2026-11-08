@@ -5,12 +5,12 @@ license: MIT
 metadata:
   version: "1.0.0"
   category: "3d-graphics"
-  keywords: "3d,threejs,three.js,webgl,polygon,perspective,voxel,first-person,third-person,cube,sphere,立体,三次元,ポリゴン,奥行き,一人称,三人称"
+  keywords: "3d,threejs,three.js,webgl,polygon,perspective,voxel,first-person,third-person,cube,sphere,kart,mariokart,立体,三次元,3次元,ポリゴン,奥行き,一人称,三人称,ボクセル,マリオカート"
 ---
 
 # Three.js 3D Modeling & Scene Architecture Guidelines
 
-When building a 3D game in a single-file `index.html`, you MUST deliver carefully crafted 3D models, atmospheric lighting, and smooth camera controls rather than bare single-primitive boxes.
+When building a 3D game in a single-file `index.html`, you MUST use **real Three.js WebGL (`new THREE.WebGLRenderer`)** — NEVER fall back to Canvas 2D pseudo-3D / Mode 7 projections. Deliver carefully crafted 3D models, atmospheric lighting, and smooth camera controls rather than bare single-primitive boxes.
 
 ## 1. Reliable Three.js CDN Setup
 Load Three.js cleanly using an ES Module Import Map or reliable CDN script in `<head>`:

@@ -105,10 +105,7 @@ export async function startKosenGeneration(params: {
     };
     activeJobs.set(sessionId, job);
 
-    const fullPromptParts = [
-      `【高専祭 ゲーム制作リクエスト】`,
-      `作りたいゲーム: ${params.prompt}`,
-    ];
+    const fullPromptParts = [params.prompt];
     if (params.toppings.length > 0) {
       fullPromptParts.push(
         `追加トッピング要素 (必ずゲーム内に楽しく実装してください):\n${params.toppings
@@ -120,13 +117,16 @@ export async function startKosenGeneration(params: {
       fullPromptParts.push(`作品タイトル: ${params.gameTitle}`);
     }
     const combinedUserText = `${params.prompt} ${params.toppings.join(' ')}`.toLowerCase();
-    const is3DRequested = /(3d|３d|３ｄ|three\.?js|webgl|立体|三次元|3次元|ポリゴン|奥行き|一人称|三人称|ボクセル|voxel)/i.test(
+    const is3DRequested = /(3d|３d|３ｄ|three\.?js|webgl|立体|三次元|3次元|ポリゴン|奥行き|一人称|三人称|ボクセル|voxel|マリオカート|mariokart)/i.test(
       combinedUserText
     );
     fullPromptParts.push(
       is3DRequested
-        ? `単一ファイルの HTML5 Three.js 3D ゲーム (index.html) として、丁寧な複合3Dモデリングとテーマに合った自然な配色（安易なネオン調の回避）を施し、スマートフォンのタッチ操作（画面上の操作パッド・ボタン・ドラッグ）とPC（キーボード・マウス）の両方で快適に楽しく遊べるように作成してください。`
+        ? `単一ファイルの HTML5 Three.js WebGL 3D ゲーム (index.html) として、Canvas 2D擬似3Dではなく必ず本物の Three.js (THREE.WebGLRenderer と THREE.Group による丁寧な複合3Dモデリング) を使用し、テーマに合った自然な配色（安易なネオン調の回避）と、スマートフォンのタッチ操作（画面上の操作パッド・ボタン・ドラッグ）およびPC（キーボード・マウス）の両対応で作成してください。`
         : `単一ファイルの HTML5 ゲーム (index.html) として、テーマに合った魅力的な配色（安易なサイバーネオン調の回避）を施し、スマートフォンのタッチ操作（画面上の操作パッド・ボタン・タッチ追従）とPC（キーボード・マウス）の両方で快適に楽しく遊べるように作成してください。`
+    );
+    fullPromptParts.push(
+      `※ブラウザ内仮想環境（VFS）で動作するため、事前の list_files や作成後の run_command（node -e 等）は一切実行せず、最初のターンで直ちに write_file("index.html", ...) で完成品を出力し、続けて complete_task を呼び出してください。`
     );
 
     const fullPrompt = fullPromptParts.join('\n\n');
@@ -182,9 +182,13 @@ export async function startKosenGeneration(params: {
             }
           },
           onToolCallUpdate: (tc) => {
+            if (tc.status && tc.status !== 'running') return;
             log('tool', tc.name);
             turnCount++;
             params.onProgress?.({ turnCount, status: 'running' });
+            updateKosenSession(sessionId, {
+              turn_count: turnCount,
+            }).catch(() => {});
             appendKosenEvent(sessionId, 'tool_call', {
               toolName: tc.name,
               args: tc.args,
@@ -214,6 +218,11 @@ export async function startKosenGeneration(params: {
           onMetricsUpdate: () => {},
           onEvent: (ev) => {
             if (ev.type === 'ERROR') generationError = ev.payload.error?.message || String(ev.payload.error);
+            if (ev.type === 'SKILL_LOADED' && ev.payload?.name) {
+              appendKosenEvent(sessionId, 'status', {
+                message: `🎯 スキル適用: ${ev.payload.name}`,
+              }).catch(() => {});
+            }
             if (ev.type === 'THOUGHT' && ev.payload?.thought) {
               appendKosenEvent(sessionId, 'thought', {
                 thought: ev.payload.thought,

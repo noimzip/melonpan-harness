@@ -115,7 +115,7 @@ license: MIT
 metadata:
   version: "1.0.0"
   category: "physics"
-  keywords: "physics,gravity,collision,bounce,velocity,jump,ball,pinball,breakout,platformer,racing,物理,重力,衝突,跳ね返り,反射,バウンド,速度,加速,ジャンプ,ボール,ピンボール"
+  keywords: "physics,gravity,collision,bounce,velocity,jump,ball,pinball,breakout,platformer,racing,drift,turbo,kart,物理,重力,衝突,跳ね返り,反射,バウンド,速度,加速,ジャンプ,ボール,ピンボール,ドリフト,ターボ,レース,カート"
 ---
 
 # Robust Game Physics & Collision Stability Guidelines
@@ -173,12 +173,12 @@ license: MIT
 metadata:
   version: "1.0.0"
   category: "3d-graphics"
-  keywords: "3d,threejs,three.js,webgl,polygon,perspective,voxel,first-person,third-person,cube,sphere,立体,三次元,ポリゴン,奥行き,一人称,三人称"
+  keywords: "3d,threejs,three.js,webgl,polygon,perspective,voxel,first-person,third-person,cube,sphere,kart,mariokart,立体,三次元,3次元,ポリゴン,奥行き,一人称,三人称,ボクセル,マリオカート"
 ---
 
 # Three.js 3D Modeling & Scene Architecture Guidelines
 
-When building a 3D game in a single-file \`index.html\`, you MUST deliver carefully crafted 3D models, atmospheric lighting, and smooth camera controls rather than bare single-primitive boxes.
+When building a 3D game in a single-file \`index.html\`, you MUST use **real Three.js WebGL (\`new THREE.WebGLRenderer\`)** — NEVER fall back to Canvas 2D pseudo-3D / Mode 7 projections. Deliver carefully crafted 3D models, atmospheric lighting, and smooth camera controls rather than bare single-primitive boxes.
 
 ## 1. Reliable Three.js CDN Setup
 Load Three.js cleanly using an ES Module Import Map in \`<head>\`:
@@ -226,7 +226,8 @@ Implement a complete, standalone, single-file HTML5 game inside \`index.html\` u
 When the game is fully implemented, verified, and playable, conclude your work by invoking \`complete_task\`.
 
 ## 1. Code Modification & Token Conservation Policy (STRICT)
-- **Initial File Creation**: Use \`write_file\` ONCE to generate the initial standalone \`index.html\`.
+- **Direct Initial Creation (No Redundant \`list_files\`)**: Start by calling \`write_file("index.html", content)\` ONCE on your very first turn to generate the complete standalone game. Do NOT waste a turn calling \`list_files\` on an empty workspace.
+- **No Shell / Node Commands (\`run_command\` Forbidden for VFS HTML)**: Because files reside in an in-memory Virtual File System (VFS), external shell commands (\`node -e\`, \`fs.readFileSync\`, etc.) cannot access VFS files and will return empty output. NEVER call \`run_command\` to syntax-check \`index.html\`. After \`write_file\` succeeds, immediately call \`complete_task\`!
 - **Modifications, Tuning, Refinements, and Bug Fixes**: You are STRICTLY FORBIDDEN from regenerating or rewriting the entire file using \`write_file\`. You MUST use \`edit_file\` to replace only the specific, targeted lines/functions with minimum Search & Replace blocks. Full-file regeneration wastes thousands of output tokens and is strictly rejected.
 
 ## 2. Game Loop & State Machine Lifecycle (MANDATORY)
