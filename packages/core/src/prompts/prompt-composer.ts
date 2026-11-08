@@ -144,7 +144,15 @@ export class SkillCatalogSection implements PromptSection {
       lines.push('');
     }
 
-    if (ctx.activeSkill) {
+    if (ctx.activeSkills && ctx.activeSkills.length > 0) {
+      for (const skill of ctx.activeSkills) {
+        lines.push('==================================================');
+        lines.push(`ACTIVE SKILL SPECIFICATION: [${skill.name}]`);
+        lines.push('==================================================');
+        lines.push(skill.instruction);
+        lines.push('');
+      }
+    } else if (ctx.activeSkill) {
       lines.push('==================================================');
       lines.push(`ACTIVE SKILL SPECIFICATION: [${ctx.activeSkill.name}]`);
       lines.push('==================================================');

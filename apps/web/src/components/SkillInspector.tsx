@@ -10,16 +10,54 @@ import {
 } from 'lucide-react';
 import { SkillInfo } from '../types';
 
-import { GAME_GENERATOR_SKILL_MD } from '../services/embedded-skills';
+import {
+  ANTI_AI_SLOP_SKILL_MD,
+  GAME_ARCHITECTURE_SKILL_MD,
+  RESPONSIVE_DESIGN_SKILL_MD,
+  PHYSICS_ENGINE_SKILL_MD,
+  THREEJS_3D_SKILL_MD,
+} from '../services/embedded-skills';
 
 const DEFAULT_SKILLS: SkillInfo[] = [
   {
-    name: 'game-generator',
+    name: 'anti-ai-slop',
     description:
-      'Generates high-quality, playable, single-file HTML5 Canvas 2D arcade games with modern neon visuals, responsive touch controls, and audio/particle effects (agentskills.io standard).',
+      'AI特有の紋切り型ネオン・過剰発光・パーティクル乱用を防止し、テーマに合った自然な配色とデザインを強制（デフォルト常時ON）',
     enabled: true,
-    metadata: { version: '1.0.0', target: 'canvas-2d', license: 'MIT' },
-    body: GAME_GENERATOR_SKILL_MD,
+    metadata: { version: '1.0.0', activation: 'default-on', license: 'MIT' },
+    body: ANTI_AI_SLOP_SKILL_MD,
+  },
+  {
+    name: 'game-architecture',
+    description:
+      'ゲームループ、ステートマシン (READY/PLAYING/GAMEOVER/RESTART)、Web Audio効果音、単一HTML5構成の基幹設計（デフォルト常時ON）',
+    enabled: true,
+    metadata: { version: '1.0.0', activation: 'default-on', license: 'MIT' },
+    body: GAME_ARCHITECTURE_SKILL_MD,
+  },
+  {
+    name: 'responsive-design',
+    description:
+      'スマートフォン（仮想パッド・マルチタッチ・タッチ追従）とPC（キーボード・マウス）の両対応および画面比率スケーリング（デフォルト常時ON）',
+    enabled: true,
+    metadata: { version: '1.0.0', activation: 'default-on', license: 'MIT' },
+    body: RESPONSIVE_DESIGN_SKILL_MD,
+  },
+  {
+    name: 'physics-engine',
+    description:
+      '異常な速度防止（Velocity Clamping）、壁抜け防止（Substepping）、フレームレート非依存の物理演算強化（プロンプト連動）',
+    enabled: true,
+    metadata: { version: '1.0.0', activation: 'prompt-driven', license: 'MIT' },
+    body: PHYSICS_ENGINE_SKILL_MD,
+  },
+  {
+    name: 'threejs-3d',
+    description:
+      'Three.jsを用いた複合プロシージャル3Dモデリング（THREE.Group）、ライティング・影、スムーズなカメラ制御（プロンプト連動）',
+    enabled: true,
+    metadata: { version: '1.0.0', activation: 'prompt-driven', license: 'MIT' },
+    body: THREEJS_3D_SKILL_MD,
   },
 ];
 

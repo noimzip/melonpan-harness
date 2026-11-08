@@ -119,8 +119,14 @@ export async function startKosenGeneration(params: {
     if (params.gameTitle) {
       fullPromptParts.push(`作品タイトル: ${params.gameTitle}`);
     }
+    const combinedUserText = `${params.prompt} ${params.toppings.join(' ')}`.toLowerCase();
+    const is3DRequested = /(3d|３d|３ｄ|three\.?js|webgl|立体|三次元|3次元|ポリゴン|奥行き|一人称|三人称|ボクセル|voxel)/i.test(
+      combinedUserText
+    );
     fullPromptParts.push(
-      `単一ファイルの HTML5 Canvas 2D ゲーム (index.html) として、PCのマウス・キーボードとスマホのタッチ操作の両方で楽しく遊べるように作成してください。`
+      is3DRequested
+        ? `単一ファイルの HTML5 Three.js 3D ゲーム (index.html) として、丁寧な複合3Dモデリングとテーマに合った自然な配色（安易なネオン調の回避）を施し、スマートフォンのタッチ操作（画面上の操作パッド・ボタン・ドラッグ）とPC（キーボード・マウス）の両方で快適に楽しく遊べるように作成してください。`
+        : `単一ファイルの HTML5 ゲーム (index.html) として、テーマに合った魅力的な配色（安易なサイバーネオン調の回避）を施し、スマートフォンのタッチ操作（画面上の操作パッド・ボタン・タッチ追従）とPC（キーボード・マウス）の両方で快適に楽しく遊べるように作成してください。`
     );
 
     const fullPrompt = fullPromptParts.join('\n\n');

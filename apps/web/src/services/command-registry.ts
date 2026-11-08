@@ -639,7 +639,13 @@ export class WebCommandRegistry {
         const sub = args[0]?.trim().toLowerCase();
         if (!sub || sub === 'list') {
           ctx.logMessage(
-            `📦 **Agent Skills 一覧 (Progressive Disclosure)**:\n• 🟢 **[ENABLED] game-generator**: Generates high-quality, playable, single-file HTML5 Canvas 2D arcade games with modern visuals, responsive touch controls, and audio effects.\n\nプロンプトの意図に応じて、必要なスキルが自動的にシステムプロンプトへ遅延注入されます。`
+            `📦 **Agent Skills 一覧 (Progressive Disclosure)**:\n` +
+              `• 🟢 **[DEFAULT ON] anti-ai-slop**: AI Slop防止（ネオン・過剰発光・パーティクル乱用を排除しテーマ別配色を適用）\n` +
+              `• 🟢 **[DEFAULT ON] game-architecture**: ゲーム構成基盤（ゲームループ、ステートマシン、Web Audio効果音）\n` +
+              `• 🟢 **[DEFAULT ON] responsive-design**: レスポンシブ＆スマホタッチ操作（仮想パッド・マルチタッチ・PC両対応）\n` +
+              `• 🔵 **[PROMPT DRIVEN] physics-engine**: 物理演算強化（速度上限クランプ・サブステップ壁抜け防止・固定dt）\n` +
+              `• 🔵 **[PROMPT DRIVEN] threejs-3d**: 3D (Three.js) 強化（THREE.Group 複合モデリング・ライティング・影）\n\n` +
+              `基本3スキルは常時有効化され、物理・3Dスキルはプロンプトの意図に応じて自動的に注入されます。`
           );
           return;
         }

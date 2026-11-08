@@ -265,6 +265,7 @@ export type AgentMode = 'act' | 'plan' | 'auto' | 'goal' | string;
 export interface PromptBuildContext {
   mode: AgentMode;
   activeSkill?: LoadedSkill;
+  activeSkills?: LoadedSkill[];
   availableSkills?: SkillMetadata[];
   availableTools?: ITool[];
   workspaceRoot?: string;

@@ -21,7 +21,10 @@ import {
   PermissionPolicyConfig,
 } from '../types';
 import { createProviderInstance, getStoredApiKeys } from './provider-factory';
-import { GAME_GENERATOR_SKILL_MD } from './embedded-skills';
+import {
+  EMBEDDED_SKILLS,
+  DEFAULT_WEB_SKILL_NAMES,
+} from './embedded-skills';
 
 export interface RuntimeCallbacks {
   onMessageUpdate: (message: Message) => void;
@@ -184,10 +187,16 @@ export class AgentRuntime {
         await vfs.writeFile(p, c);
       }
 
-      // Initialize SkillManager with embedded standard skills
+      // Initialize SkillManager with embedded modular skills (default-on: anti-ai-slop, game-architecture, responsive-design; prompt-driven: physics-engine, threejs-3d)
       const skillLoader = new InMemorySkillLoader();
-      skillLoader.registerSkill('game-generator', GAME_GENERATOR_SKILL_MD);
-      const skillManager = new SkillManager({ loader: skillLoader, fs: vfs });
+      for (const skill of EMBEDDED_SKILLS) {
+        skillLoader.registerSkill(skill.name, skill.content);
+      }
+      const skillManager = new SkillManager({
+        loader: skillLoader,
+        fs: vfs,
+        defaultSkills: DEFAULT_WEB_SKILL_NAMES,
+      });
 
       // Initialize Permission Policy
       const permissionPolicy = new RuleBasedPermissionPolicy({

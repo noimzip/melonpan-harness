@@ -167,9 +167,28 @@ export class FileSystemSkillLoader implements ISkillLoader {
   }
 }
 
+/**
+ * デフォルトで常時オンにする基本スキルセット（AI Slop防止、ゲーム構成、レスポンシブデザイン）
+ */
+export const DEFAULT_ACTIVE_SKILL_NAMES = [
+  'anti-ai-slop',
+  'game-architecture',
+  'responsive-design',
+] as const;
+
+/**
+ * プロンプト内容に応じて動的に有効化される拡張スキルセット（物理演算強化、3D Three.js強化）
+ */
+export const CONDITIONAL_SKILL_NAMES = [
+  'physics-engine',
+  'threejs-3d',
+] as const;
+
 export interface SkillManagerOptions {
   skillsDir?: string;
   defaultSkillName?: string;
+  /** 常時有効化するデフォルトスキル名の配列（例: ['anti-ai-slop', 'game-architecture', 'responsive-design']） */
+  defaultSkills?: string[];
   loader?: ISkillLoader;
   fs?: IFileSystem;
   /** マッチしない入力時に defaultSkillName へ強制フォールバックするか（デフォルト: false で Generalist モードを優先 #15） */
@@ -185,6 +204,7 @@ export interface SkillManagerOptions {
 export class SkillManager {
   private skillsDir?: string;
   private defaultSkillName?: string;
+  private defaultSkills: string[];
   private fallbackToDefault: boolean;
   private loader: ISkillLoader;
   private inMemoryLoader: InMemorySkillLoader;
@@ -194,6 +214,7 @@ export class SkillManager {
   constructor(options: SkillManagerOptions = {}) {
     this.skillsDir = options.skillsDir;
     this.defaultSkillName = options.defaultSkillName;
+    this.defaultSkills = options.defaultSkills ? [...options.defaultSkills] : [];
     this.fallbackToDefault = options.fallbackToDefault ?? false;
     this.inMemoryLoader = new InMemorySkillLoader();
     this.loader =
@@ -202,6 +223,20 @@ export class SkillManager {
         skillsDir: options.skillsDir,
         fs: options.fs,
       });
+  }
+
+  /**
+   * 常時有効なデフォルトスキル一覧を取得
+   */
+  getDefaultSkills(): string[] {
+    return [...this.defaultSkills];
+  }
+
+  /**
+   * 常時有効なデフォルトスキル一覧を設定
+   */
+  setDefaultSkills(skillNames: string[]): void {
+    this.defaultSkills = [...skillNames];
   }
 
   /**
@@ -308,12 +343,102 @@ export class SkillManager {
   }
 
   /**
+   * デフォルト有効スキル群と、プロンプト内容に応じて動的にマッチする拡張スキル群を解決・ロードする
+   */
+  async resolveSkills(userInput: string): Promise<LoadedSkill[]> {
+    if (this.metadataIndex.size === 0) {
+      await this.loadAllMetadata();
+    }
+
+    const resolved: LoadedSkill[] = [];
+    const seenNames = new Set<string>();
+
+    // 1. 常時オンにするデフォルトスキルを決定（options.defaultSkills または metadata.defaultActive === "true"）
+    const activeDefaultNames =
+      this.defaultSkills.length > 0
+        ? this.defaultSkills
+        : Array.from(this.metadataIndex.values())
+            .filter((m) => m.frontmatter.metadata?.defaultActive === 'true')
+            .map((m) => m.name);
+
+    for (const name of activeDefaultNames) {
+      if (this.disabledSkills.has(name) || seenNames.has(name)) {
+        continue;
+      }
+      const loaded = await this.activateSkill(name);
+      if (loaded) {
+        resolved.push(loaded);
+        seenNames.add(loaded.name);
+      }
+    }
+
+    // 2. 入力プロンプトに応じて条件付きスキル（physics-engine, threejs-3d 等）を動的に評価・追加
+    const inputLower = userInput.toLowerCase().trim();
+    if (inputLower) {
+      const scoredConditional: Array<{ name: string; score: number }> = [];
+      for (const meta of this.metadataIndex.values()) {
+        if (this.disabledSkills.has(meta.name) || seenNames.has(meta.name)) {
+          continue;
+        }
+        // モジュラーデフォルト群が有効な場合、旧式の単一 game-generator はネオン競合を避けるため除外
+        if (resolved.length > 0 && meta.name === 'game-generator') {
+          continue;
+        }
+        const score = this.computeSkillMatchScore(inputLower, meta, true);
+        if (score > 0) {
+          scoredConditional.push({ name: meta.name, score });
+        }
+      }
+
+      scoredConditional.sort((a, b) => b.score - a.score);
+      for (const item of scoredConditional) {
+        const loaded = await this.activateSkill(item.name);
+        if (loaded) {
+          resolved.push(loaded);
+          seenNames.add(loaded.name);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * 複数の LoadedSkill を1つの統合 LoadedSkill オブジェクトに合成する
+   */
+  combineLoadedSkills(skills: LoadedSkill[]): LoadedSkill | undefined {
+    if (skills.length === 0) return undefined;
+    if (skills.length === 1) return skills[0];
+
+    const primary = skills[0]!;
+    return {
+      name: skills.map((s) => s.name).join(' + '),
+      description: skills.map((s) => s.description).join(' | '),
+      skillDir: primary.skillDir,
+      filePath: skills.map((s) => s.filePath).join(', '),
+      frontmatter: primary.frontmatter,
+      instruction: skills
+        .map(
+          (s) =>
+            `### [Skill Module: ${s.name}]\n${s.instruction.trim()}`
+        )
+        .join('\n\n---\n\n'),
+    };
+  }
+
+  /**
    * ユーザー入力プロンプトを評価し、合致するスキルがあればその指示本文 (Markdown) をオンデマンド取得する (#15)
    * 合致しない場合は無条件に特定スキルへ強制フォールバックせず、`undefined`（General Autonomous Agent モード）を返す。
    */
   async resolveAndLoad(userInput: string): Promise<LoadedSkill | undefined> {
     if (this.metadataIndex.size === 0) {
       await this.loadAllMetadata();
+    }
+
+    // defaultSkills が明示構成されている場合（Kiosk / Web ランタイム等）はマルチスキル解決を行う
+    if (this.defaultSkills.length > 0) {
+      const skills = await this.resolveSkills(userInput);
+      return this.combineLoadedSkills(skills);
     }
 
     const inputLower = userInput.toLowerCase().trim();
@@ -328,7 +453,7 @@ export class SkillManager {
         continue;
       }
 
-      const score = this.computeSkillMatchScore(inputLower, meta);
+      const score = this.computeSkillMatchScore(inputLower, meta, false);
       if (score > 0 && (!bestMatch || score > bestMatch.score)) {
         bestMatch = { meta, score };
       }
@@ -357,7 +482,11 @@ export class SkillManager {
   /**
    * スキルの name, description, metadata に基づいて入力プロンプトとの関連度スコアを汎用算出する (#15)
    */
-  private computeSkillMatchScore(inputLower: string, meta: SkillMetadata): number {
+  private computeSkillMatchScore(
+    inputLower: string,
+    meta: SkillMetadata,
+    forMultiSkillResolution = false
+  ): number {
     let score = 0;
     const nameLower = meta.name.toLowerCase();
 
@@ -366,9 +495,45 @@ export class SkillManager {
       score += 10;
     }
 
-    // 2. スキル名のハイフン分割トークン (例: "game", "generator") および description 内の主要語彙
+    // 単一スキル解決モード（レガシー互換）において、モジュラースキルが名前指定なしで汎用 game-generator を上書きしないよう制御
+    if (
+      !forMultiSkillResolution &&
+      this.defaultSkills.length === 0 &&
+      !inputLower.includes(nameLower) &&
+      this.metadataIndex.has('game-generator') &&
+      !this.disabledSkills.has('game-generator')
+    ) {
+      if (meta.frontmatter.metadata?.defaultActive === 'true') {
+        return 0;
+      }
+    }
+
+    // 2. metadata.keywords / metadata.triggers の明示キーワード判定（プロンプト連動スキル用）
+    const metaKeywordsRaw =
+      meta.frontmatter.metadata?.keywords || meta.frontmatter.metadata?.triggers || '';
+    const metaKeywords = metaKeywordsRaw
+      ? metaKeywordsRaw
+          .toLowerCase()
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    for (const kw of metaKeywords) {
+      if (inputLower.includes(kw)) {
+        score += 4;
+      }
+    }
+
+    // metadata.keywords が定義されている条件付き専門スキル (physics-engine, threejs-3d 等) は、
+    // スキル名または専門キーワード (metaKeywords) に1つ以上ヒットした場合のみ有効化する（単なる "game" 等の一般語での誤爆を防止）
+    if (metaKeywords.length > 0 && score === 0) {
+      return 0;
+    }
+
+    // 3. スキル名のハイフン分割トークン (例: "game", "generator") および description 内の主要語彙
     const stopWords = new Set([
-      'the', 'and', 'for', 'with', 'use', 'when', 'user', 'asks', 'wants', 'from', 'that', 'this', 'into', 'are', 'high', 'quality', 'single', 'file',
+      'the', 'and', 'for', 'with', 'use', 'when', 'user', 'asks', 'wants', 'from', 'that', 'this', 'into', 'are', 'high', 'quality', 'single', 'file', 'games', 'game', 'build', 'building', 'create',
     ]);
     const descWords = meta.description
       .toLowerCase()
@@ -376,9 +541,6 @@ export class SkillManager {
       .filter((w) => w.length >= 3 && !stopWords.has(w));
 
     const nameTokens = nameLower.split('-').filter((w) => w.length >= 3);
-    const metaTriggers = meta.frontmatter.metadata?.triggers
-      ? meta.frontmatter.metadata.triggers.toLowerCase().split(',').map((s) => s.trim())
-      : [];
 
     // 英語・日本語の汎用概念シノニム辞書 (スキル説明文に該当概念が含まれる場合に多言語マッチを補助)
     const conceptSynonyms: Record<string, string[]> = {
@@ -387,7 +549,10 @@ export class SkillManager {
       play: ['遊べる', 'プレイ'],
     };
 
-    const candidateTokens = new Set<string>([...nameTokens, ...descWords, ...metaTriggers]);
+    const candidateTokens = new Set<string>([...nameTokens, ...descWords]);
+    if (meta.description.toLowerCase().includes('game')) {
+      candidateTokens.add('game');
+    }
     for (const token of Array.from(candidateTokens)) {
       if (conceptSynonyms[token]) {
         for (const syn of conceptSynonyms[token]!) {
@@ -400,6 +565,16 @@ export class SkillManager {
       if (token && inputLower.includes(token)) {
         score += 2;
       }
+    }
+
+    // 単一スキル解決モードで game-generator が有効な場合のタイブレーク優先度
+    if (
+      !forMultiSkillResolution &&
+      this.defaultSkills.length === 0 &&
+      meta.name === 'game-generator' &&
+      score > 0
+    ) {
+      score += 15;
     }
 
     return score;
